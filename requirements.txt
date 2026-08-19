@@ -1,0 +1,17 @@
+numpy<2
+scipy
+torch
+smplx
+chumpy
+joblib
+PyYAML
+matplotlib
+opencv-python
+gdown
+loguru
+fastdtw
+trimesh
+python-decouple
+kornia==0.8.2
+ultralytics==8.4.53
+einops==0.8.1
