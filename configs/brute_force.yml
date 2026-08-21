@@ -1,64 +1,64 @@
 segments:
-- name: seg_1
-  ground_truth_dir: input/Seq1/GT
-  cameras:
-  - id: cam0
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_0_seg_1/video_0_seg_1.pkl
-    video: input/Seq1/imageSequence/video_0.avi
-  - id: cam1
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_1_seg_1/video_1_seg_1.pkl
-    video: input/Seq1/imageSequence/video_1.avi
-  - id: cam2
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_2_seg_1/video_2_seg_1.pkl
-    video: input/Seq1/imageSequence/video_2.avi
-  - id: cam3
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_3_seg_1/video_3_seg_1.pkl
-    video: input/Seq1/imageSequence/video_3.avi
-  - id: cam4
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_4_seg_1/video_4_seg_1.pkl
-    video: input/Seq1/imageSequence/video_4.avi
-  - id: cam5
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_5_seg_1/video_5_seg_1.pkl
-    video: input/Seq1/imageSequence/video_5.avi
-  - id: cam6
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_6_seg_1/video_6_seg_1.pkl
-    video: input/Seq1/imageSequence/video_6.avi
-  - id: cam7
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_7_seg_1/video_7_seg_1.pkl
-    video: input/Seq1/imageSequence/video_7.avi
-  - id: cam8
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_8_seg_1/video_8_seg_1.pkl
-    video: input/Seq1/imageSequence/video_8.avi
-- name: seg_2
-  ground_truth_dir: input/Seq1/GT
-  cameras:
-  - id: cam0
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_0_seg_2/video_0_seg_2.pkl
-    video: input/Seq1/imageSequence/video_0.avi
-  - id: cam1
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_1_seg_2/video_1_seg_2.pkl
-    video: input/Seq1/imageSequence/video_1.avi
-  - id: cam2
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_2_seg_2/video_2_seg_2.pkl
-    video: input/Seq1/imageSequence/video_2.avi
-  - id: cam3
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_3_seg_2/video_3_seg_2.pkl
-    video: input/Seq1/imageSequence/video_3.avi
-  - id: cam4
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_4_seg_2/video_4_seg_2.pkl
-    video: input/Seq1/imageSequence/video_4.avi
-  - id: cam5
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_5_seg_2/video_5_seg_2.pkl
-    video: input/Seq1/imageSequence/video_5.avi
-  - id: cam6
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_6_seg_2/video_6_seg_2.pkl
-    video: input/Seq1/imageSequence/video_6.avi
-  - id: cam7
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_7_seg_2/video_7_seg_2.pkl
-    video: input/Seq1/imageSequence/video_7.avi
-  - id: cam8
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_8_seg_2/video_8_seg_2.pkl
-    video: input/Seq1/imageSequence/video_8.avi
+# - name: seg_1
+#   ground_truth_dir: input/Seq1/GT
+#   cameras:
+#   - id: cam0
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_0_seg_1/video_0_seg_1.pkl
+#     video: input/Seq1/imageSequence/video_0.avi
+#   - id: cam1
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_1_seg_1/video_1_seg_1.pkl
+#     video: input/Seq1/imageSequence/video_1.avi
+#   - id: cam2
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_2_seg_1/video_2_seg_1.pkl
+#     video: input/Seq1/imageSequence/video_2.avi
+#   - id: cam3
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_3_seg_1/video_3_seg_1.pkl
+#     video: input/Seq1/imageSequence/video_3.avi
+#   - id: cam4
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_4_seg_1/video_4_seg_1.pkl
+#     video: input/Seq1/imageSequence/video_4.avi
+#   - id: cam5
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_5_seg_1/video_5_seg_1.pkl
+#     video: input/Seq1/imageSequence/video_5.avi
+#   - id: cam6
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_6_seg_1/video_6_seg_1.pkl
+#     video: input/Seq1/imageSequence/video_6.avi
+#   - id: cam7
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_7_seg_1/video_7_seg_1.pkl
+#     video: input/Seq1/imageSequence/video_7.avi
+#   - id: cam8
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_8_seg_1/video_8_seg_1.pkl
+#     video: input/Seq1/imageSequence/video_8.avi
+# - name: seg_2
+#   ground_truth_dir: input/Seq1/GT
+#   cameras:
+#   - id: cam0
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_0_seg_2/video_0_seg_2.pkl
+#     video: input/Seq1/imageSequence/video_0.avi
+#   - id: cam1
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_1_seg_2/video_1_seg_2.pkl
+#     video: input/Seq1/imageSequence/video_1.avi
+#   - id: cam2
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_2_seg_2/video_2_seg_2.pkl
+#     video: input/Seq1/imageSequence/video_2.avi
+#   - id: cam3
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_3_seg_2/video_3_seg_2.pkl
+#     video: input/Seq1/imageSequence/video_3.avi
+#   - id: cam4
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_4_seg_2/video_4_seg_2.pkl
+#     video: input/Seq1/imageSequence/video_4.avi
+#   - id: cam5
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_5_seg_2/video_5_seg_2.pkl
+#     video: input/Seq1/imageSequence/video_5.avi
+#   - id: cam6
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_6_seg_2/video_6_seg_2.pkl
+#     video: input/Seq1/imageSequence/video_6.avi
+#   - id: cam7
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_7_seg_2/video_7_seg_2.pkl
+#     video: input/Seq1/imageSequence/video_7.avi
+#   - id: cam8
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_8_seg_2/video_8_seg_2.pkl
+#     video: input/Seq1/imageSequence/video_8.avi
 - name: seg_4
   ground_truth_dir: input/Seq1/GT
   cameras:
@@ -89,123 +89,123 @@ segments:
   - id: cam8
     pkl: input/Seq1/imageSequence/Segments/wham_output_video_8_seg_4/video_8_seg_4.pkl
     video: input/Seq1/imageSequence/video_8.avi
-- name: seg_5
-  ground_truth_dir: input/Seq1/GT
-  cameras:
-  - id: cam0
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_0_seg_5/video_0_seg_5.pkl
-    video: input/Seq1/imageSequence/video_0.avi
-  - id: cam1
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_1_seg_5/video_1_seg_5.pkl
-    video: input/Seq1/imageSequence/video_1.avi
-  - id: cam2
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_2_seg_5/video_2_seg_5.pkl
-    video: input/Seq1/imageSequence/video_2.avi
-  - id: cam3
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_3_seg_5/video_3_seg_5.pkl
-    video: input/Seq1/imageSequence/video_3.avi
-  - id: cam4
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_4_seg_5/video_4_seg_5.pkl
-    video: input/Seq1/imageSequence/video_4.avi
-  - id: cam5
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_5_seg_5/video_5_seg_5.pkl
-    video: input/Seq1/imageSequence/video_5.avi
-  - id: cam6
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_6_seg_5/video_6_seg_5.pkl
-    video: input/Seq1/imageSequence/video_6.avi
-  - id: cam7
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_7_seg_5/video_7_seg_5.pkl
-    video: input/Seq1/imageSequence/video_7.avi
-  - id: cam8
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_8_seg_5/video_8_seg_5.pkl
-    video: input/Seq1/imageSequence/video_8.avi
-- name: seg_6
-  ground_truth_dir: input/Seq1/GT
-  cameras:
-  - id: cam0
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_0_seg_6/video_0_seg_6.pkl
-    video: input/Seq1/imageSequence/video_0.avi
-  - id: cam1
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_1_seg_6/video_1_seg_6.pkl
-    video: input/Seq1/imageSequence/video_1.avi
-  - id: cam2
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_2_seg_6/video_2_seg_6.pkl
-    video: input/Seq1/imageSequence/video_2.avi
-  - id: cam3
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_3_seg_6/video_3_seg_6.pkl
-    video: input/Seq1/imageSequence/video_3.avi
-  - id: cam4
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_4_seg_6/video_4_seg_6.pkl
-    video: input/Seq1/imageSequence/video_4.avi
-  - id: cam5
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_5_seg_6/video_5_seg_6.pkl
-    video: input/Seq1/imageSequence/video_5.avi
-  - id: cam6
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_6_seg_6/video_6_seg_6.pkl
-    video: input/Seq1/imageSequence/video_6.avi
-  - id: cam7
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_7_seg_6/video_7_seg_6.pkl
-    video: input/Seq1/imageSequence/video_7.avi
-  - id: cam8
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_8_seg_6/video_8_seg_6.pkl
-    video: input/Seq1/imageSequence/video_8.avi
-- name: seg_7
-  ground_truth_dir: input/Seq1/GT
-  cameras:
-  - id: cam0
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_0_seg_7/video_0_seg_7.pkl
-    video: input/Seq1/imageSequence/video_0.avi
-  - id: cam1
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_1_seg_7/video_1_seg_7.pkl
-    video: input/Seq1/imageSequence/video_1.avi
-  - id: cam2
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_2_seg_7/video_2_seg_7.pkl
-    video: input/Seq1/imageSequence/video_2.avi
-  - id: cam3
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_3_seg_7/video_3_seg_7.pkl
-    video: input/Seq1/imageSequence/video_3.avi
-  - id: cam4
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_4_seg_7/video_4_seg_7.pkl
-    video: input/Seq1/imageSequence/video_4.avi
-  - id: cam5
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_5_seg_7/video_5_seg_7.pkl
-    video: input/Seq1/imageSequence/video_5.avi
-  - id: cam6
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_6_seg_7/video_6_seg_7.pkl
-    video: input/Seq1/imageSequence/video_6.avi
-  - id: cam7
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_7_seg_7/video_7_seg_7.pkl
-    video: input/Seq1/imageSequence/video_7.avi
-  - id: cam8
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_8_seg_7/video_8_seg_7.pkl
-    video: input/Seq1/imageSequence/video_8.avi
-- name: seg_8
-  ground_truth_dir: input/Seq1/GT
-  cameras:
-  - id: cam0
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_0_seg_8/video_0_seg_8.pkl
-    video: input/Seq1/imageSequence/video_0.avi
-  - id: cam1
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_1_seg_8/video_1_seg_8.pkl
-    video: input/Seq1/imageSequence/video_1.avi
-  - id: cam2
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_2_seg_8/video_2_seg_8.pkl
-    video: input/Seq1/imageSequence/video_2.avi
-  - id: cam3
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_3_seg_8/video_3_seg_8.pkl
-    video: input/Seq1/imageSequence/video_3.avi
-  - id: cam4
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_4_seg_8/video_4_seg_8.pkl
-    video: input/Seq1/imageSequence/video_4.avi
-  - id: cam5
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_5_seg_8/video_5_seg_8.pkl
-    video: input/Seq1/imageSequence/video_5.avi
-  - id: cam6
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_6_seg_8/video_6_seg_8.pkl
-    video: input/Seq1/imageSequence/video_6.avi
-  - id: cam7
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_7_seg_8/video_7_seg_8.pkl
-    video: input/Seq1/imageSequence/video_7.avi
-  - id: cam8
-    pkl: input/Seq1/imageSequence/Segments/wham_output_video_8_seg_8/video_8_seg_8.pkl
-    video: input/Seq1/imageSequence/video_8.avi
+# - name: seg_5
+#   ground_truth_dir: input/Seq1/GT
+#   cameras:
+#   - id: cam0
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_0_seg_5/video_0_seg_5.pkl
+#     video: input/Seq1/imageSequence/video_0.avi
+#   - id: cam1
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_1_seg_5/video_1_seg_5.pkl
+#     video: input/Seq1/imageSequence/video_1.avi
+#   - id: cam2
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_2_seg_5/video_2_seg_5.pkl
+#     video: input/Seq1/imageSequence/video_2.avi
+#   - id: cam3
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_3_seg_5/video_3_seg_5.pkl
+#     video: input/Seq1/imageSequence/video_3.avi
+#   - id: cam4
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_4_seg_5/video_4_seg_5.pkl
+#     video: input/Seq1/imageSequence/video_4.avi
+#   - id: cam5
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_5_seg_5/video_5_seg_5.pkl
+#     video: input/Seq1/imageSequence/video_5.avi
+#   - id: cam6
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_6_seg_5/video_6_seg_5.pkl
+#     video: input/Seq1/imageSequence/video_6.avi
+#   - id: cam7
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_7_seg_5/video_7_seg_5.pkl
+#     video: input/Seq1/imageSequence/video_7.avi
+#   - id: cam8
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_8_seg_5/video_8_seg_5.pkl
+#     video: input/Seq1/imageSequence/video_8.avi
+# - name: seg_6
+#   ground_truth_dir: input/Seq1/GT
+#   cameras:
+#   - id: cam0
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_0_seg_6/video_0_seg_6.pkl
+#     video: input/Seq1/imageSequence/video_0.avi
+#   - id: cam1
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_1_seg_6/video_1_seg_6.pkl
+#     video: input/Seq1/imageSequence/video_1.avi
+#   - id: cam2
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_2_seg_6/video_2_seg_6.pkl
+#     video: input/Seq1/imageSequence/video_2.avi
+#   - id: cam3
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_3_seg_6/video_3_seg_6.pkl
+#     video: input/Seq1/imageSequence/video_3.avi
+#   - id: cam4
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_4_seg_6/video_4_seg_6.pkl
+#     video: input/Seq1/imageSequence/video_4.avi
+#   - id: cam5
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_5_seg_6/video_5_seg_6.pkl
+#     video: input/Seq1/imageSequence/video_5.avi
+#   - id: cam6
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_6_seg_6/video_6_seg_6.pkl
+#     video: input/Seq1/imageSequence/video_6.avi
+#   - id: cam7
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_7_seg_6/video_7_seg_6.pkl
+#     video: input/Seq1/imageSequence/video_7.avi
+#   - id: cam8
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_8_seg_6/video_8_seg_6.pkl
+#     video: input/Seq1/imageSequence/video_8.avi
+# - name: seg_7
+#   ground_truth_dir: input/Seq1/GT
+#   cameras:
+#   - id: cam0
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_0_seg_7/video_0_seg_7.pkl
+#     video: input/Seq1/imageSequence/video_0.avi
+#   - id: cam1
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_1_seg_7/video_1_seg_7.pkl
+#     video: input/Seq1/imageSequence/video_1.avi
+#   - id: cam2
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_2_seg_7/video_2_seg_7.pkl
+#     video: input/Seq1/imageSequence/video_2.avi
+#   - id: cam3
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_3_seg_7/video_3_seg_7.pkl
+#     video: input/Seq1/imageSequence/video_3.avi
+#   - id: cam4
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_4_seg_7/video_4_seg_7.pkl
+#     video: input/Seq1/imageSequence/video_4.avi
+#   - id: cam5
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_5_seg_7/video_5_seg_7.pkl
+#     video: input/Seq1/imageSequence/video_5.avi
+#   - id: cam6
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_6_seg_7/video_6_seg_7.pkl
+#     video: input/Seq1/imageSequence/video_6.avi
+#   - id: cam7
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_7_seg_7/video_7_seg_7.pkl
+#     video: input/Seq1/imageSequence/video_7.avi
+#   - id: cam8
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_8_seg_7/video_8_seg_7.pkl
+#     video: input/Seq1/imageSequence/video_8.avi
+# - name: seg_8
+#   ground_truth_dir: input/Seq1/GT
+#   cameras:
+#   - id: cam0
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_0_seg_8/video_0_seg_8.pkl
+#     video: input/Seq1/imageSequence/video_0.avi
+#   - id: cam1
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_1_seg_8/video_1_seg_8.pkl
+#     video: input/Seq1/imageSequence/video_1.avi
+#   - id: cam2
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_2_seg_8/video_2_seg_8.pkl
+#     video: input/Seq1/imageSequence/video_2.avi
+#   - id: cam3
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_3_seg_8/video_3_seg_8.pkl
+#     video: input/Seq1/imageSequence/video_3.avi
+#   - id: cam4
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_4_seg_8/video_4_seg_8.pkl
+#     video: input/Seq1/imageSequence/video_4.avi
+#   - id: cam5
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_5_seg_8/video_5_seg_8.pkl
+#     video: input/Seq1/imageSequence/video_5.avi
+#   - id: cam6
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_6_seg_8/video_6_seg_8.pkl
+#     video: input/Seq1/imageSequence/video_6.avi
+#   - id: cam7
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_7_seg_8/video_7_seg_8.pkl
+#     video: input/Seq1/imageSequence/video_7.avi
+#   - id: cam8
+#     pkl: input/Seq1/imageSequence/Segments/wham_output_video_8_seg_8/video_8_seg_8.pkl
+#     video: input/Seq1/imageSequence/video_8.avi

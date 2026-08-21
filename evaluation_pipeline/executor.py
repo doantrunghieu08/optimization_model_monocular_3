@@ -47,41 +47,62 @@ def _resolve_root_joint(joints: dict) -> np.ndarray:
         return (joints["left_hip"] + joints["right_hip"]) / 2.0
     raise ValueError("Missing left_hip or right_hip for root alignment")
 
-def _compute_mpjpe(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], keys: list[str]) -> float:
+def _compute_mpjpe(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], keys: list[str]) -> tuple[float, dict[str, float]]:
     pred_root = _resolve_root_joint(pred)
     truth_root = _resolve_root_joint(truth)
 
     errors = []
+    errors_dict = {}
     for k in keys:
         p = pred[k] - pred_root
         t = truth[k] - truth_root
-        errors.append(np.linalg.norm(p - t) * 1000.0)
-    return float(np.mean(errors))
+        err = float(np.linalg.norm(p - t) * 1000.0)
+        errors.append(err)
+        errors_dict[k] = err
+    return float(np.mean(errors)), errors_dict
 
-def _compute_pa_mpjpe(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], keys: list[str]) -> float:
-    pred_mat = np.array([pred[k] for k in keys], dtype=float)
-    truth_mat = np.array([truth[k] for k in keys], dtype=float)
+def _compute_pa_mpjpe(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], keys: list[str]) -> tuple[float, dict[str, float]]:
+    P = np.array([pred[k] for k in keys], dtype=float)
+    T = np.array([truth[k] for k in keys], dtype=float)
 
-    truth_centered = truth_mat - np.mean(truth_mat, axis=0)
-    norm_truth = np.linalg.norm(truth_centered)
-    if norm_truth < 1e-6:
-        return 0.0
+    P_c = P - np.mean(P, axis=0)
+    T_c = T - np.mean(T, axis=0)
 
-    # scipy.procrustes chuẩn hóa về unit frobenius norm sau khi centering.
-    # disparity = tổng bình phương khoảng cách giữa mtx1 và mtx2 trên không gian đã chuẩn hóa.
-    # Để phục hồi về mm: PA-MPJPE = sqrt(disparity * norm_truth^2 / N) * 1000
-    _, _, disparity = procrustes(truth_mat, pred_mat)
-    n = len(keys)
-    return float(np.sqrt(disparity * norm_truth ** 2 / n) * 1000.0)
+    norm_P = np.linalg.norm(P_c)
+    norm_T = np.linalg.norm(T_c)
+    
+    if norm_P < 1e-6 or norm_T < 1e-6:
+        return 0.0, {k: 0.0 for k in keys}
 
-def _compute_pck_mm(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], keys: list[str]) -> float:
+    P_c_unit = P_c / norm_P
+    T_c_unit = T_c / norm_T
+
+    U, s, Vt = np.linalg.svd(np.dot(T_c_unit.T, P_c_unit))
+    R = np.dot(U, Vt)
+    
+    scale = np.sum(s) * (norm_T / norm_P)
+    P_aligned = np.dot(P_c, R.T) * scale + np.mean(T, axis=0)
+
+    errors = []
+    errors_dict = {}
+    for i, k in enumerate(keys):
+        err = float(np.linalg.norm(P_aligned[i] - T[i]) * 1000.0)
+        errors.append(err)
+        errors_dict[k] = err
+        
+    return float(np.mean(errors)), errors_dict
+
+def _compute_pck_mm(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], keys: list[str]) -> tuple[float, dict[str, float]]:
     # PCK-mm is mean Euclidean distance (absolute, no root align)
     errors = []
+    errors_dict = {}
     for k in keys:
         p = pred[k]
         t = truth[k]
-        errors.append(np.linalg.norm(p - t) * 1000.0)
-    return float(np.mean(errors))
+        err = float(np.linalg.norm(p - t) * 1000.0)
+        errors.append(err)
+        errors_dict[k] = err
+    return float(np.mean(errors)), errors_dict
 
 def _load_json(p: Path) -> dict:
     with p.open("r", encoding="utf-8") as f:
@@ -344,18 +365,33 @@ def run_evaluation(config: dict) -> None:
                 # MPJPE
                 if metric_enabled["MPJPE"]:
                     results["MPJPE"][cam][frame].setdefault(mod, {})
-                    results["MPJPE"][cam][frame][mod]["priority1_mm"] = _compute_mpjpe(pred_joints, truth_joints, valid_priority1) if valid_priority1 else 0.0
-                    results["MPJPE"][cam][frame][mod]["priority2_mm"] = _compute_mpjpe(pred_joints, truth_joints, valid_priority2) if valid_priority2 else 0.0
+                    mean_p1, dict_p1 = _compute_mpjpe(pred_joints, truth_joints, valid_priority1) if valid_priority1 else (0.0, {})
+                    results["MPJPE"][cam][frame][mod]["priority1_mm"] = mean_p1
+                    results["MPJPE"][cam][frame][mod]["priority1_details"] = dict_p1
+                    
+                    mean_p2, dict_p2 = _compute_mpjpe(pred_joints, truth_joints, valid_priority2) if valid_priority2 else (0.0, {})
+                    results["MPJPE"][cam][frame][mod]["priority2_mm"] = mean_p2
+                    results["MPJPE"][cam][frame][mod]["priority2_details"] = dict_p2
 
                 if metric_enabled["PA-MPJPE"]:
                     results["PA-MPJPE"][cam][frame].setdefault(mod, {})
-                    results["PA-MPJPE"][cam][frame][mod]["priority1_mm"] = _compute_pa_mpjpe(pred_joints, truth_joints, valid_priority1) if valid_priority1 else 0.0
-                    results["PA-MPJPE"][cam][frame][mod]["priority2_mm"] = _compute_pa_mpjpe(pred_joints, truth_joints, valid_priority2) if valid_priority2 else 0.0
+                    mean_p1, dict_p1 = _compute_pa_mpjpe(pred_joints, truth_joints, valid_priority1) if valid_priority1 else (0.0, {})
+                    results["PA-MPJPE"][cam][frame][mod]["priority1_mm"] = mean_p1
+                    results["PA-MPJPE"][cam][frame][mod]["priority1_details"] = dict_p1
+                    
+                    mean_p2, dict_p2 = _compute_pa_mpjpe(pred_joints, truth_joints, valid_priority2) if valid_priority2 else (0.0, {})
+                    results["PA-MPJPE"][cam][frame][mod]["priority2_mm"] = mean_p2
+                    results["PA-MPJPE"][cam][frame][mod]["priority2_details"] = dict_p2
 
                 if metric_enabled["PCK"]:
                     results["PCK"][cam][frame].setdefault(mod, {})
-                    results["PCK"][cam][frame][mod]["priority1_mm"] = _compute_pck_mm(pred_joints, truth_joints, valid_priority1) if valid_priority1 else 0.0
-                    results["PCK"][cam][frame][mod]["priority2_mm"] = _compute_pck_mm(pred_joints, truth_joints, valid_priority2) if valid_priority2 else 0.0
+                    mean_p1, dict_p1 = _compute_pck_mm(pred_joints, truth_joints, valid_priority1) if valid_priority1 else (0.0, {})
+                    results["PCK"][cam][frame][mod]["priority1_mm"] = mean_p1
+                    results["PCK"][cam][frame][mod]["priority1_details"] = dict_p1
+                    
+                    mean_p2, dict_p2 = _compute_pck_mm(pred_joints, truth_joints, valid_priority2) if valid_priority2 else (0.0, {})
+                    results["PCK"][cam][frame][mod]["priority2_mm"] = mean_p2
+                    results["PCK"][cam][frame][mod]["priority2_details"] = dict_p2
 
     module_output_names = {
         mod: EVALUATION_OUTPUT_MODULE_NAMES.get(mod, mod)
@@ -367,6 +403,8 @@ def run_evaluation(config: dict) -> None:
         out_name = module_output_names[mod]
         header.append(f"{out_name}_priority1_mm")
         header.append(f"{out_name}_priority2_mm")
+        for joint in priority1_names:
+            header.append(f"{out_name}_{joint}_mm")
 
     for metric in enabled_metrics:
         for cam in CAMERAS:
@@ -382,13 +420,19 @@ def run_evaluation(config: dict) -> None:
                     row = [frame, cam, gt_camera_keys[cam]]
                     for mod in module_names:
                         out_name = module_output_names[mod]
+                        
                         v1 = results[metric][cam][frame][mod]["priority1_mm"]
                         v2 = results[metric][cam][frame][mod]["priority2_mm"]
                         row.append(f"{v1:.2f}")
                         row.append(f"{v2:.2f}")
                         avg_sums[f"{out_name}_priority1_mm"] += v1
                         avg_sums[f"{out_name}_priority2_mm"] += v2
-                    # writer.writerow(row) # Bỏ qua việc ghi từng frame theo yêu cầu của user
+                        
+                        p1_details = results[metric][cam][frame][mod]["priority1_details"]
+                        for joint in priority1_names:
+                            err_j = p1_details.get(joint, 0.0)
+                            row.append(f"{err_j:.2f}")
+                            avg_sums[f"{out_name}_{joint}_mm"] += err_j
 
                 n_frames = len(evaluated_frames)
                 if n_frames > 0:
