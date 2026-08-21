@@ -31,7 +31,7 @@ def _require_evaluation_inputs(config):
         )
 
 def _run_full_pipeline(config, include_visualization: bool) -> None:
-    selected_offset, _ = run_preprocess(config)
+    selected_offset, _ = run_preprocess(config, extract_frames=include_visualization)
     print(f"[Pipeline] Running pose with offset={selected_offset}")
     run_pose_export(config)
     print(f"[Pipeline] Running fusion with offset={selected_offset}")

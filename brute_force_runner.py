@@ -23,6 +23,41 @@ def parse_average_csv(csv_path: str, target_column: str) -> float:
                 return float(row[target_idx])
     return float('inf')
 
+def load_existing_results(csv_path: str) -> dict:
+    existing = {}
+    path = Path(csv_path)
+    if not path.exists():
+        return existing
+    with open(path, 'r', encoding='utf-8') as f:
+        reader = csv.reader(f)
+        header = next(reader, None)
+        if not header:
+            return existing
+            
+        try:
+            seg_idx = header.index('Segment')
+            master_idx = header.index('Cam Master')
+            supp_idx = header.index('Cam Bo Sung')
+            mpjpe_idx = header.index('MPJPE (mm)')
+            pa_mpjpe_idx = header.index('PA-MPJPE (mm)')
+            score_idx = header.index('Avg Score')
+        except ValueError:
+            return existing
+
+        for row in reader:
+            if len(row) > score_idx:
+                seg = row[seg_idx]
+                master = row[master_idx]
+                supplement = row[supp_idx]
+                score_str = row[score_idx]
+                if score_str != "N/A":
+                    existing[(seg, master, supplement)] = {
+                        "mpjpe": float(row[mpjpe_idx]) if row[mpjpe_idx] != "N/A" else float('inf'),
+                        "pa_mpjpe": float(row[pa_mpjpe_idx]) if row[pa_mpjpe_idx] != "N/A" else float('inf'),
+                        "score": float(score_str)
+                    }
+    return existing
+
 def run_brute_force():
     WORKSPACE_DIR = Path(__file__).parent.resolve()
     brute_config_path = WORKSPACE_DIR / "configs" / "brute_force.yml"
@@ -33,6 +68,11 @@ def run_brute_force():
         
     with open(pipeline_config_path, "r", encoding="utf-8") as f:
         base_pipeline_cfg = yaml.safe_load(f)
+
+    report_csv_path = WORKSPACE_DIR / "brute_force_report.csv"
+    existing_results = load_existing_results(str(report_csv_path))
+    if existing_results:
+        print(f"Đã tải {len(existing_results)} kết quả từ lần chạy trước.")
 
     all_results = {}
 
@@ -51,6 +91,30 @@ def run_brute_force():
         for camA, camB in itertools.permutations(cameras, 2):
             print(f"\n--- Đang chạy cặp: Master={camA['id']} | Supplement={camB['id']} ---")
             
+            # Kiểm tra xem cặp này đã có kết quả chưa
+            if (seg_name, camA["id"], camB["id"]) in existing_results:
+                print("Bỏ qua cặp này do đã có kết quả từ lần chạy trước.")
+                res = existing_results[(seg_name, camA["id"], camB["id"])]
+                results.append({
+                    "master": camA["id"],
+                    "supplement": camB["id"],
+                    "mpjpe": res["mpjpe"],
+                    "pa_mpjpe": res["pa_mpjpe"],
+                    "score": res["score"]
+                })
+                continue
+
+            if not (WORKSPACE_DIR / camA["pkl"]).exists() or not (WORKSPACE_DIR / camB["pkl"]).exists():
+                print(f"Bỏ qua cặp này do thiếu file pkl đầu vào.")
+                results.append({
+                    "master": camA["id"],
+                    "supplement": camB["id"],
+                    "mpjpe": float('inf'),
+                    "pa_mpjpe": float('inf'),
+                    "score": float('inf')
+                })
+                continue
+
             import copy
             config = copy.deepcopy(base_pipeline_cfg)
             
@@ -83,8 +147,9 @@ def run_brute_force():
                 mpjpe_csv = eval_dir / "MPJPE_cam1.csv"
                 pa_mpjpe_csv = eval_dir / "PA-MPJPE_cam1.csv"
                 
-                mpjpe = parse_average_csv(mpjpe_csv, "fusion-learnable_priority1_mm")
-                pa_mpjpe = parse_average_csv(pa_mpjpe_csv, "fusion-learnable_priority1_mm")
+                target_col = "fusion-learnable_priority1_mm" if config.get("learnable", {}).get("enabled", True) else "fused_priority1_mm"
+                mpjpe = parse_average_csv(mpjpe_csv, target_col)
+                pa_mpjpe = parse_average_csv(pa_mpjpe_csv, target_col)
                 
                 avg_score = (mpjpe + pa_mpjpe) / 2.0
                 
@@ -107,16 +172,23 @@ def run_brute_force():
                     "pa_mpjpe": float('inf'),
                     "score": float('inf')
                 })
+                
+            # Ghi online/incremental ngay sau mỗi cặp để không mất dữ liệu nếu bị ngắt
+            temp_results = dict(all_results)
+            temp_seg_results = list(results)
+            temp_seg_results.sort(key=lambda x: x["score"])
+            temp_results[seg_name] = temp_seg_results
+            generate_csv_report(temp_results, str(report_csv_path), silent=True)
         
         # Xếp hạng
         results.sort(key=lambda x: x["score"])
         all_results[seg_name] = results
         
-    # Tạo CSV Report
-    generate_csv_report(all_results, str(WORKSPACE_DIR / "brute_force_report.csv"))
+    # Tạo CSV Report cuối cùng
+    generate_csv_report(all_results, str(report_csv_path), silent=False)
 
 
-def generate_csv_report(all_results, out_path):
+def generate_csv_report(all_results, out_path, silent=False):
     import csv
     with open(out_path, mode='w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
@@ -138,8 +210,8 @@ def generate_csv_report(all_results, out_path):
                     score_str
                 ])
                 
-    print(f"\nĐã xuất báo cáo CSV tại: {out_path}")
-
+    if not silent:
+        print(f"\nĐã xuất báo cáo CSV tại: {out_path}")
 
 if __name__ == "__main__":
     run_brute_force()

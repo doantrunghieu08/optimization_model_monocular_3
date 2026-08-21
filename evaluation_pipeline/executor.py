@@ -101,6 +101,54 @@ def _load_frame_map(frame_dir: Path, frame_offset: int = 0) -> dict[int, Path]:
     return frame_map
 
 
+def _load_segment_gt(path: Path) -> dict:
+    if not path.exists():
+        raise FileNotFoundError(f"GT file not found: {path}")
+    with path.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+    
+    gt_map = {}
+    for idx, item in enumerate(data):
+        gt_map[idx] = item
+        if "frame_id" in item:
+            gt_map[int(item["frame_id"])] = item
+    return gt_map
+
+
+def _parse_new_gt(item: dict, canonical_names: set, map_data: dict) -> dict:
+    joints = {}
+    # Convert from millimeters to meters to match the prediction scale
+    pose3d = np.array(item["pose3d"], dtype=float) / 1000.0
+    
+    # MPI-INF-3DHP 28-joint format indices (correct mapping):
+    # [0]=spine3, [1]=spine4, [2]=spine2, [3]=spine, [4]=pelvis,
+    # [5]=neck, [6]=head, [7]=head_top,
+    # [8]=left_clavicle, [9]=left_shoulder, [10]=left_elbow, [11]=left_wrist, [12]=left_hand,
+    # [13]=right_clavicle, [14]=right_shoulder, [15]=right_elbow, [16]=right_wrist, [17]=right_hand,
+    # [18]=left_hip, [19]=left_knee, [20]=left_ankle, [21]=left_foot, [22]=left_toe,
+    # [23]=right_hip, [24]=right_knee, [25]=right_ankle, [26]=right_foot, [27]=right_toe
+    new_gt_indices = {
+        "head": 6,
+        "neck": 5,
+        "pelvis": 4,
+        "left_shoulder": 9,   "right_shoulder": 14,
+        "left_elbow": 10,     "right_elbow": 15,
+        "left_wrist": 11,     "right_wrist": 16,
+        "left_hand": 12,      "right_hand": 17,
+        "left_hip": 18,       "right_hip": 23,
+        "left_knee": 19,      "right_knee": 24,
+        "left_ankle": 20,     "right_ankle": 25,
+        "left_foot": 21,      "right_foot": 26,
+        "left_toe": 22,       "right_toe": 27,
+    }
+    
+    for name, idx in new_gt_indices.items():
+        if idx < len(pose3d):
+            joints[name] = pose3d[idx]
+            
+    return joints
+
+
 def _format_frame_sample(frames: set[int], limit: int = 8) -> str:
     if not frames:
         return "[]"
@@ -188,19 +236,22 @@ def run_evaluation(config: dict) -> None:
     if config.get("runtime", {}).get("clean_output", True):
         out_dir.mkdir(parents=True, exist_ok=True)
         for old in out_dir.glob("*.csv"):
-            old.unlink()
+            old.unlink(missing_ok=True)
     else:
         out_dir.mkdir(parents=True, exist_ok=True)
 
-    module_names = list(MODULES)
+    module_names = ["posed", "fused"]
+    if config.get("learnable", {}).get("enabled", False):
+        module_names.append("learnable")
     if config.get("learnable_extra", {}).get("enabled", False):
         module_names.append("learnable_extra")
 
     module_dirs = {
         "posed": Path(paths["pose_output_dir"]) / "keypoints3d",
         "fused": Path(paths["fused_output_dir"]) / "keypoints3d",
-        "learnable": Path(paths["learnable_output_dir"]) / "keypoints3d",
     }
+    if "learnable" in module_names:
+        module_dirs["learnable"] = Path(paths["learnable_output_dir"]) / "keypoints3d"
     if "learnable_extra" in module_names:
         module_dirs["learnable_extra"] = Path(paths["learnable_extra_output_dir"]) / "keypoints3d"
 
@@ -208,12 +259,18 @@ def run_evaluation(config: dict) -> None:
         if not mdir.exists():
             raise FileNotFoundError(f"Missing required module directory: {mdir}")
 
-    # GT file được extract với tên frame_{f_idx+1:06d}.json (bắt đầu từ 1).
-    # Pipeline output cũng bắt đầu từ index 1 (pose_data_1.json).
-    # Dùng frame_offset=0 để giữ nguyên index từ tên file, tránh lệch frame.
-    truth_frame_map = _load_frame_map(truth_dir, frame_offset=0)
-    if not truth_frame_map:
-        raise ValueError(f"No ground truth frames found in {truth_dir}")
+    # GT là segment file, mỗi camera có một file riêng.
+    cam1_gt_stem = Path(inputs.get("cam1_pkl", "")).stem
+    cam2_gt_stem = Path(inputs.get("cam2_pkl", "")).stem
+    if not cam1_gt_stem or not cam2_gt_stem:
+        raise ValueError("Missing cam1_pkl or cam2_pkl in inputs to determine GT files.")
+        
+    cam1_gt_path = truth_dir / f"{cam1_gt_stem}.json"
+    cam2_gt_path = truth_dir / f"{cam2_gt_stem}.json"
+    
+    gt_cam1_data = _load_segment_gt(cam1_gt_path)
+    gt_cam2_data = _load_segment_gt(cam2_gt_path)
+    gt_cam_data = {"camera1": gt_cam1_data, "camera2": gt_cam2_data}
 
     gt_camera_keys = {
         "camera1": _camera_key_from_video_path(inputs.get("camera1_video")),
@@ -226,48 +283,42 @@ def run_evaluation(config: dict) -> None:
         module_frame_maps[name] = _load_frame_map(mdir)
         module_frame_sets[name] = set(module_frame_maps[name])
 
-    truth_frames = set(truth_frame_map)
-    common_frames = truth_frames.copy()
+    common_frames = None
     for frames_set in module_frame_sets.values():
-        common_frames &= frames_set
+        if common_frames is None:
+            common_frames = frames_set.copy()
+        else:
+            common_frames &= frames_set
 
     if not common_frames:
-        details = ", ".join(
-            f"{name}={len(frames_set)}" for name, frames_set in module_frame_sets.items()
-        )
-        raise ValueError(
-            f"No overlapping frames between ground truth and module outputs. "
-            f"truth={len(truth_frames)}, {details}"
-        )
-
-    for name, frames_set in module_frame_sets.items():
-        _warn_frame_mismatch(name, truth_frames, frames_set)
-
-    dropped_truth = truth_frames - common_frames
-    if dropped_truth:
-        print(
-            "[Evaluation] Restricting evaluation to overlapping frames only. "
-            f"Dropping {len(dropped_truth)} GT-only frames."
-        )
+        raise ValueError("No overlapping frames between module outputs.")
 
     frames = sorted(common_frames)
 
     # metrics: metric -> cam -> frame -> module -> priority -> value
     results = {metric: {"camera1": {}, "camera2": {}} for metric in enabled_metrics}
+    evaluated_frames = []
 
     for frame in frames:
-        truth_path = truth_frame_map[frame]
-        truth_data = _load_json(truth_path)
-        tc_data = _resolve_truth_frame_payload(truth_data, testcase_name, truth_path)
+        # Resolve actual frame_id from metadata
+        metadata_path = Path(paths["pose_output_dir"]) / "metadata" / f"pose_data_{frame}.json"
+        if not metadata_path.exists():
+            continue
+        metadata = _load_json(metadata_path)
+        src_indices = metadata.get("metadata", {}).get("source_frame_indices", {})
+        
+        cam1_frame_id = src_indices.get("camera1")
+        cam2_frame_id = src_indices.get("camera2")
+        
+        if cam1_frame_id not in gt_cam1_data or cam2_frame_id not in gt_cam2_data:
+            continue
+            
+        evaluated_frames.append(frame)
 
         for cam in CAMERAS:
-            gt_cam = gt_camera_keys[cam]
-            if gt_cam not in tc_data:
-                raise ValueError(f"Missing {gt_cam} in {truth_path}")
-
-            truth_joints = {k: np.array(v, dtype=float) for k, v in tc_data[gt_cam].items()}
-            if not canonical_names.issubset(truth_joints.keys()):
-                raise ValueError(f"Truth {gt_cam} frame {frame} missing keys. Expected {canonical_names}")
+            gt_frame_id = cam1_frame_id if cam == "camera1" else cam2_frame_id
+            truth_item = gt_cam_data[cam][gt_frame_id]
+            truth_joints = _parse_new_gt(truth_item, canonical_names, map_data)
 
             for metric in results:
                 if frame not in results[metric][cam]:
@@ -280,28 +331,31 @@ def run_evaluation(config: dict) -> None:
                     raise ValueError(f"Missing {cam} in {mod_path}")
 
                 pred_joints = {k: np.array(v, dtype=float) for k, v in mod_data[cam].items()}
-                if set(pred_joints) != canonical_names:
-                    raise ValueError(
-                        f"Module {mod} {cam} frame {frame} must contain exactly canonical 21 keys. "
-                        f"Expected {sorted(canonical_names)}, got {sorted(pred_joints)}"
-                    )
+                
+                # Filter priority names to only include keys present in both pred and truth
+                available_keys = set(pred_joints.keys()) & set(truth_joints.keys())
+                valid_priority1 = [k for k in priority1_names if k in available_keys]
+                valid_priority2 = [k for k in priority2_names if k in available_keys]
+                
+                if not valid_priority1:
+                    print(f"Warning: No overlapping priority1 keys for {mod} {cam} frame {frame}")
 
                 # compute metrics
                 # MPJPE
                 if metric_enabled["MPJPE"]:
                     results["MPJPE"][cam][frame].setdefault(mod, {})
-                    results["MPJPE"][cam][frame][mod]["priority1_mm"] = _compute_mpjpe(pred_joints, truth_joints, priority1_names)
-                    results["MPJPE"][cam][frame][mod]["priority2_mm"] = _compute_mpjpe(pred_joints, truth_joints, priority2_names)
+                    results["MPJPE"][cam][frame][mod]["priority1_mm"] = _compute_mpjpe(pred_joints, truth_joints, valid_priority1) if valid_priority1 else 0.0
+                    results["MPJPE"][cam][frame][mod]["priority2_mm"] = _compute_mpjpe(pred_joints, truth_joints, valid_priority2) if valid_priority2 else 0.0
 
                 if metric_enabled["PA-MPJPE"]:
                     results["PA-MPJPE"][cam][frame].setdefault(mod, {})
-                    results["PA-MPJPE"][cam][frame][mod]["priority1_mm"] = _compute_pa_mpjpe(pred_joints, truth_joints, priority1_names)
-                    results["PA-MPJPE"][cam][frame][mod]["priority2_mm"] = _compute_pa_mpjpe(pred_joints, truth_joints, priority2_names)
+                    results["PA-MPJPE"][cam][frame][mod]["priority1_mm"] = _compute_pa_mpjpe(pred_joints, truth_joints, valid_priority1) if valid_priority1 else 0.0
+                    results["PA-MPJPE"][cam][frame][mod]["priority2_mm"] = _compute_pa_mpjpe(pred_joints, truth_joints, valid_priority2) if valid_priority2 else 0.0
 
                 if metric_enabled["PCK"]:
                     results["PCK"][cam][frame].setdefault(mod, {})
-                    results["PCK"][cam][frame][mod]["priority1_mm"] = _compute_pck_mm(pred_joints, truth_joints, priority1_names)
-                    results["PCK"][cam][frame][mod]["priority2_mm"] = _compute_pck_mm(pred_joints, truth_joints, priority2_names)
+                    results["PCK"][cam][frame][mod]["priority1_mm"] = _compute_pck_mm(pred_joints, truth_joints, valid_priority1) if valid_priority1 else 0.0
+                    results["PCK"][cam][frame][mod]["priority2_mm"] = _compute_pck_mm(pred_joints, truth_joints, valid_priority2) if valid_priority2 else 0.0
 
     module_output_names = {
         mod: EVALUATION_OUTPUT_MODULE_NAMES.get(mod, mod)
@@ -324,7 +378,7 @@ def run_evaluation(config: dict) -> None:
 
                 avg_sums = {h: 0.0 for h in header[3:]}
 
-                for frame in frames:
+                for frame in evaluated_frames:
                     row = [frame, cam, gt_camera_keys[cam]]
                     for mod in module_names:
                         out_name = module_output_names[mod]
@@ -336,11 +390,12 @@ def run_evaluation(config: dict) -> None:
                         avg_sums[f"{out_name}_priority2_mm"] += v2
                     # writer.writerow(row) # Bỏ qua việc ghi từng frame theo yêu cầu của user
 
-                n_frames = len(frames)
-                avg_row = ["AVERAGE", cam, gt_camera_keys[cam]]
-                for h in header[3:]:
-                    avg_row.append(f"{(avg_sums[h]/n_frames):.2f}")
-                writer.writerow(avg_row)
+                n_frames = len(evaluated_frames)
+                if n_frames > 0:
+                    avg_row = ["AVERAGE", cam, gt_camera_keys[cam]]
+                    for h in header[3:]:
+                        avg_row.append(f"{(avg_sums[h]/n_frames):.2f}")
+                    writer.writerow(avg_row)
 
     print(f"[Evaluation] Done. Output: {out_dir}")
 

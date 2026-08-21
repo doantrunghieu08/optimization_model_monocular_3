@@ -37,13 +37,13 @@ def _frame_index(path: Path) -> int:
 def _clean_output(output_dir: Path, pattern: str = "*.json", create_split_dirs: bool = False) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     for old_json in output_dir.glob(pattern):
-        old_json.unlink()
+        old_json.unlink(missing_ok=True)
     if create_split_dirs:
         for subdir in OUTPUT_SUBDIRS:
             target_dir = output_dir / subdir
             target_dir.mkdir(parents=True, exist_ok=True)
             for old_json in target_dir.glob(pattern):
-                old_json.unlink()
+                old_json.unlink(missing_ok=True)
 
 
 def _extract_person_payload(wham_data):

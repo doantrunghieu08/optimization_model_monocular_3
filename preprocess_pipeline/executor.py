@@ -45,7 +45,7 @@ def _clean_preprocess_output(output_dir: str, video_paths, clean_images: bool = 
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     for old_json in out_dir.glob("data_cam*.json"):
-        old_json.unlink()
+        old_json.unlink(missing_ok=True)
     if clean_images:
         for video_path in video_paths:
             video = Path(video_path)
@@ -63,7 +63,7 @@ def _clean_extracted_images(output_folder: str) -> None:
     for image_dir in output_path.glob("images_*"):
         if image_dir.is_dir():
             for old_image in image_dir.glob("images_frame_*.jpg"):
-                old_image.unlink()
+                old_image.unlink(missing_ok=True)
 
 
 def extract_images(

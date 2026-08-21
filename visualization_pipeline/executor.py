@@ -21,23 +21,22 @@ from glob import glob
 
 
 FULL_SKELETON = [
-    ("right_shoulder", "left_shoulder"),
-    ("right_shoulder", "right_hip"),
-    ("left_shoulder", "left_hip"),
-    ("right_hip", "left_hip"),
+    ("head", "neck"),
     ("neck", "right_shoulder"),
     ("neck", "left_shoulder"),
-    ("head", "neck"),
+    ("neck", "pelvis"),
     ("right_shoulder", "right_elbow"),
     ("right_elbow", "right_wrist"),
     ("right_wrist", "right_hand"),
     ("left_shoulder", "left_elbow"),
     ("left_elbow", "left_wrist"),
     ("left_wrist", "left_hand"),
+    ("pelvis", "right_hip"),
     ("right_hip", "right_knee"),
     ("right_knee", "right_ankle"),
     ("right_ankle", "right_toe"),
     ("right_ankle", "right_foot"),
+    ("pelvis", "left_hip"),
     ("left_hip", "left_knee"),
     ("left_knee", "left_ankle"),
     ("left_ankle", "left_toe"),
@@ -64,9 +63,9 @@ def _frame_index(path: Path) -> int:
 def _clean_visualization_output(output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     for old_video in output_dir.glob("compare_*.mp4"):
-        old_video.unlink()
+        old_video.unlink(missing_ok=True)
     for old_video in output_dir.glob("project_*.mp4"):
-        old_video.unlink()
+        old_video.unlink(missing_ok=True)
 
 
 def load_fusion_poses(fused_dir: Path) -> list[dict]:

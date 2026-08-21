@@ -66,14 +66,14 @@ def _clean_learnable_output(output_dir: Path, file_prefix: str) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     meta = output_dir / "metadata.json"
     if meta.exists():
-        meta.unlink()
+        meta.unlink(missing_ok=True)
     for old_json in output_dir.glob(f"{file_prefix}*.json"):
-        old_json.unlink()
+        old_json.unlink(missing_ok=True)
     for subdir in OUTPUT_SUBDIRS:
         target_dir = output_dir / subdir
         target_dir.mkdir(parents=True, exist_ok=True)
         for old_json in target_dir.glob(f"{file_prefix}*.json"):
-            old_json.unlink()
+            old_json.unlink(missing_ok=True)
 
 def load_fused_results(input_dir: Path) -> list[dict]:
     keypoints_dir = input_dir / "keypoints3d"

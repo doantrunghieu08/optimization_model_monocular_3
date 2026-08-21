@@ -54,11 +54,11 @@ fusion:
     max_iter: 1000 # Số vòng lặp tối đa cho bộ giải SLSQP.
 
 learnable:
-  enabled: true
+  enabled: false
   checkpoint: "models/best_ckpt.pth.tar"
 
 learnable_extra:
-  enabled: true
+  enabled: false
 
 visualization:
   enabled: false

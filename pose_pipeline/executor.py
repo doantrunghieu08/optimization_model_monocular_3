@@ -73,12 +73,12 @@ def _resolve_tracking_frame_ids(person_data):
 def _clean_pose_output(output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     for old_json in output_dir.glob("pose_data_*.json"):
-        old_json.unlink()
+        old_json.unlink(missing_ok=True)
     for subdir in POSE_OUTPUT_SUBDIRS:
         target_dir = output_dir / subdir
         target_dir.mkdir(parents=True, exist_ok=True)
         for old_json in target_dir.glob("pose_data_*.json"):
-            old_json.unlink()
+            old_json.unlink(missing_ok=True)
 
 
 def run_pose_export(config: dict) -> None:
