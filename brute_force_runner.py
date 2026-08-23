@@ -119,20 +119,44 @@ def parse_detailed_csv(csv_path: str, prefix: str) -> tuple[float, dict[str, flo
                 return float(row[t_idx]), j_dict
     return float('inf'), {}
 
-def extract_local_belief(metadata_dir: Path) -> tuple[float, float]:
-    if not metadata_dir.exists(): return 0.0, 0.0
-    c1_bel, c2_bel = [], []
+def extract_local_belief(metadata_dir: Path) -> tuple[str, str]:
+    if not metadata_dir.exists(): return "[]", "[]"
+    
+    c1_acc = {}
+    c2_acc = {}
+    count = 0
+    
     for meta_file in metadata_dir.glob("fused_data_*.json"):
         try:
             with open(meta_file, 'r', encoding='utf-8') as f:
                 conf = json.load(f).get("joint_confidence", {})
                 c1, c2 = conf.get("camera1", {}), conf.get("camera2", {})
-                if c1: c1_bel.append(sum(c1.values()) / len(c1))
-                if c2: c2_bel.append(sum(c2.values()) / len(c2))
+                
+                # Nếu c1, c2 là list, chuyển thành dict với key là index để dễ xử lý
+                if isinstance(c1, list): c1 = {str(i): v for i, v in enumerate(c1)}
+                if isinstance(c2, list): c2 = {str(i): v for i, v in enumerate(c2)}
+                
+                if c1:
+                    for k, v in c1.items():
+                        c1_acc[k] = c1_acc.get(k, 0.0) + v
+                if c2:
+                    for k, v in c2.items():
+                        c2_acc[k] = c2_acc.get(k, 0.0) + v
+            count += 1
         except Exception: pass
-    b1 = sum(c1_bel) / len(c1_bel) if c1_bel else 0.0
-    b2 = sum(c2_bel) / len(c2_bel) if c2_bel else 0.0
-    return b1, b2
+        
+    if count == 0:
+        return "[]", "[]"
+        
+    # Tính trung bình, làm tròn 2 chữ số và chuyển thành List.
+    # (Sắp xếp các key theo thứ tự số để đảm bảo đúng thứ tự khớp từ 0, 1, 2...)
+    def sort_key(k): return int(k) if str(k).isdigit() else k
+    
+    b1_list = [round(c1_acc[k] / count, 2) for k in sorted(c1_acc.keys(), key=sort_key)]
+    b2_list = [round(c2_acc[k] / count, 2) for k in sorted(c2_acc.keys(), key=sort_key)]
+    
+    # Trả về luôn chuỗi string (vd: "[0.85, 0.91]") để ghi vào Excel
+    return str(b1_list), str(b2_list)
 
 def _get_sheet_data(sheet_name: str) -> tuple[list, list]:
     try:
