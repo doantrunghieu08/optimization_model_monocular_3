@@ -389,8 +389,10 @@ def run_fusion(config: dict) -> None:
             
             # 2. Cộng dồn từng phần tử bằng numpy
             if prev_result is not None:
+                print("Chuẩn bị lỗi đây chăng")
                 context.H1 = np.add(context.H1, cam1)
                 context.H2 = np.add(context.H2, cam2)
+                print("In ra đây thì ở trên lệnh add không lỗi")
                 context.count_of_frames += 1
             else:
                 context.H1 = cam1
