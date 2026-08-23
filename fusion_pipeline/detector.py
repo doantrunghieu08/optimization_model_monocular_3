@@ -12,8 +12,7 @@ from fusion_pipeline.config import ORIENTATION_EPSILON
 from fusion_pipeline.config import RIGID_BONES_RATIO
 from fusion_pipeline.config import OCCLUSION_CHECK_JOINTS
 from fusion_pipeline.config import CONFIDENCE_DELTA_CAP
-import context
-
+from fusion_pipeline import context
 
 _TORSO_MASK = None
 
