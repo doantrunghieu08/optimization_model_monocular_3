@@ -298,6 +298,7 @@ def run_phase3_pipeline(
         "vis1": {k: bool(v) for k, v in vis1.items()},
         "vis2": {k: bool(v) for k, v in vis2.items()},
     }
+    #end of def run_phase3_pipeline
 
 
 def run_fusion(config: dict) -> None:
