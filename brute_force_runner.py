@@ -230,8 +230,10 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
             row = [
                 res.get('set', 'Unknown_Set'), seg_name, rank, res['master'], res.get('supplement', 'N/A'),
                 fmt(res.get('mpjpe', float('inf'))), fmt(res.get('pa_mpjpe', float('inf'))),
-                fmt(res.get('score', float('inf'))), fmt(res.get('local_belief_master', 0.0)),
-                fmt(res.get('local_belief_slave', 0.0)), fmt(res.get('old_mpjpe', float('inf'))),
+                fmt(res.get('score', float('inf'))), 
+                res.get('local_belief_master', "[]"),
+                res.get('local_belief_slave', "[]"),
+                fmt(res.get('old_mpjpe', float('inf'))),
                 fmt(res.get('old_pa_mpjpe', float('inf'))), fmt(res.get('% delta_mpjpe', 0.0)),
                 fmt(res.get('% delta_pa_mpjpe', 0.0)), res.get('os_version', 'N/A'), 
                 res.get('username', 'N/A'), res.get('timestamp', 'N/A')
