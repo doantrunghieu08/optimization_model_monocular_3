@@ -382,13 +382,19 @@ def run_fusion(config: dict) -> None:
                 belief_alpha=belief_cfg["alpha"],
                 belief_beta=belief_cfg["beta"],
             )
-            if prev_result != None:
-                context.H1 = context.H1 + result.get("joint_confidence", []).get("camera1", [])
-                context.H2 = context.H2 + result.get("joint_confidence", []).get("camera2", [])
-                context.count_of_frames = 1 + context.count_of_frames
+            # 1. Lấy dữ liệu an toàn (chú ý đổi [] thành {})
+            joint_conf = result.get("joint_confidence", {})
+            cam1 = np.array(joint_conf.get("camera1", []))
+            cam2 = np.array(joint_conf.get("camera2", []))
+            
+            # 2. Cộng dồn từng phần tử bằng numpy
+            if prev_result is not None:
+                context.H1 = np.add(context.H1, cam1)
+                context.H2 = np.add(context.H2, cam2)
+                context.count_of_frames += 1
             else:
-                context.H1 = result.get("joint_confidence", []).get("camera1", [])
-                context.H2 = result.get("joint_confidence", []).get("camera2", [])
+                context.H1 = cam1
+                context.H2 = cam2
                 context.count_of_frames = 1
             occluded_cam1 = sorted(name for name, visible in result.get("vis1", {}).items() if not visible)
             occluded_cam2 = sorted(name for name, visible in result.get("vis2", {}).items() if not visible)
