@@ -26,6 +26,30 @@ from fusion_pipeline.optimization import optimize_f_points
 
 LEARNABLE_VENDOR_ROOT = Path(__file__).resolve().parent.parent / "_learnable_backend"
 
+#From ThanhNT: 23-08-2026
+#def calculate_sequence_average_belief
+def calculate_sequence_average_belief(sequence_results: list) -> tuple[float, float]:
+    """
+    Tính trung bình local belief của tất cả các khớp trong 1 frame, 
+    sau đó trung bình cộng cho tất cả các frames.
+    """
+    c1_frame_beliefs, c2_frame_beliefs = [], []
+    
+    for frame_data in sequence_results:
+        conf = frame_data.get("joint_confidence", {})
+        c1, c2 = conf.get("camera1", {}), conf.get("camera2", {})
+        
+        # Tính trung bình các khớp (poses) trong nội bộ 1 frame
+        if c1: c1_frame_beliefs.append(sum(c1.values()) / len(c1))
+        if c2: c2_frame_beliefs.append(sum(c2.values()) / len(c2))
+        
+    # Tính trung bình cộng của tất cả các frames
+    avg_c1 = sum(c1_frame_beliefs) / len(c1_frame_beliefs) if c1_frame_beliefs else 0.0
+    avg_c2 = sum(c2_frame_beliefs) / len(c2_frame_beliefs) if c2_frame_beliefs else 0.0
+    
+    return avg_c1, avg_c2
+#end of calculate_sequence_average_belief From ThanhNT: 23-08-2026
+
 
 def _frame_index(path: Path) -> int:
     match = re.search(r"\d+", path.name)
