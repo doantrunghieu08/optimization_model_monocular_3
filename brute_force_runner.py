@@ -188,14 +188,14 @@ def _parse_history_row(row: list, idx: dict) -> tuple:
         return float(v) if v not in ("N/A", "") else float('inf')
     
     key = (row[idx['Segment']], row[idx['Cam Master']], row[idx['Cam Slave']])
-    # Tính trung bình và làm tròn trước khi đưa vào res
-    avg_h1 = [round(val / context.count_of_frames, 2) for val in context.H1]
-    avg_h2 = [round(val / context.count_of_frames, 2) for val in context.H2]
     
     res = {
         "mpjpe": sf('MPJPE (mm)'), "pa_mpjpe": sf('PA-MPJPE (mm)'), "score": float(row[s_idx]),
-        "local_belief_master": str(avg_h1) if avg_h1 else 0.0,
-        "local_belief_slave": str(avg_h2) if avg_h2 else 0.0,
+        
+        # Đọc trực tiếp chuỗi danh sách từ Google Sheets (nếu có), không tính toán nữa
+        "local_belief_master": get_val('local_belief Master', "[]"),
+        "local_belief_slave": get_val('local_belief Slave', "[]"),
+        
         "old_mpjpe": sf('Old MPJPE'), "old_pa_mpjpe": sf('Old PA-MPJPE'),
         "% delta_mpjpe": sf('% Delta_MPJPE') if sf('% Delta_MPJPE') != float('inf') else 0.0,
         "% delta_pa_mpjpe": sf('% Delta_PA-MPJPE') if sf('% Delta_PA-MPJPE') != float('inf') else 0.0,
