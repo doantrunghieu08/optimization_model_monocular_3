@@ -23,6 +23,7 @@ from fusion_pipeline.detector import make_raw_judgement_fallback
 from fusion_pipeline.correction import apply_rotation_mismatch_corrections
 from fusion_pipeline.correction import apply_confidence_corrections
 from fusion_pipeline.optimization import optimize_f_points
+import context
 
 LEARNABLE_VENDOR_ROOT = Path(__file__).resolve().parent.parent / "_learnable_backend"
 
@@ -381,6 +382,14 @@ def run_fusion(config: dict) -> None:
                 belief_alpha=belief_cfg["alpha"],
                 belief_beta=belief_cfg["beta"],
             )
+            if prev_result != None:
+                context.H1 = context.H1 + result.get("joint_confidence", []).get("camera1", [])
+                context.H2 = context.H2 + result.get("joint_confidence", []).get("camera2", [])
+                context.count_of_frames = 1 + context.count_of_frames
+            else:
+                context.H1 = result.get("joint_confidence", []).get("camera1", [])
+                context.H2 = result.get("joint_confidence", []).get("camera2", [])
+                context.count_of_frames = 1
             occluded_cam1 = sorted(name for name, visible in result.get("vis1", {}).items() if not visible)
             occluded_cam2 = sorted(name for name, visible in result.get("vis2", {}).items() if not visible)
             occlusion_parts = []
