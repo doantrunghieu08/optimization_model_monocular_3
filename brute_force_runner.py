@@ -244,9 +244,22 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
 
 def generate_spreadsheet_report(all_results, sheet_name, worksheet_title=None, silent=False):
     gc = get_gspread_client()
-    try: sh = gc.open(sheet_name)
-    except gspread.exceptions.SpreadsheetNotFound: sh = gc.create(sheet_name)
-    worksheet = sh.sheet1
+    try: 
+        sh = gc.open(sheet_name)
+    except gspread.exceptions.SpreadsheetNotFound: 
+        sh = gc.create(sheet_name)
+    
+    if worksheet_title:
+        try:
+            # Thử mở sheet có tên là worksheet_title (ví dụ: Run_2026-08-23_10-00-00)
+            worksheet = sh.worksheet(worksheet_title)
+        except gspread.exceptions.WorksheetNotFound:
+            # Nếu chưa tồn tại, tạo worksheet mới (mặc định cho 1000 hàng, 50 cột)
+            worksheet = sh.add_worksheet(title=worksheet_title, rows="1000", cols="50")
+    else:
+        # Fallback về sheet1 nếu không truyền worksheet_title
+        worksheet = sh.sheet1
+    # ----------------------------------------
 
     all_joint_keys = set()
     for seg_results in all_results.values():
@@ -255,9 +268,13 @@ def generate_spreadsheet_report(all_results, sheet_name, worksheet_title=None, s
     
     rows_to_insert = _build_report_rows(all_results, sorted(list(all_joint_keys)))
 
-    worksheet.clear()
-    try: worksheet.update(values=rows_to_insert, range_name="A1")
-    except TypeError: worksheet.update(rows_to_insert)
+    worksheet.clear() # Xóa dữ liệu cũ (của sheet hiện tại đang thao tác)
+    try: 
+        worksheet.update(values=rows_to_insert, range_name="A1")
+    except TypeError: 
+        worksheet.update(rows_to_insert)
+
+    decorate(worksheet, len(rows_to_insert), len(rows_to_insert[0]))
 
     if not silent:
         print(f"\nĐã xuất báo cáo ra Google Spreadsheet thành công!\n🔗 Xem file tại: {sh.url}")
