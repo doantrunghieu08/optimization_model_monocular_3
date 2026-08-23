@@ -161,10 +161,15 @@ def extract_local_belief(metadata_dir: Path) -> tuple[str, str]:
 def _get_sheet_data(sheet_name: str) -> tuple[list, list]:
     try:
         gc = get_gspread_client()
-        data = gc.open(sheet_name).sheet1.get_all_values()
+        sh = gc.open(sheet_name)
+        # Lấy worksheet cuối cùng trong danh sách (thường là cái mới tạo nhất)
+        latest_worksheet = sh.worksheets()[-1] 
+        data = latest_worksheet.get_all_values()
+        
         if not data or len(data) < 2: return [], []
         return data[0], data[1:]
-    except Exception: return [], []
+    except Exception: 
+        return [], []
 
 def _get_header_indices(header: list) -> dict:
     idx = {}
