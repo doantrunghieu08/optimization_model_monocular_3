@@ -387,17 +387,27 @@ def run_fusion(config: dict) -> None:
             cam1 = np.array(joint_conf.get("camera1", []))
             cam2 = np.array(joint_conf.get("camera2", []))
             
-            # 2. Cộng dồn từng phần tử bằng numpy
+            # 2. Cộng dồn từng phần tử
             if prev_result is not None:
-                print("Chuẩn bị lỗi đây chăng")
-                context.H1 = np.add(context.H1, cam1)
-                context.H2 = np.add(context.H2, cam2)
-                print("In ra đây thì ở trên lệnh add không lỗi")
+                # Lặp qua từng key trong dict để dùng np.add cộng các mảng giá trị (tọa độ 3D) bên trong
+                print("Chuẩn bị cộng")
+                if isinstance(context.H1, dict) and isinstance(cam1, dict):
+                    context.H1 = {k: np.add(context.H1[k], cam1[k]) for k in context.H1 if k in cam1}
+                    context.H2 = {k: np.add(context.H2[k], cam2[k]) for k in context.H2 if k in cam2}
+                else:
+                    # Fallback an toàn nếu lỡ dữ liệu là mảng numpy thực sự
+                    context.H1 = np.add(context.H1, cam1)
+                    context.H2 = np.add(context.H2, cam2)
+                print("Thực hiện cộng")
+                    
                 context.count_of_frames += 1
             else:
-                context.H1 = cam1
-                context.H2 = cam2
+                import copy
+                # Dùng deepcopy để đảm bảo không bị tham chiếu ngược dữ liệu làm hỏng các frame sau
+                context.H1 = copy.deepcopy(cam1)
+                context.H2 = copy.deepcopy(cam2)
                 context.count_of_frames = 1
+            
             occluded_cam1 = sorted(name for name, visible in result.get("vis1", {}).items() if not visible)
             occluded_cam2 = sorted(name for name, visible in result.get("vis2", {}).items() if not visible)
             occlusion_parts = []
