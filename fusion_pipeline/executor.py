@@ -390,9 +390,10 @@ def run_fusion(config: dict) -> None:
             print("Chuẩn bị cộng")
             # 2. Cộng dồn từng phần tử
             if prev_result is not None:
+                #pdb.set_trace()
                 # Duyệt qua từng key ('head', 'neck'...) và cộng giá trị tương ứng
-                context.H1 = {k: context.H1.get(k, 0) + cam1.get(k, 0) for k in cam1}
-                context.H2 = {k: context.H2.get(k, 0) + cam2.get(k, 0) for k in cam2}
+                context.H1 = {k: context.H1.item().get(k, 0) + cam1.item().get(k, 0) for k in cam1.item()}
+                context.H2 = {k: context.H2.item().get(k, 0) + cam2.item().get(k, 0) for k in cam2.item()}
                 context.count_of_frames += 1
             else:
                 # Dùng .copy() để tránh lỗi tham chiếu bộ nhớ trong Python
