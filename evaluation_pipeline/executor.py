@@ -200,6 +200,37 @@ def _warn_frame_mismatch(module_name: str, truth_frames: set[int], module_frames
     if extra_module:
         print(f"[Evaluation]   Output-only frames: {_format_frame_sample(extra_module)}")
 
+def get_spreadsheet_filename(default_name="evaluation_summary") -> str:
+    """Cho người dùng 10s để nhập tên file. Nhập 'now' sẽ gắn thêm YYMMDD."""
+    user_input = [None]
+    
+    def wait_for_input():
+        try:
+            user_input[0] = input(f"Nhập tên file spreadsheet (mặc định '{default_name}.csv', gõ 'now' để thêm ngày tháng). Bạn có 10s: ")
+        except EOFError:
+            pass
+            
+    print("\n--- CHỜ NHẬP TÊN FILE ---")
+    t = threading.Thread(target=wait_for_input)
+    t.daemon = True
+    t.start()
+    t.join(10.0) # Đợi tối đa 10 giây
+    
+    if t.is_alive():
+        print(f"\n[Hết 10s] Tự động sử dụng mặc định.")
+        final_input = ""
+    else:
+        final_input = (user_input[0] or "").strip()
+        
+    if final_input.lower() == "now":
+        date_suffix = datetime.now().strftime("%y%m%d")
+        return f"{default_name}_{date_suffix}.csv"
+    elif final_input:
+        if not final_input.endswith(".csv"):
+            final_input += ".csv"
+        return final_input
+    
+    return f"{default_name}.csv"
 
 def _resolve_truth_frame_payload(truth_data: dict, testcase_name: Optional[str], truth_path: Path) -> dict:
     if testcase_name is not None:
