@@ -45,9 +45,9 @@ def calculate_sequence_average_belief(sequence_results: list) -> tuple[float, fl
         if c1: c1_frame_beliefs.append(sum(c1.values()) / len(c1))
         if c2: c2_frame_beliefs.append(sum(c2.values()) / len(c2))
         
-    # Tính trung bình cộng của tất cả các frames
-    avg_c1 = sum(c1_frame_beliefs) / len(c1_frame_beliefs) if c1_frame_beliefs else 0.0
-    avg_c2 = sum(c2_frame_beliefs) / len(c2_frame_beliefs) if c2_frame_beliefs else 0.0
+    # Lấy ra danh sách các giá trị đã tính trung bình (theo đúng thứ tự gốc)
+    avg_h1 = [round(context.H1[k] / context.count_of_frames, 2) for k in context.H1]
+    avg_h2 = [round(context.H2[k] / context.count_of_frames, 2) for k in context.H2]
     
     return avg_c1, avg_c2
 #end of calculate_sequence_average_belief From ThanhNT: 23-08-2026
