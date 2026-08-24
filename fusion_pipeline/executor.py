@@ -390,24 +390,14 @@ def run_fusion(config: dict) -> None:
             
             # 2. Cộng dồn từng phần tử
             if prev_result is not None:
-                # Lặp qua từng key trong dict để dùng np.add cộng các mảng giá trị (tọa độ 3D) bên trong
-                print("Chuẩn bị cộng")
-                pdb.set_trace()
-                if isinstance(context.H1, dict) and isinstance(cam1, dict):
-                    context.H1 = {k: np.add(context.H1[k], cam1[k]) for k in context.H1 if k in cam1}
-                    context.H2 = {k: np.add(context.H2[k], cam2[k]) for k in context.H2 if k in cam2}
-                else:
-                    # Fallback an toàn nếu lỡ dữ liệu là mảng numpy thực sự
-                    context.H1 = np.add(context.H1, cam1)
-                    context.H2 = np.add(context.H2, cam2)
-                print("Thực hiện cộng")
-                    
+                # Duyệt qua từng key ('head', 'neck'...) và cộng giá trị tương ứng
+                context.H1 = {k: context.H1.get(k, 0) + cam1.get(k, 0) for k in cam1}
+                context.H2 = {k: context.H2.get(k, 0) + cam2.get(k, 0) for k in cam2}
                 context.count_of_frames += 1
             else:
-                import copy
-                # Dùng deepcopy để đảm bảo không bị tham chiếu ngược dữ liệu làm hỏng các frame sau
-                context.H1 = copy.deepcopy(cam1)
-                context.H2 = copy.deepcopy(cam2)
+                # Dùng .copy() để tránh lỗi tham chiếu bộ nhớ trong Python
+                context.H1 = cam1.copy()
+                context.H2 = cam2.copy()
                 context.count_of_frames = 1
             
             occluded_cam1 = sorted(name for name, visible in result.get("vis1", {}).items() if not visible)
