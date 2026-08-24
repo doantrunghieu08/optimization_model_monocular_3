@@ -24,6 +24,7 @@ from fusion_pipeline.correction import apply_rotation_mismatch_corrections
 from fusion_pipeline.correction import apply_confidence_corrections
 from fusion_pipeline.optimization import optimize_f_points
 from fusion_pipeline import context
+import pdb
 
 LEARNABLE_VENDOR_ROOT = Path(__file__).resolve().parent.parent / "_learnable_backend"
 
@@ -391,6 +392,7 @@ def run_fusion(config: dict) -> None:
             if prev_result is not None:
                 # Lặp qua từng key trong dict để dùng np.add cộng các mảng giá trị (tọa độ 3D) bên trong
                 print("Chuẩn bị cộng")
+                pdb.set_trace()
                 if isinstance(context.H1, dict) and isinstance(cam1, dict):
                     context.H1 = {k: np.add(context.H1[k], cam1[k]) for k in context.H1 if k in cam1}
                     context.H2 = {k: np.add(context.H2[k], cam2[k]) for k in context.H2 if k in cam2}
