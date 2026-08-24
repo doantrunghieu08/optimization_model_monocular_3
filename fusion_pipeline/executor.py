@@ -348,7 +348,8 @@ def run_fusion(config: dict) -> None:
     opt_cfg = fusion_cfg["optimization"]
 
     prev_result = None
-    for path in file_paths:
+    # --- THÊM TQDM Ở ĐÂY ---
+    for path in tqdm(file_paths, desc="[Fusion] Processing", unit="frame", dynamic_ncols=True):
         frame_idx = _frame_index(path)
         out_name = f"fused_data_{frame_idx}.json"
         data = _load_pose_frame(path, metadata_dir=metadata_dir)
@@ -358,7 +359,8 @@ def run_fusion(config: dict) -> None:
             if 0 <= wham_frame < n_frames_1 and wham_frame < n_frames_2:
                 verts_input = {"camera1": verts_cam1[wham_frame], "camera2": verts_cam2[wham_frame]}
             else:
-                print(f"[Fusion] Frame {frame_idx}: WHAM frame out of range. Occlusion skipped.")
+                # Dùng tqdm.write thay cho print trong vòng lặp
+                tqdm.write(f"[Fusion] Frame {frame_idx}: WHAM frame out of range. Occlusion skipped.")
                 verts_input = None
         else:
             verts_input = None
@@ -384,11 +386,11 @@ def run_fusion(config: dict) -> None:
                 belief_alpha=belief_cfg["alpha"],
                 belief_beta=belief_cfg["beta"],
             )
-            # 1. Lấy dữ liệu an toàn (chú ý đổi [] thành {})
+            # 1. Lấy dữ liệu an toàn
             joint_conf = result.get("joint_confidence", {})
             cam1 = np.array(joint_conf.get("camera1", []))
             cam2 = np.array(joint_conf.get("camera2", []))
-            #print("Chuẩn bị cộng")
+            
             # Hàm hỗ trợ ép dữ liệu về dict thuần an toàn
             def to_dict(obj):
                 if hasattr(obj, 'item'): # Nếu là NumPy 0-d array
@@ -409,7 +411,7 @@ def run_fusion(config: dict) -> None:
                 context.H1 = cam1_dict.copy()
                 context.H2 = cam2_dict.copy()
                 context.count_of_frames = 1
-            #print("Kết thúc cộng")
+                
             occluded_cam1 = sorted(name for name, visible in result.get("vis1", {}).items() if not visible)
             occluded_cam2 = sorted(name for name, visible in result.get("vis2", {}).items() if not visible)
             occlusion_parts = []
@@ -418,10 +420,12 @@ def run_fusion(config: dict) -> None:
             if occluded_cam2:
                 occlusion_parts.append(f"cam2: {', '.join(occluded_cam2)}")
             if occlusion_parts:
-                print(f"[Fusion] Frame {frame_idx}: Occlusion: {' | '.join(occlusion_parts)}")
+                # Dùng tqdm.write thay cho print
+                tqdm.write(f"[Fusion] Frame {frame_idx}: Occlusion: {' | '.join(occlusion_parts)}")
             prev_result = result
         except Exception as e:
-            print(f"[Fusion] Frame {frame_idx}: FAILED ({e}) -> fallback")
+            # Dùng tqdm.write thay cho print
+            tqdm.write(f"[Fusion] Frame {frame_idx}: FAILED ({e}) -> fallback")
             result = copy.deepcopy(prev_result) if prev_result is not None else make_raw_judgement_fallback(data, frame_idx, e)
 
         fused_keypoints = {
@@ -432,7 +436,7 @@ def run_fusion(config: dict) -> None:
         write_json(output_dir / "keypoints3d" / out_name, fused_keypoints)
         write_json(output_dir / "metadata" / out_name, fused_metadata)
 
-    print(f"[Fusion] Done. Output: {output_dir}")
+    print(f"\n[Fusion] Done. Output: {output_dir}")
 
 """## 9. Chuan bi Learnable backend
 
