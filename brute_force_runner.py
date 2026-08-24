@@ -8,6 +8,10 @@ import itertools
 import json
 from pathlib import Path
 from datetime import datetime
+import time
+import pyautogui
+import threading
+import queue
 
 VIDEO_FOLDER = "imageSequence"
 
@@ -343,12 +347,52 @@ def _evaluate_camera_pair(camA, camB, base_cfg, gt_dir, workspace) -> dict:
         return {"set": current_set, "master": camA["id"], "supplement": camB["id"], 
                 "os_version": os_v, "username": usr, "timestamp": ts}
 
+def get_spreadsheet_name_input(default_name: str = "Brute_Force_Report_Pipeline v260823", timeout: int = 10) -> str:
+    """Hỏi người dùng tên Google Spreadsheet với timeout 10 giây."""
+    print(f"\n[?] Nhập tên file Google Spreadsheet bạn muốn xuất (Tự động dùng tên mặc định sau {timeout}s):")
+    print(f"    - Nhấn ENTER hoặc không nhập gì: Sử dụng tên mặc định ('{default_name}')")
+    print(f"    - Nhập 'now' (hoặc NOW, nOw,...): Đặt tên theo dạng 'Brute_Force_Report_Pipeline vYYDDMM'")
+    print(f"    - Nhập tên khác: Sử dụng tên tùy chỉnh của bạn.")
+    
+    q = queue.Queue()
+    
+    def ask_input():
+        try:
+            val = input(">> Tên file của bạn: ").strip()
+            q.put(val)
+        except Exception:
+            q.put(None)
+
+    t = threading.Thread(target=ask_input, daemon=True)
+    t.start()
+
+    try:
+        user_input = q.get(timeout=timeout)
+    except queue.Empty:
+        user_input = None
+
+    if user_input is None or user_input == "":
+        print(f"\n[!] Quá {timeout} giây không nhận được nhập liệu. Tự động sử dụng tên mặc định: '{default_name}'")
+        return default_name
+
+    # Kiểm tra nếu chuỗi nhập vào dạng chữ thường bằng "now" (Ví dụ: NOW, nOw, noW, now...)
+    if user_input.lower() == "now":
+        yyddmm = datetime.now().strftime("%y%d%m") # Format YYDDMM (Ví dụ 262408 cho Năm 26, Ngày 24, Tháng 08)
+        generated_name = f"Brute_Force_Report_Pipeline v{yyddmm}"
+        print(f"\n[+] Nhận từ khóa '{user_input}'. Tên file tự động khởi tạo: '{generated_name}'")
+        return generated_name
+
+    print(f"\n[+] Đã ghi nhận tên file tùy chỉnh: '{user_input}'")
+    return user_input
+
 def run_brute_force():
     WS_DIR = Path(__file__).parent.resolve()
     with open(WS_DIR / "configs/brute_force.yml", "r", encoding="utf-8") as f: brute_cfg = yaml.safe_load(f)
     with open(WS_DIR / "configs/pipeline.yml", "r", encoding="utf-8") as f: base_cfg = yaml.safe_load(f)
 
-    sh_name = "Brute_Force_Report_Pipeline v260823"
+    default_sh_name = "Brute_Force_Report_Pipeline v260823"
+    sh_name = get_spreadsheet_name_input(default_name=default_sh_name, timeout=10)
+    
     ws_title = f"Run_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
     existing = load_existing_spreadsheet_results(sh_name)
     all_res = {}
