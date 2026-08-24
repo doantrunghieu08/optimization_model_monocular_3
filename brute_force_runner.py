@@ -371,10 +371,10 @@ def run_brute_force():
             results.append(res)
             
             temp_res = dict(all_res)
-            temp_res[seg_name] = sorted(results, key=lambda x: x.get("score", float('inf')))
+            temp_res[seg_name] = sorted(results, key=lambda x: x.get("mpjpe", float('inf')) + x.get("pa-mpjpe", float('inf')))
             generate_spreadsheet_report(temp_res, sh_name, ws_title, silent=True)
 
-        all_res[seg_name] = sorted(results, key=lambda x: x.get("score", float('inf')))
+        all_res[seg_name] = sorted(results, key=lambda x: x.get("mpjpe", float('inf')) + x.get("pa-mpjpe", float('inf')))
     generate_spreadsheet_report(all_res, sh_name, ws_title, silent=False)
 
 if __name__ == "__main__":
