@@ -328,7 +328,7 @@ def _evaluate_camera_pair(camA, camB, base_cfg, gt_dir, workspace) -> dict:
     os_v, usr, ts = get_system_metadata()
     if not (workspace / camA["pkl"]).exists() or not (workspace / camB["pkl"]).exists():
         print("Bỏ qua cặp này do thiếu file pkl đầu vào.")
-        return {"set": current_set, "master": camA["id"], "supplement": camB["id"], "score": float('inf'),
+        return {"set": current_set, "master": camA["id"], "supplement": camB["id"], 
                 "os_version": os_v, "username": usr, "timestamp": ts}
     try:
         config = _setup_pipeline_config(base_cfg, gt_dir, camA, camB, workspace)
@@ -340,7 +340,7 @@ def _evaluate_camera_pair(camA, camB, base_cfg, gt_dir, workspace) -> dict:
         import traceback
         print(f"Lỗi khi chạy cặp {camA['id']}-{camB['id']}: {e}")
         traceback.print_exc()
-        return {"set": current_set, "master": camA["id"], "supplement": camB["id"], "score": float('inf'),
+        return {"set": current_set, "master": camA["id"], "supplement": camB["id"], 
                 "os_version": os_v, "username": usr, "timestamp": ts}
 
 def run_brute_force():
