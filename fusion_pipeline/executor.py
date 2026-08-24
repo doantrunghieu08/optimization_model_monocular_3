@@ -387,7 +387,7 @@ def run_fusion(config: dict) -> None:
             joint_conf = result.get("joint_confidence", {})
             cam1 = np.array(joint_conf.get("camera1", []))
             cam2 = np.array(joint_conf.get("camera2", []))
-            
+            print("Chuẩn bị cộng")
             # 2. Cộng dồn từng phần tử
             if prev_result is not None:
                 # Duyệt qua từng key ('head', 'neck'...) và cộng giá trị tương ứng
@@ -399,7 +399,7 @@ def run_fusion(config: dict) -> None:
                 context.H1 = cam1.copy()
                 context.H2 = cam2.copy()
                 context.count_of_frames = 1
-            
+            print("Kết thúc cộng")
             occluded_cam1 = sorted(name for name, visible in result.get("vis1", {}).items() if not visible)
             occluded_cam2 = sorted(name for name, visible in result.get("vis2", {}).items() if not visible)
             occlusion_parts = []
