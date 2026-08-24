@@ -387,20 +387,28 @@ def run_fusion(config: dict) -> None:
             joint_conf = result.get("joint_confidence", {})
             cam1 = np.array(joint_conf.get("camera1", []))
             cam2 = np.array(joint_conf.get("camera2", []))
-            print("Chuẩn bị cộng")
-            # 2. Cộng dồn từng phần tử
+            #print("Chuẩn bị cộng")
+            # Hàm hỗ trợ ép dữ liệu về dict thuần an toàn
+            def to_dict(obj):
+                if hasattr(obj, 'item'): # Nếu là NumPy 0-d array
+                    return obj.item()
+                return obj if isinstance(obj, dict) else {}
+
+            # Chuyển đổi an toàn cho cả cam1, cam2 và context hiện tại
+            cam1_dict = to_dict(cam1)
+            cam2_dict = to_dict(cam2)
+            h1_dict = to_dict(context.H1)
+            h2_dict = to_dict(context.H2)
+
             if prev_result is not None:
-                #pdb.set_trace()
-                # Duyệt qua từng key ('head', 'neck'...) và cộng giá trị tương ứng
-                context.H1 = {k: context.H1.item().get(k, 0) + cam1.item().get(k, 0) for k in cam1.item()}
-                context.H2 = {k: context.H2.item().get(k, 0) + cam2.item().get(k, 0) for k in cam2.item()}
+                context.H1 = {k: h1_dict.get(k, 0) + cam1_dict.get(k, 0) for k in cam1_dict}
+                context.H2 = {k: h2_dict.get(k, 0) + cam2_dict.get(k, 0) for k in cam2_dict}
                 context.count_of_frames += 1
             else:
-                # Dùng .copy() để tránh lỗi tham chiếu bộ nhớ trong Python
-                context.H1 = cam1.copy()
-                context.H2 = cam2.copy()
+                context.H1 = cam1_dict.copy()
+                context.H2 = cam2_dict.copy()
                 context.count_of_frames = 1
-            print("Kết thúc cộng")
+            #print("Kết thúc cộng")
             occluded_cam1 = sorted(name for name, visible in result.get("vis1", {}).items() if not visible)
             occluded_cam2 = sorted(name for name, visible in result.get("vis2", {}).items() if not visible)
             occlusion_parts = []
