@@ -337,7 +337,15 @@ def _evaluate_camera_pair(camA, camB, base_cfg, gt_dir, workspace) -> dict:
         config = _setup_pipeline_config(base_cfg, gt_dir, camA, camB, workspace)
         run_pipeline(config, stage_override=None)
         res = _parse_pipeline_results(config, current_set, camA["id"], camB["id"])
-        print(f"Kết quả {camA['id']}-{camB['id']}: MPJPE={res['mpjpe']:.2f}, PA-MPJPE={res['pa_mpjpe']:.2f}")
+
+        # Lấy giá trị delta (dùng .get để tránh lỗi nếu key không tồn tại trong một số trường hợp)
+        d_mpjpe = res.get('% delta_mpjpe', 0.0)
+        d_pa_mpjpe = res.get('% delta_pa_mpjpe', 0.0)
+        
+        # In ra màn hình với đầy đủ các thông số
+        print(f"Kết quả {camA['id']}-{camB['id']}: "
+              f"MPJPE={res['mpjpe']:.2f} (Δ {d_mpjpe:+.2f}%), "
+              f"PA-MPJPE={res['pa_mpjpe']:.2f} (Δ {d_pa_mpjpe:+.2f}%)")
         return res
     except Exception as e:
         import traceback
