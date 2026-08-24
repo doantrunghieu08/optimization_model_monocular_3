@@ -185,9 +185,7 @@ def _get_header_indices(header: list) -> dict:
     return idx
 
 def _parse_history_row(row: list, idx: dict) -> tuple:
-    s_idx = idx['Avg Score']
-    if s_idx >= len(row) or row[s_idx] in ("N/A", ""): return None, None
-
+    
     def get_val(col, default="N/A"):
         return row[idx[col]] if idx.get(col, -1) != -1 and idx[col] < len(row) else default
     
