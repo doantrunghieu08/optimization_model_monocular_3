@@ -317,7 +317,7 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
 
     return {
         "set": current_set, "master": camA_id, "supplement": camB_id, "mpjpe": mpjpe, 
-        "pa_mpjpe": pa_mpjpe, "score": (mpjpe + pa_mpjpe) / 2.0, "local_belief_master": b1,
+        "pa_mpjpe": pa_mpjpe, "local_belief_master": b1,
         "local_belief_slave": b2, "old_mpjpe": old_m, "old_pa_mpjpe": old_pa,
         "% delta_mpjpe": pd_m, "% delta_pa_mpjpe": pd_pa, "joints": joint_metrics,
         "os_version": os_v, "username": usr, "timestamp": ts
