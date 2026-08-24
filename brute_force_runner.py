@@ -224,7 +224,7 @@ def load_existing_spreadsheet_results(sheet_name: str) -> dict:
 
 def _build_report_rows(all_results: dict, joint_keys: list) -> list:
     header = ['Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 'MPJPE (mm)', 'PA-MPJPE (mm)', 
-              'Avg Score', 'local_belief Master', 'local_belief Slave', 'Old MPJPE', 
+              'local_belief Master', 'local_belief Slave', 'Old MPJPE', 
               'Old PA-MPJPE', '% Delta_MPJPE', '% Delta_PA-MPJPE', 
               'OS Version', 'Username', 'Timestamp'] + joint_keys
     rows = [header]
@@ -235,7 +235,6 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
             row = [
                 res.get('set', 'Unknown_Set'), seg_name, rank, res['master'], res.get('supplement', 'N/A'),
                 fmt(res.get('mpjpe', float('inf'))), fmt(res.get('pa_mpjpe', float('inf'))),
-                fmt(res.get('score', float('inf'))), 
                 res.get('local_belief_master', "[]"),
                 res.get('local_belief_slave', "[]"),
                 fmt(res.get('old_mpjpe', float('inf'))),
