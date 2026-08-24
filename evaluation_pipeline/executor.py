@@ -232,6 +232,19 @@ def get_spreadsheet_filename(default_name="evaluation_summary") -> str:
     
     return f"{default_name}.csv"
 
+def extract_set_and_segment(video_path: str) -> tuple[str, str]:
+    """Trích xuất Set (thư mục cha) và Segment (sau chữ seg) từ đường dẫn video."""
+    if not video_path:
+        return "UnknownSet", "UnknownSeg"
+    p = Path(video_path)
+    video_set = p.parent.name
+    
+    # Tìm chuỗi đứng sau 'seg' trong tên file, VD: video_seg_01 -> 01, nhảy qua dấu _ hoặc -
+    match = re.search(r"seg[_-]?([A-Za-z0-9]+)", p.stem, re.IGNORECASE)
+    segment = match.group(1) if match else p.stem
+    
+    return video_set, segment
+
 def _resolve_truth_frame_payload(truth_data: dict, testcase_name: Optional[str], truth_path: Path) -> dict:
     if testcase_name is not None:
         tc_data = truth_data.get(testcase_name)
