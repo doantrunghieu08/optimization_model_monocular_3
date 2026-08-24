@@ -4,6 +4,7 @@ import copy
 import joblib
 import numpy as np
 import sys
+from tqdm.auto import tqdm
 from json_io import read_json
 from config_loader import resolve_inputs
 from fusion_pipeline.detector import compute_visibility_from_mesh_vertices
