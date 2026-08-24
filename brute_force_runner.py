@@ -173,7 +173,7 @@ def _get_sheet_data(sheet_name: str) -> tuple[list, list]:
 
 def _get_header_indices(header: list) -> dict:
     idx = {}
-    keys = ['Segment', 'Cam Master', 'Cam Slave', 'MPJPE (mm)', 'PA-MPJPE (mm)', 'Avg Score', 
+    keys = ['Segment', 'Cam Master', 'Cam Slave', 'MPJPE (mm)', 'PA-MPJPE (mm)',  
             'local_belief Master', 'local_belief Slave', 'Old MPJPE', 'Old PA-MPJPE', 
             '% Delta_MPJPE', '% Delta_PA-MPJPE', 'OS Version', 'Username', 'Timestamp']
     for k in keys:
