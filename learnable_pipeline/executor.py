@@ -11,6 +11,7 @@ import joblib
 import numpy as np
 import torch
 import yaml
+import pdb
 from config_loader import resolve_inputs
 from keypoints_map import load_keypoints3d_map
 from learnable_pipeline.post_opt import post_optimize_smpl_sequence
@@ -258,6 +259,10 @@ def load_netbody25(learnable_cfg: dict, device: torch.device):
         if explicit_regressor:
             explicit_regressor_path = Path(explicit_regressor)
             regressor_path.parent.mkdir(parents=True, exist_ok=True)
+            #pdb.set_trace()
+            if 'google.colab' in sys.modules:
+                explicit_regressor_path = Path('/content/optimization_model_monocular_3/') / explicit_regressor_path
+                regressor_path = Path('/content/optimization_model_monocular_3/') / regressor_path
             shutil.copy2(explicit_regressor_path, regressor_path)
 
     smpl_dir = smpl_family_dir / "smpl"
