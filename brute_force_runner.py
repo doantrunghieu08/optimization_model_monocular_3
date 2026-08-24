@@ -1,4 +1,4 @@
-#version 260823
+#version 260824
 import os
 import platform
 import getpass
@@ -389,7 +389,7 @@ def run_brute_force():
     with open(WS_DIR / "configs/brute_force.yml", "r", encoding="utf-8") as f: brute_cfg = yaml.safe_load(f)
     with open(WS_DIR / "configs/pipeline.yml", "r", encoding="utf-8") as f: base_cfg = yaml.safe_load(f)
 
-    default_sh_name = "Brute_Force_Report_Pipeline v260823"
+    default_sh_name = "Brute_Force_Report_Pipeline v260824-14h35p"
     sh_name = get_spreadsheet_name_input(default_name=default_sh_name, timeout=10)
     
     ws_title = f"Run_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
@@ -414,10 +414,10 @@ def run_brute_force():
             results.append(res)
             
             temp_res = dict(all_res)
-            temp_res[seg_name] = sorted(results, key=lambda x: x.get("mpjpe", float('inf')) + x.get("pa_mpjpe", float('inf')))
+            temp_res[seg_name] = sorted(results, key=lambda x: x.get("% delta_mpjpe", float('inf')) + x.get("% delta_pa_mpjpe", float('inf')))
             generate_spreadsheet_report(temp_res, sh_name, ws_title, silent=True)
 
-        all_res[seg_name] = sorted(results, key=lambda x: x.get("mpjpe", float('inf')) + x.get("pa_mpjpe", float('inf')))
+        all_res[seg_name] = sorted(results, key=lambda x: x.get("% delta_mpjpe", float('inf')) + x.get("% delta_pa_mpjpe", float('inf')))
     generate_spreadsheet_report(all_res, sh_name, ws_title, silent=False)
 
 if __name__ == "__main__":
