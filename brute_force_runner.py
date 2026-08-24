@@ -195,7 +195,7 @@ def _parse_history_row(row: list, idx: dict) -> tuple:
     key = (row[idx['Segment']], row[idx['Cam Master']], row[idx['Cam Slave']])
     
     res = {
-        "mpjpe": sf('MPJPE (mm)'), "pa_mpjpe": sf('PA-MPJPE (mm)'), "score": float(row[s_idx]),
+        "mpjpe": sf('MPJPE (mm)'), "pa_mpjpe": sf('PA-MPJPE (mm)'), 
         
         # Đọc trực tiếp chuỗi danh sách từ Google Sheets (nếu có), không tính toán nữa
         "local_belief_master": get_val('local_belief Master', "[]"),
