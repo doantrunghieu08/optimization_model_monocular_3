@@ -9,7 +9,6 @@ import json
 from pathlib import Path
 from datetime import datetime
 import time
-import pyautogui
 import threading
 import queue
 
