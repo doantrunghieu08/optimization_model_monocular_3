@@ -205,7 +205,7 @@ def _parse_history_row(row: list, idx: dict) -> tuple:
         "% delta_mpjpe": sf('% Delta_MPJPE') if sf('% Delta_MPJPE') != float('inf') else 0.0,
         "% delta_pa_mpjpe": sf('% Delta_PA-MPJPE') if sf('% Delta_PA-MPJPE') != float('inf') else 0.0,
         "os_version": get_val('OS Version'), "username": get_val('Username'), "timestamp": get_val('Timestamp'),
-        "joints": {jn: float(row[ji]) for jn, ji in idx['joints'].items() if ji < len(row) and row[ji] not in ("N/A", "")}
+        "joints": {jn: float(str(row[ji]).strip().replace(',', '.')) for jn, ji in idx['joints'].items() if ji < len(row) and row[ji] not in ("N/A", "")}
     }
     return key, res
 
