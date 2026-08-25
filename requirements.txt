@@ -4,7 +4,7 @@ torch
 smplx
 chumpy
 joblib
-PyYAML
+ruamel.yaml
 matplotlib
 opencv-python
 gdown
