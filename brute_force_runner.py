@@ -251,6 +251,13 @@ def generate_spreadsheet_report(all_results, sheet_name, worksheet_title=None, s
         sh = gc.open(sheet_name)
     except gspread.exceptions.SpreadsheetNotFound: 
         sh = gc.create(sheet_name)
+        try:
+            sh.share('', perm_type='anyone', role='reader')
+            if not silent:
+                print(f"[+] Đã tạo Spreadsheet '{sheet_name}' và cấp quyền Public (Ai có link cũng có thể xem).")
+        except Exception as e:
+            if not silent:
+                print(f"[-] Không thể tự động cấp quyền Public. Lỗi: {e}")
     
     if worksheet_title:
         try:
