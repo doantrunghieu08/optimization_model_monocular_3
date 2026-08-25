@@ -36,7 +36,7 @@ def get_gspread_client():
 
 def get_system_metadata() -> tuple[str, str, str]:
     try:
-        username = getpass.getuser()
+        username = os.environ.get('RUNNER_NAME', getpass.getuser())
     except Exception:
         username = os.environ.get('USER', os.environ.get('USERNAME', 'unknown'))
     os_version = platform.platform()
