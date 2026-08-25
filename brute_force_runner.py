@@ -202,8 +202,8 @@ def _parse_history_row(row: list, idx: dict) -> tuple:
         "local_belief_master": get_val('local_belief Master', "[]"),
         "local_belief_slave": get_val('local_belief Slave', "[]"),
         "old_mpjpe": sf('Old MPJPE'), "old_pa_mpjpe": sf('Old PA-MPJPE'),
-        "% delta_mpjpe": sf('% Δ_MPJPE') if sf('% Δ_MPJPE') != float('inf') else 0.0,
-        "% delta_pa_mpjpe": sf('% Δ_PA-MPJPE') if sf('% Δ_PA-MPJPE') != float('inf') else 0.0,
+        "% delta_mpjpe": sf('% d_MPJPE') if sf('% d_MPJPE') != float('inf') else 0.0,
+        "% delta_pa_mpjpe": sf('% d_PA-MPJPE') if sf('% d_PA-MPJPE') != float('inf') else 0.0,
         "os_version": get_val('OS Version'), "username": get_val('Username'), "timestamp": get_val('Timestamp'),
         "joints": {jn: float(str(row[ji]).strip().replace(',', '.')) for jn, ji in idx['joints'].items() if ji < len(row) and row[ji] not in ("N/A", "")}
     }
@@ -225,7 +225,7 @@ def load_existing_spreadsheet_results(sheet_name: str) -> dict:
 def _build_report_rows(all_results: dict, joint_keys: list) -> list:
     header = ['Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 'MPJPE', 'PA-MPJPE', 
               'local_belief Master', 'local_belief Slave', 'Old MPJPE', 
-              'Old PA-MPJPE', '% Δ_MPJPE', '% Δ_PA-MPJPE', 
+              'Old PA-MPJPE', '% d_MPJPE', '% d_PA-MPJPE', 
               'OS Version', 'Username', 'Timestamp'] + joint_keys
     rows = [header]
     
