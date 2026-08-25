@@ -191,6 +191,7 @@ def _parse_history_row(row: list, idx: dict) -> tuple:
     
     def sf(col_name): 
         v = row[idx[col_name]] if idx[col_name] != -1 else "N/A"
+        v = str(v).strip().replace(',', '.')
         return float(v) if v not in ("N/A", "") else float('inf')
     
     key = (row[idx['Segment']], row[idx['Cam Master']], row[idx['Cam Slave']])
