@@ -246,11 +246,12 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
             rows.append(row)
     return rows
 
-def generate_spreadsheet_report(all_results, sheet_name, worksheet_title=None, silent=False):
+def _get_or_create_worksheet(sheet_name: str, worksheet_title: str = None, silent: bool = False):
+    """Hàm phụ trợ lấy hoặc tạo mới Spreadsheet và Worksheet."""
     gc = get_gspread_client()
-    try: 
+    try:
         sh = gc.open(sheet_name)
-    except gspread.exceptions.SpreadsheetNotFound: 
+    except gspread.exceptions.SpreadsheetNotFound:
         sh = gc.create(sheet_name)
         try:
             sh.share('', perm_type='anyone', role='reader')
@@ -259,18 +260,19 @@ def generate_spreadsheet_report(all_results, sheet_name, worksheet_title=None, s
         except Exception as e:
             if not silent:
                 print(f"[-] Không thể tự động cấp quyền Public. Lỗi: {e}")
-    
+
     if worksheet_title:
         try:
-            # Thử mở sheet có tên là worksheet_title (ví dụ: Run_2026-08-23_10-00-00)
             worksheet = sh.worksheet(worksheet_title)
         except gspread.exceptions.WorksheetNotFound:
-            # Nếu chưa tồn tại, tạo worksheet mới (mặc định cho 1000 hàng, 50 cột)
             worksheet = sh.add_worksheet(title=worksheet_title, rows="1000", cols="50")
     else:
-        # Fallback về sheet1 nếu không truyền worksheet_title
         worksheet = sh.sheet1
-    # ----------------------------------------
+
+    return sh, worksheet
+
+def generate_spreadsheet_report(all_results, sheet_name, worksheet_title=None, silent=False, is_final=False):
+    sh, worksheet = _get_or_create_worksheet(sheet_name, worksheet_title, silent)
 
     all_joint_keys = set()
     for seg_results in all_results.values():
@@ -279,10 +281,13 @@ def generate_spreadsheet_report(all_results, sheet_name, worksheet_title=None, s
     
     rows_to_insert = _build_report_rows(all_results, sorted(list(all_joint_keys)))
 
-    worksheet.clear() # Xóa dữ liệu cũ (của sheet hiện tại đang thao tác)
-    try: 
+    if is_final and len(rows_to_insert) > 0:
+        rows_to_insert.append(["End"] * len(rows_to_insert[0]))
+
+    worksheet.clear()
+    try:
         worksheet.update(values=rows_to_insert, range_name="A1")
-    except TypeError: 
+    except TypeError:
         worksheet.update(rows_to_insert)
 
     decorate(worksheet, len(rows_to_insert), len(rows_to_insert[0]))
@@ -396,6 +401,44 @@ def get_spreadsheet_name_input(default_name: str = "Brute_Force_Report_Pipeline 
     print(f"\n[+] Đã ghi nhận tên file tùy chỉnh: '{user_input}'")
     return user_input
 
+
+def _process_segment(seg, existing, base_cfg, ws_dir, sh_name, ws_title, all_res, current_idx, total_pairs):
+    """Hàm phụ trợ xử lý từng segment để giảm tải cho run_brute_force"""
+    seg_name, cameras = seg["name"], seg.get("cameras", [])
+    seg_total_pairs = len(cameras) * (len(cameras) - 1)
+    print(f"\n=== Bắt đầu vét cạn cho Segment: {seg_name} ({seg_total_pairs} cặp) ===")
+    
+    results = []
+    for cA, cB in itertools.permutations(cameras, 2):
+        current_idx += 1
+        print(f"\n--- [Tiến trình: {current_idx}/{total_pairs}] Master={cA['id']} | Supplement={cB['id']} ---")
+
+        if (seg_name, cA["id"], cB["id"]) in existing:
+            res = existing[(seg_name, cA["id"], cB["id"])]
+            res.update({"set": res.get("set", extract_set_name(cA["pkl"])), "master": cA["id"], "supplement": cB["id"]})
+            results.append(res)
+            continue
+        
+        res = _evaluate_camera_pair(cA, cB, base_cfg, str(ws_dir / seg["ground_truth_dir"]), ws_dir)
+        results.append(res)
+        
+        # Cập nhật tạm thời và lưu lên sheet
+        temp_res = dict(all_res)
+        temp_res[seg_name] = sorted(
+            results, 
+            key=lambda x: x.get("% delta_mpjpe", float('-inf')) + x.get("% delta_pa_mpjpe", float('-inf')), 
+            reverse=True
+        )
+        generate_spreadsheet_report(temp_res, sh_name, ws_title, silent=True)
+
+    # Trả về kết quả đã sort của segment hiện tại và biến đếm idx
+    sorted_results = sorted(
+        results, 
+        key=lambda x: x.get("% delta_mpjpe", float('-inf')) + x.get("% delta_pa_mpjpe", float('-inf')), 
+        reverse=True
+    )
+    return sorted_results, current_idx
+
 def run_brute_force():
     WS_DIR = Path(__file__).parent.resolve()
     with open(WS_DIR / "configs/brute_force.yml", "r", encoding="utf-8") as f: brute_cfg = yaml.safe_load(f)
@@ -408,48 +451,23 @@ def run_brute_force():
     existing = load_existing_spreadsheet_results(sh_name)
     all_res = {}
 
-    # Công thức: N * (N - 1) với N là số lượng camera trong mỗi segment
     total_pairs = sum(
         len(seg.get("cameras", [])) * (len(seg.get("cameras", [])) - 1)
         for seg in brute_cfg.get("segments", [])
         if len(seg.get("cameras", [])) >= 2
     )
-    current_pair_idx = 0 # Biến đếm số thứ tự cặp hiện tại
+    current_pair_idx = 0 
 
     for seg in brute_cfg.get("segments", []):
-        seg_name, cameras = seg["name"], seg.get("cameras", [])
-        if len(cameras) < 2: continue
-        seg_total_pairs = len(cameras) * (len(cameras) - 1)
-        print(f"\n=== Bắt đầu vét cạn cho Segment: {seg_name} ({seg_total_pairs} cặp) ===")
+        if len(seg.get("cameras", [])) < 2: continue
         
-        results = []
-        for cA, cB in itertools.permutations(cameras, 2):
-            current_pair_idx += 1
-            print(f"\n--- [Tiến trình: {current_pair_idx}/{total_pairs}] Master={cA['id']} | Supplement={cB['id']} ---")
-
-            if (seg_name, cA["id"], cB["id"]) in existing:
-                res = existing[(seg_name, cA["id"], cB["id"])]
-                res.update({"set": res.get("set", extract_set_name(cA["pkl"])), "master": cA["id"], "supplement": cB["id"]})
-                results.append(res)
-                continue
-            
-            res = _evaluate_camera_pair(cA, cB, base_cfg, str(WS_DIR / seg["ground_truth_dir"]), WS_DIR)
-            results.append(res)
-            
-            temp_res = dict(all_res)
-            temp_res[seg_name] = sorted(
-                results, 
-                key=lambda x: x.get("% delta_mpjpe", float('-inf')) + x.get("% delta_pa_mpjpe", float('-inf')), 
-                reverse=True
-            )
-            generate_spreadsheet_report(temp_res, sh_name, ws_title, silent=True)
-
-        all_res[seg_name] = sorted(
-            results, 
-            key=lambda x: x.get("% delta_mpjpe", float('-inf')) + x.get("% delta_pa_mpjpe", float('-inf')), 
-            reverse=True
+        # Gọi hàm xử lý vừa tạo
+        sorted_res, current_pair_idx = _process_segment(
+            seg, existing, base_cfg, WS_DIR, sh_name, ws_title, all_res, current_pair_idx, total_pairs
         )
-    generate_spreadsheet_report(all_res, sh_name, ws_title, silent=False)
+        all_res[seg["name"]] = sorted_res
+        
+    generate_spreadsheet_report(all_res, sh_name, ws_title, silent=False, is_final=True)
 
 if __name__ == "__main__":
     run_brute_force()
