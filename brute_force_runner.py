@@ -176,7 +176,7 @@ def _get_sheet_data(sheet_name: str) -> tuple[list, list]:
 
 def _get_header_indices(header: list) -> dict:
     idx = {}
-    keys = ['Segment', 'Cam Master', 'Cam Slave', 'MPJPE (mm)', 'PA-MPJPE (mm)',  
+    keys = ['Segment', 'Cam Master', 'Cam Slave', 'MPJPE', 'PA-MPJPE',  
             'local_belief Master', 'local_belief Slave', 'Old MPJPE', 'Old PA-MPJPE', 
             '% Delta_MPJPE', '% Delta_PA-MPJPE', 'OS Version', 'Username', 'Timestamp']
     for k in keys:
@@ -197,11 +197,9 @@ def _parse_history_row(row: list, idx: dict) -> tuple:
     
     res = {
         "mpjpe": sf('MPJPE (mm)'), "pa_mpjpe": sf('PA-MPJPE (mm)'), 
-        
         # Đọc trực tiếp chuỗi danh sách từ Google Sheets (nếu có), không tính toán nữa
         "local_belief_master": get_val('local_belief Master', "[]"),
         "local_belief_slave": get_val('local_belief Slave', "[]"),
-        
         "old_mpjpe": sf('Old MPJPE'), "old_pa_mpjpe": sf('Old PA-MPJPE'),
         "% delta_mpjpe": sf('% Delta_MPJPE') if sf('% Delta_MPJPE') != float('inf') else 0.0,
         "% delta_pa_mpjpe": sf('% Delta_PA-MPJPE') if sf('% Delta_PA-MPJPE') != float('inf') else 0.0,
@@ -382,8 +380,8 @@ def get_spreadsheet_name_input(default_name: str = "Brute_Force_Report_Pipeline 
 
     # Kiểm tra nếu chuỗi nhập vào dạng chữ thường bằng "now" (Ví dụ: NOW, nOw, noW, now...)
     if user_input.lower() == "now":
-        yyddmm = datetime.now().strftime("%y%d%m") # Format YYDDMM (Ví dụ 262408 cho Năm 26, Ngày 24, Tháng 08)
-        generated_name = f"Brute_Force_Report_Pipeline v{yyddmm}"
+        yymmdd = datetime.now().strftime("%y%m%d") # Format YYMMDD (Ví dụ 260824 cho Năm 26, Tháng 08, Ngày 24)
+        generated_name = f"Brute_Force_Report_Pipeline v{yymmdd}"
         print(f"\n[+] Nhận từ khóa '{user_input}'. Tên file tự động khởi tạo: '{generated_name}'")
         return generated_name
 
@@ -395,7 +393,7 @@ def run_brute_force():
     with open(WS_DIR / "configs/brute_force.yml", "r", encoding="utf-8") as f: brute_cfg = yaml.safe_load(f)
     with open(WS_DIR / "configs/pipeline.yml", "r", encoding="utf-8") as f: base_cfg = yaml.safe_load(f)
 
-    default_sh_name = "Brute_Force_Report_Pipeline v260824-14h35p"
+    default_sh_name = "Brute_Force_Report_Pipeline v260825-08h00p"
     sh_name = get_spreadsheet_name_input(default_name=default_sh_name, timeout=10)
     
     ws_title = f"Run_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
