@@ -196,7 +196,7 @@ def _parse_history_row(row: list, idx: dict) -> tuple:
     key = (row[idx['Segment']], row[idx['Cam Master']], row[idx['Cam Slave']])
     
     res = {
-        "mpjpe": sf('MPJPE (mm)'), "pa_mpjpe": sf('PA-MPJPE (mm)'), 
+        "mpjpe": sf('MPJPE'), "pa_mpjpe": sf('PA-MPJPE'), 
         # Đọc trực tiếp chuỗi danh sách từ Google Sheets (nếu có), không tính toán nữa
         "local_belief_master": get_val('local_belief Master', "[]"),
         "local_belief_slave": get_val('local_belief Slave', "[]"),
@@ -222,9 +222,9 @@ def load_existing_spreadsheet_results(sheet_name: str) -> dict:
     return existing
 
 def _build_report_rows(all_results: dict, joint_keys: list) -> list:
-    header = ['Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 'MPJPE (mm)', 'PA-MPJPE (mm)', 
+    header = ['Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 'MPJPE', 'PA-MPJPE', 
               'local_belief Master', 'local_belief Slave', 'Old MPJPE', 
-              'Old PA-MPJPE', '% Delta_MPJPE', '% Delta_PA-MPJPE', 
+              'Old PA-MPJPE', '% Δ_MPJPE', '% Δ_PA-MPJPE', 
               'OS Version', 'Username', 'Timestamp'] + joint_keys
     rows = [header]
     
@@ -361,7 +361,7 @@ def get_spreadsheet_name_input(default_name: str = "Brute_Force_Report_Pipeline 
     """Hỏi người dùng tên Google Spreadsheet với timeout 10 giây."""
     print(f"\n[?] Nhập tên file Google Spreadsheet bạn muốn xuất (Tự động dùng tên mặc định sau {timeout}s):")
     print(f"    - Nhấn ENTER hoặc không nhập gì: Sử dụng tên mặc định ('{default_name}')")
-    print(f"    - Nhập 'now' (hoặc NOW, nOw,...): Đặt tên theo dạng 'Brute_Force_Report_Pipeline vYYDDMM'")
+    print(f"    - Nhập 'now' (hoặc NOW, nOw,...): Đặt tên theo dạng 'Brute_Force_Report_Pipeline vYYMMDD'")
     print(f"    - Nhập tên khác: Sử dụng tên tùy chỉnh của bạn.")
     
     q = queue.Queue()
