@@ -407,14 +407,25 @@ def run_brute_force():
     existing = load_existing_spreadsheet_results(sh_name)
     all_res = {}
 
+    # Công thức: N * (N - 1) với N là số lượng camera trong mỗi segment
+    total_pairs = sum(
+        len(seg.get("cameras", [])) * (len(seg.get("cameras", [])) - 1)
+        for seg in brute_cfg.get("segments", [])
+        if len(seg.get("cameras", [])) >= 2
+    )
+    current_pair_idx = 0 # Biến đếm số thứ tự cặp hiện tại
+
     for seg in brute_cfg.get("segments", []):
         seg_name, cameras = seg["name"], seg.get("cameras", [])
         if len(cameras) < 2: continue
-        print(f"=== Bắt đầu vét cạn cho Segment: {seg_name} ===")
+        seg_total_pairs = len(cameras) * (len(cameras) - 1)
+        print(f"\n=== Bắt đầu vét cạn cho Segment: {seg_name} ({seg_total_pairs} cặp) ===")
         
         results = []
         for cA, cB in itertools.permutations(cameras, 2):
-            print(f"\n--- Master={cA['id']} | Supplement={cB['id']} ---")
+            current_pair_idx += 1
+            print(f"\n--- [Tiến trình: {current_pair_idx}/{total_pairs}] Master={cA['id']} | Supplement={cB['id']} ---")
+
             if (seg_name, cA["id"], cB["id"]) in existing:
                 res = existing[(seg_name, cA["id"], cB["id"])]
                 res.update({"set": res.get("set", extract_set_name(cA["pkl"])), "master": cA["id"], "supplement": cB["id"]})
@@ -425,7 +436,6 @@ def run_brute_force():
             results.append(res)
             
             temp_res = dict(all_res)
-            # Sửa: Thêm reverse=True và đổi float('inf') thành float('-inf')
             temp_res[seg_name] = sorted(
                 results, 
                 key=lambda x: x.get("% delta_mpjpe", float('-inf')) + x.get("% delta_pa_mpjpe", float('-inf')), 
@@ -433,7 +443,6 @@ def run_brute_force():
             )
             generate_spreadsheet_report(temp_res, sh_name, ws_title, silent=True)
 
-        # Sửa: Thêm reverse=True và đổi float('inf') thành float('-inf')
         all_res[seg_name] = sorted(
             results, 
             key=lambda x: x.get("% delta_mpjpe", float('-inf')) + x.get("% delta_pa_mpjpe", float('-inf')), 
