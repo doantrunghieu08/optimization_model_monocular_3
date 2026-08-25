@@ -1,11 +1,6 @@
 import csv
 import json
 import re
-import sys
-import threading
-import getpass
-import platform
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -200,50 +195,6 @@ def _warn_frame_mismatch(module_name: str, truth_frames: set[int], module_frames
     if extra_module:
         print(f"[Evaluation]   Output-only frames: {_format_frame_sample(extra_module)}")
 
-def get_spreadsheet_filename(default_name="evaluation_summary") -> str:
-    """Cho người dùng 10s để nhập tên file. Nhập 'now' sẽ gắn thêm YYMMDD."""
-    user_input = [None]
-    
-    def wait_for_input():
-        try:
-            user_input[0] = input(f"Nhập tên file spreadsheet (mặc định '{default_name}.csv', gõ 'now' để thêm ngày tháng). Bạn có 10s: ")
-        except EOFError:
-            pass
-            
-    print("\n--- CHỜ NHẬP TÊN FILE ---")
-    t = threading.Thread(target=wait_for_input)
-    t.daemon = True
-    t.start()
-    t.join(10.0) # Đợi tối đa 10 giây
-    
-    if t.is_alive():
-        print(f"\n[Hết 10s] Tự động sử dụng mặc định.")
-        final_input = ""
-    else:
-        final_input = (user_input[0] or "").strip()
-        
-    if final_input.lower() == "now":
-        date_suffix = datetime.now().strftime("%y%m%d")
-        return f"{default_name}_{date_suffix}.csv"
-    elif final_input:
-        if not final_input.endswith(".csv"):
-            final_input += ".csv"
-        return final_input
-    
-    return f"{default_name}.csv"
-
-def extract_set_and_segment(video_path: str) -> tuple[str, str]:
-    """Trích xuất Set (thư mục cha) và Segment (sau chữ seg) từ đường dẫn video."""
-    if not video_path:
-        return "UnknownSet", "UnknownSeg"
-    p = Path(video_path)
-    video_set = p.parent.name
-    
-    # Tìm chuỗi đứng sau 'seg' trong tên file, VD: video_seg_01 -> 01, nhảy qua dấu _ hoặc -
-    match = re.search(r"seg[_-]?([A-Za-z0-9]+)", p.stem, re.IGNORECASE)
-    segment = match.group(1) if match else p.stem
-    
-    return video_set, segment
 
 def _resolve_truth_frame_payload(truth_data: dict, testcase_name: Optional[str], truth_path: Path) -> dict:
     if testcase_name is not None:
@@ -280,16 +231,36 @@ def run_evaluation(config: dict) -> None:
     map_data = load_keypoints3d_map(paths["keypoints3d_map"])
     canonical_names = set([k["name"] for k in map_data["keypoints"]])
     priority1_names = map_data.get("priority1", [])
+    priority2_names = map_data.get("priority2", [])
 
     truth_dir = Path(inputs["ground_truth_dir"])
     out_dir = Path(paths["evaluation_output_dir"])
-    out_dir.mkdir(parents=True, exist_ok=True)
+    testcase_name = eval_cfg.get("testcase_name")
+    if testcase_name in ("", None):
+        testcase_name = None
 
-    # 1. Lấy tên file xuất ra (chờ 10s)
-    spreadsheet_filename = get_spreadsheet_filename()
-    spreadsheet_path = out_dir / spreadsheet_filename
+    metrics_cfg = eval_cfg.get("metrics")
+    if not isinstance(metrics_cfg, dict):
+        raise ValueError("Missing config section: evaluation.metrics")
+    for key in ("pa_mpjpe", "mpjpe", "pck"):
+        if key not in metrics_cfg or metrics_cfg[key] is None:
+            raise ValueError(f"Missing config evaluation metric flag: evaluation.metrics.{key}")
+    metric_enabled = {
+        "MPJPE": bool(metrics_cfg["mpjpe"]),
+        "PA-MPJPE": bool(metrics_cfg["pa_mpjpe"]),
+        "PCK": bool(metrics_cfg["pck"]),
+    }
+    enabled_metrics = [name for name, enabled in metric_enabled.items() if enabled]
+    if not enabled_metrics:
+        raise ValueError("At least one evaluation metric must be enabled")
 
-    # 2. Các tham số modules
+    if config.get("runtime", {}).get("clean_output", True):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for old in out_dir.glob("*.csv"):
+            old.unlink(missing_ok=True)
+    else:
+        out_dir.mkdir(parents=True, exist_ok=True)
+
     module_names = ["posed", "fused"]
     if config.get("learnable", {}).get("enabled", False):
         module_names.append("learnable")
@@ -305,130 +276,171 @@ def run_evaluation(config: dict) -> None:
     if "learnable_extra" in module_names:
         module_dirs["learnable_extra"] = Path(paths["learnable_extra_output_dir"]) / "keypoints3d"
 
-    # Load dữ liệu GT (Ground Truth)
+    for name, mdir in module_dirs.items():
+        if not mdir.exists():
+            raise FileNotFoundError(f"Missing required module directory: {mdir}")
+
+    # GT là segment file, mỗi camera có một file riêng.
     cam1_gt_stem = Path(inputs.get("cam1_pkl", "")).stem
     cam2_gt_stem = Path(inputs.get("cam2_pkl", "")).stem
-    gt_cam_data = {
-        "camera1": _load_segment_gt(truth_dir / f"{cam1_gt_stem}.json"),
-        "camera2": _load_segment_gt(truth_dir / f"{cam2_gt_stem}.json")
+    if not cam1_gt_stem or not cam2_gt_stem:
+        raise ValueError("Missing cam1_pkl or cam2_pkl in inputs to determine GT files.")
+        
+    cam1_gt_path = truth_dir / f"{cam1_gt_stem}.json"
+    cam2_gt_path = truth_dir / f"{cam2_gt_stem}.json"
+    
+    gt_cam1_data = _load_segment_gt(cam1_gt_path)
+    gt_cam2_data = _load_segment_gt(cam2_gt_path)
+    gt_cam_data = {"camera1": gt_cam1_data, "camera2": gt_cam2_data}
+
+    gt_camera_keys = {
+        "camera1": _camera_key_from_video_path(inputs.get("camera1_video")),
+        "camera2": _camera_key_from_video_path(inputs.get("camera2_video")),
     }
 
-    # Load Frames
-    module_frame_maps = {name: _load_frame_map(mdir) for name, mdir in module_dirs.items()}
-    common_frames = set.intersection(*(set(m) for m in module_frame_maps.values()))
+    module_frame_maps = {}
+    module_frame_sets = {}
+    for name, mdir in module_dirs.items():
+        module_frame_maps[name] = _load_frame_map(mdir)
+        module_frame_sets[name] = set(module_frame_maps[name])
+
+    common_frames = None
+    for frames_set in module_frame_sets.values():
+        if common_frames is None:
+            common_frames = frames_set.copy()
+        else:
+            common_frames &= frames_set
+
+    if not common_frames:
+        raise ValueError("No overlapping frames between module outputs.")
+
     frames = sorted(common_frames)
 
-    # Lưu lại tổng sai số để tính trung bình cho toàn bộ segment
-    # Cấu trúc: segment_metrics[cam][mod][metric] = tổng sai số
-    segment_metrics = {"camera1": {}, "camera2": {}}
-    for cam in ["camera1", "camera2"]:
-        for mod in module_names:
-            segment_metrics[cam][mod] = {"MPJPE": 0.0, "PA-MPJPE": 0.0, "count": 0}
+    # metrics: metric -> cam -> frame -> module -> priority -> value
+    results = {metric: {"camera1": {}, "camera2": {}} for metric in enabled_metrics}
+    evaluated_frames = []
 
-    # 3. Tính toán trên từng Frame
     for frame in frames:
+        # Resolve actual frame_id from metadata
         metadata_path = Path(paths["pose_output_dir"]) / "metadata" / f"pose_data_{frame}.json"
-        if not metadata_path.exists(): continue
-        
+        if not metadata_path.exists():
+            continue
         metadata = _load_json(metadata_path)
         src_indices = metadata.get("metadata", {}).get("source_frame_indices", {})
         
-        for cam, gt_cam in zip(["camera1", "camera2"], [gt_cam_data["camera1"], gt_cam_data["camera2"]]):
-            cam_frame_id = src_indices.get(cam)
-            if cam_frame_id not in gt_cam: continue
+        cam1_frame_id = src_indices.get("camera1")
+        cam2_frame_id = src_indices.get("camera2")
+        
+        if cam1_frame_id not in gt_cam1_data or cam2_frame_id not in gt_cam2_data:
+            continue
+            
+        evaluated_frames.append(frame)
 
-            truth_joints = _parse_new_gt(gt_cam[cam_frame_id], canonical_names, map_data)
+        for cam in CAMERAS:
+            gt_frame_id = cam1_frame_id if cam == "camera1" else cam2_frame_id
+            truth_item = gt_cam_data[cam][gt_frame_id]
+            truth_joints = _parse_new_gt(truth_item, canonical_names, map_data)
+
+            for metric in results:
+                if frame not in results[metric][cam]:
+                    results[metric][cam][frame] = {}
 
             for mod in module_names:
-                mod_data = _load_json(module_frame_maps[mod][frame])
+                mod_path = module_frame_maps[mod][frame]
+                mod_data = _load_json(mod_path)
+                if cam not in mod_data:
+                    raise ValueError(f"Missing {cam} in {mod_path}")
+
                 pred_joints = {k: np.array(v, dtype=float) for k, v in mod_data[cam].items()}
                 
-                valid_priority1 = [k for k in priority1_names if k in set(pred_joints.keys()) & set(truth_joints.keys())]
+                # Filter priority names to only include keys present in both pred and truth
+                available_keys = set(pred_joints.keys()) & set(truth_joints.keys())
+                valid_priority1 = [k for k in priority1_names if k in available_keys]
+                valid_priority2 = [k for k in priority2_names if k in available_keys]
                 
-                if valid_priority1:
-                    mpjpe_err, _ = _compute_mpjpe(pred_joints, truth_joints, valid_priority1)
-                    pa_mpjpe_err, _ = _compute_pa_mpjpe(pred_joints, truth_joints, valid_priority1)
+                if not valid_priority1:
+                    print(f"Warning: No overlapping priority1 keys for {mod} {cam} frame {frame}")
+
+                # compute metrics
+                # MPJPE
+                if metric_enabled["MPJPE"]:
+                    results["MPJPE"][cam][frame].setdefault(mod, {})
+                    mean_p1, dict_p1 = _compute_mpjpe(pred_joints, truth_joints, valid_priority1) if valid_priority1 else (0.0, {})
+                    results["MPJPE"][cam][frame][mod]["priority1_mm"] = mean_p1
+                    results["MPJPE"][cam][frame][mod]["priority1_details"] = dict_p1
                     
-                    segment_metrics[cam][mod]["MPJPE"] += mpjpe_err
-                    segment_metrics[cam][mod]["PA-MPJPE"] += pa_mpjpe_err
-                    segment_metrics[cam][mod]["count"] += 1
+                    mean_p2, dict_p2 = _compute_mpjpe(pred_joints, truth_joints, valid_priority2) if valid_priority2 else (0.0, {})
+                    results["MPJPE"][cam][frame][mod]["priority2_mm"] = mean_p2
+                    results["MPJPE"][cam][frame][mod]["priority2_details"] = dict_p2
 
-    # 4. Tính giá trị trung bình toàn Segment & Định dạng Output
-    video_set, segment_name = extract_set_and_segment(inputs.get("camera1_video", ""))
-    cam_master = _camera_key_from_video_path(inputs.get("camera1_video"))
-    cam_slave = _camera_key_from_video_path(inputs.get("camera2_video"))
-    
-    # Chuẩn bị dữ liệu để ghi
-    os_version = f"{platform.system()} {platform.release()}"
-    username = getpass.getuser()
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                if metric_enabled["PA-MPJPE"]:
+                    results["PA-MPJPE"][cam][frame].setdefault(mod, {})
+                    mean_p1, dict_p1 = _compute_pa_mpjpe(pred_joints, truth_joints, valid_priority1) if valid_priority1 else (0.0, {})
+                    results["PA-MPJPE"][cam][frame][mod]["priority1_mm"] = mean_p1
+                    results["PA-MPJPE"][cam][frame][mod]["priority1_details"] = dict_p1
+                    
+                    mean_p2, dict_p2 = _compute_pa_mpjpe(pred_joints, truth_joints, valid_priority2) if valid_priority2 else (0.0, {})
+                    results["PA-MPJPE"][cam][frame][mod]["priority2_mm"] = mean_p2
+                    results["PA-MPJPE"][cam][frame][mod]["priority2_details"] = dict_p2
 
-    # Mở file CSV theo mode "append" (ghi nối tiếp)
-    file_exists = spreadsheet_path.exists()
-    with spreadsheet_path.open("a", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        
-        # Ghi header nếu file mới
-        if not file_exists:
-            writer.writerow([
-                "Set", "Segment", "Rank", "Cam Master", "Cam Slave",
-                "fusion_MPJPE", "fusion_PA-MPJPE", 
-                "learnable_fusion_MPJPE", "learnable_fusion_PA-MPJPE", 
-                "learnable_MPJPE", "learnable_PA-MPJPE", 
-                "Old MPJPE", "Old PA-MPJPE", 
-                "% F Δ_MPJPE", "% F Δ_PA-MPJPE", 
-                "% LF Δ_MPJPE", "% LF Δ_PA-MPJPE", 
-                "% L Δ_MPJPE", "% L Δ_PA-MPJPE", 
-                "OS Version", "Username", "Timestamp"
-            ])
+                if metric_enabled["PCK"]:
+                    results["PCK"][cam][frame].setdefault(mod, {})
+                    mean_p1, dict_p1 = _compute_pck_mm(pred_joints, truth_joints, valid_priority1) if valid_priority1 else (0.0, {})
+                    results["PCK"][cam][frame][mod]["priority1_mm"] = mean_p1
+                    results["PCK"][cam][frame][mod]["priority1_details"] = dict_p1
+                    
+                    mean_p2, dict_p2 = _compute_pck_mm(pred_joints, truth_joints, valid_priority2) if valid_priority2 else (0.0, {})
+                    results["PCK"][cam][frame][mod]["priority2_mm"] = mean_p2
+                    results["PCK"][cam][frame][mod]["priority2_details"] = dict_p2
 
-        # Tính toán row cho camera master (Mặc định lấy cam1 làm đại diện tính lỗi tổng hợp)
-        # Nếu muốn tính cho cả master và slave độc lập, bạn có thể loop qua ["camera1", "camera2"] để ghi 2 dòng.
-        # Ở đây lấy camera1 làm gốc đại diện cho master theo format của bạn.
-        cam_eval = "camera1" 
-        
-        def get_avg(mod_name, metric):
-            data = segment_metrics[cam_eval].get(mod_name, {"count": 0})
-            return data[metric] / data["count"] if data["count"] > 0 else 0.0
+    module_output_names = {
+        mod: EVALUATION_OUTPUT_MODULE_NAMES.get(mod, mod)
+        for mod in module_names
+    }
 
-        # Ánh xạ theo tên cột của bạn
-        old_mpjpe = get_avg("posed", "MPJPE")
-        old_pa_mpjpe = get_avg("posed", "PA-MPJPE")
-        
-        fusion_mpjpe = get_avg("fused", "MPJPE")
-        fusion_pa_mpjpe = get_avg("fused", "PA-MPJPE")
-        
-        learn_fusion_mpjpe = get_avg("learnable", "MPJPE")
-        learn_fusion_pa_mpjpe = get_avg("learnable", "PA-MPJPE")
-        
-        learn_mpjpe = get_avg("learnable_extra", "MPJPE")
-        learn_pa_mpjpe = get_avg("learnable_extra", "PA-MPJPE")
+    header = ["Frame", "Evaluated_Camera", "Ground_Truth_Camera"]
+    for mod in module_names:
+        out_name = module_output_names[mod]
+        header.append(f"{out_name}_priority1_mm")
+        header.append(f"{out_name}_priority2_mm")
+        for joint in priority1_names:
+            header.append(f"{out_name}_{joint}_mm")
 
-        # Tính Delta (so sánh giữa learnable_fusion và old/posed)
-        lf_delta_mpjpe = ((learn_fusion_mpjpe - old_mpjpe) / old_mpjpe * 100) if old_mpjpe > 0 else 0.0
-        lf_delta_pa_mpjpe = ((learn_fusion_pa_mpjpe - old_pa_mpjpe) / old_pa_mpjpe * 100) if old_pa_mpjpe > 0 else 0.0
+    for metric in enabled_metrics:
+        for cam in CAMERAS:
+            filename = f"{metric}_{CAMERA_FILE_NAMES[cam]}.csv"
+            out_file = out_dir / filename
+            with out_file.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(header)
 
-        # Tính Delta (so sánh giữa fusion và old/posed)
-        f_delta_mpjpe = ((fusion_mpjpe - old_mpjpe) / old_mpjpe * 100) if old_mpjpe > 0 else 0.0
-        f_delta_pa_mpjpe = ((fusion_pa_mpjpe - old_pa_mpjpe) / old_pa_mpjpe * 100) if old_pa_mpjpe > 0 else 0.0
+                avg_sums = {h: 0.0 for h in header[3:]}
 
-        # Tính Delta (so sánh giữa learnable_fusion và old/posed)
-        L_delta_mpjpe = ((learn_mpjpe - old_mpjpe) / old_mpjpe * 100) if old_mpjpe > 0 else 0.0
-        L_delta_pa_mpjpe = ((learn_pa_mpjpe - old_pa_mpjpe) / old_pa_mpjpe * 100) if old_pa_mpjpe > 0 else 0.0
+                for frame in evaluated_frames:
+                    row = [frame, cam, gt_camera_keys[cam]]
+                    for mod in module_names:
+                        out_name = module_output_names[mod]
+                        
+                        v1 = results[metric][cam][frame][mod]["priority1_mm"]
+                        v2 = results[metric][cam][frame][mod]["priority2_mm"]
+                        row.append(f"{v1:.2f}")
+                        row.append(f"{v2:.2f}")
+                        avg_sums[f"{out_name}_priority1_mm"] += v1
+                        avg_sums[f"{out_name}_priority2_mm"] += v2
+                        
+                        p1_details = results[metric][cam][frame][mod]["priority1_details"]
+                        for joint in priority1_names:
+                            err_j = p1_details.get(joint, 0.0)
+                            row.append(f"{err_j:.2f}")
+                            avg_sums[f"{out_name}_{joint}_mm"] += err_j
 
-        row = [
-            video_set, segment_name, "N/A", cam_master, cam_slave,
-            f"{fusion_mpjpe:.2f}", f"{fusion_pa_mpjpe:.2f}",
-            f"{learn_fusion_mpjpe:.2f}", f"{learn_fusion_pa_mpjpe:.2f}",
-            f"{learn_mpjpe:.2f}", f"{learn_pa_mpjpe:.2f}",
-            f"{old_mpjpe:.2f}", f"{old_pa_mpjpe:.2f}",
-            f"{f_delta_mpjpe:.2f}%", f"{f_delta_pa_mpjpe:.2f}%",
-            f"{lf_delta_mpjpe:.2f}%", f"{lf_delta_pa_mpjpe:.2f}%",
-            f"{L_delta_mpjpe:.2f}%", f"{L_delta_pa_mpjpe:.2f}%",
-            os_version, username, timestamp
-        ]
-        
-        writer.writerow(row)
+                n_frames = len(evaluated_frames)
+                if n_frames > 0:
+                    avg_row = ["AVERAGE", cam, gt_camera_keys[cam]]
+                    for h in header[3:]:
+                        avg_row.append(f"{(avg_sums[h]/n_frames):.2f}")
+                    writer.writerow(avg_row)
 
-    print(f"\n[Evaluation] Đã lưu báo cáo tại: {spreadsheet_path}")
+    print(f"[Evaluation] Done. Output: {out_dir}")
+
 """## 12. Visualization phase"""
