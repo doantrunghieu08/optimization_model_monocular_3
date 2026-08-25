@@ -2,6 +2,8 @@ import copy
 from pathlib import Path
 import joblib
 import numpy as np
+from tqdm import tqdm  # Thêm thư viện tqdm tạo progress bar
+
 from pose_pipeline.smpl_runner import create_smpl_model
 from config_loader import resolve_inputs
 from pose_pipeline.smpl_runner import get_3d_joints_for_frame
@@ -134,7 +136,8 @@ def run_pose_export(config: dict) -> None:
     cam1_export_data = slice_person_frames(cam1_data, cam1_start, min_frames)
     cam2_export_data = slice_person_frames(cam2_data, cam2_start, min_frames)
 
-    for i in range(min_frames):
+    # Sử dụng tqdm bọc quanh range() để tạo progress bar
+    for i in tqdm(range(min_frames), desc="[Pose] Exporting JSONs", unit="frame"):
         out_frame_id = i + 1
         keypoints3d_data = {
             "camera1": get_3d_joints_for_frame(model, cam1_export_data, i, j_regressor_path, paths["keypoints3d_map"]),
@@ -153,8 +156,6 @@ def run_pose_export(config: dict) -> None:
         metadata_path = output_dir / "metadata" / f"pose_data_{out_frame_id}.json"
         write_json(keypoints_path, keypoints3d_data)
         write_json(metadata_path, metadata_data)
-        if (i + 1) % 50 == 0 or (i + 1) == min_frames:
-            print(f"[Pose] Saved pose_data_{out_frame_id}.json ({i + 1}/{min_frames})")
 
     print(f"[Pose] Done. Output: {output_dir}")
 
