@@ -176,12 +176,29 @@ def _get_sheet_data(sheet_name: str) -> tuple[list, list]:
 
 def _get_header_indices(header: list) -> dict:
     idx = {}
-    keys = ['Segment', 'Cam Master', 'Cam Slave', 'MPJPE', 'PA-MPJPE',  
-            'local_belief Master', 'local_belief Slave', 'Old MPJPE', 'Old PA-MPJPE', 
-            '% Delta_MPJPE', '% Delta_PA-MPJPE', 'OS Version', 'Username', 'Timestamp']
+    
+    # Danh sách chuẩn theo đúng header đang có trong file
+    keys = [
+        'Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 
+        'MPJPE', 'PA-MPJPE', 'local_belief Master', 'local_belief Slave', 
+        'Old MPJPE', 'Old PA-MPJPE', '% Δ_MPJPE', '% Δ_PA-MPJPE', 
+        'OS Version', 'Username', 'Timestamp'
+    ]
+    
     for k in keys:
-        idx[k] = header.index(k) if k in header else -1
+        if k in header:
+            idx[k] = header.index(k)
+        # Hỗ trợ fallback (dự phòng) trong trường hợp sheet ghi chữ 'd' thay vì ký hiệu 'Δ'
+        elif k == '% Δ_MPJPE' and '% d_MPJPE%' in header:
+            idx[k] = header.index('% d_MPJPE%')
+        elif k == '% Δ_PA-MPJPE' and 'd_PA-MPJPE' in header:
+            idx[k] = header.index('d_PA-MPJPE')
+        else:
+            idx[k] = -1
+            
+    # Tự động lấy tất cả các cột Joint thông qua tiền tố
     idx['joints'] = {h: i for i, h in enumerate(header) if h.startswith(("MPJPE_", "PA-MPJPE_"))}
+    
     return idx
 
 def _parse_history_row(row: list, idx: dict) -> tuple:
@@ -198,12 +215,11 @@ def _parse_history_row(row: list, idx: dict) -> tuple:
     
     res = {
         "mpjpe": sf('MPJPE'), "pa_mpjpe": sf('PA-MPJPE'), 
-        # Đọc trực tiếp chuỗi danh sách từ Google Sheets (nếu có), không tính toán nữa
         "local_belief_master": get_val('local_belief Master', "[]"),
         "local_belief_slave": get_val('local_belief Slave', "[]"),
         "old_mpjpe": sf('Old MPJPE'), "old_pa_mpjpe": sf('Old PA-MPJPE'),
-        "% delta_mpjpe": sf('% d_MPJPE') if sf('% d_MPJPE') != float('inf') else 0.0,
-        "% delta_pa_mpjpe": sf('% d_PA-MPJPE') if sf('% d_PA-MPJPE') != float('inf') else 0.0,
+        "% delta_mpjpe": sf('% Δ_MPJPE') if sf('% Δ_MPJPE') != float('inf') else 0.0,
+        "% delta_pa_mpjpe": sf('% Δ_PA-MPJPE') if sf('% Δ_PA-MPJPE') != float('inf') else 0.0,
         "os_version": get_val('OS Version'), "username": get_val('Username'), "timestamp": get_val('Timestamp'),
         "joints": {jn: float(str(row[ji]).strip().replace(',', '.')) for jn, ji in idx['joints'].items() if ji < len(row) and row[ji] not in ("N/A", "")}
     }
@@ -225,7 +241,7 @@ def load_existing_spreadsheet_results(sheet_name: str) -> dict:
 def _build_report_rows(all_results: dict, joint_keys: list) -> list:
     header = ['Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 'MPJPE', 'PA-MPJPE', 
               'local_belief Master', 'local_belief Slave', 'Old MPJPE', 
-              'Old PA-MPJPE', '% d_MPJPE', '% d_PA-MPJPE', 
+              'Old PA-MPJPE', '% Δ_MPJPE', '% Δ_PA-MPJPE', 
               'OS Version', 'Username', 'Timestamp'] + joint_keys
     rows = [header]
     
