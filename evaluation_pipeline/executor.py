@@ -442,6 +442,33 @@ def run_evaluation(config: dict) -> None:
                         avg_row.append(f"{(avg_sums[h]/n_frames):.2f}")
                     writer.writerow(avg_row)
 
+    if "learnable_extra" in module_names and len(evaluated_frames) > 0:
+        learnable_extra_summary = {}
+        target_metrics = ["MPJPE", "PA-MPJPE"]
+        
+        for cam in CAMERAS:
+            cam_dict = {}
+            for metric in target_metrics:
+                if metric_enabled.get(metric):
+                    # Tính tổng lỗi của priority1_mm trên tất cả các frame
+                    total_err = sum(
+                        results[metric][cam][frame]["learnable_extra"]["priority1_mm"] 
+                        for frame in evaluated_frames
+                    )
+                    # Tính trung bình và ép kiểu sang string (giữ 2 chữ số thập phân)
+                    avg_err = total_err / len(evaluated_frames)
+                    cam_dict[metric] = f"{avg_err:.2f}"
+            
+            if cam_dict:
+                learnable_extra_summary[cam] = cam_dict
+
+        # Chuyển đổi dictionary sang chuỗi JSON
+        summary_str = json.dumps(learnable_extra_summary)
+        
+        # Lưu vào biến môi trường của OS
+        os.environ["LEARNABLE_EXTRA_METRICS"] = summary_str
+        print(f"[Evaluation] Đã lưu metrics vào os.environ['LEARNABLE_EXTRA_METRICS']: {summary_str}")
+    
     print(f"[Evaluation] Done. Output: {out_dir}")
 
 """## 12. Visualization phase"""
