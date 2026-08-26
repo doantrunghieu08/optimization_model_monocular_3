@@ -359,7 +359,7 @@ def _evaluate_camera_pair(camA, camB, base_cfg, gt_dir, workspace, seg_name: str
         print(f"Kết quả {camA['id']}-{camB['id']}: "
               f"MPJPE={res['mpjpe']:.2f} (Δ {d_mpjpe:+.2f}%), "
               f"PA-MPJPE={res['pa_mpjpe']:.2f} (Δ {d_pa_mpjpe:+.2f}%)",
-              f"LE MPJPE={le_mpjpe:.2f} (LE PA-MPJPE {le_pa_mpjpe:.2f}%), "
+              f"LE MPJPE={le_mpjpe} (LE PA-MPJPE {le_pa_mpjpe}), "
              )
         return res
     except Exception as e:
