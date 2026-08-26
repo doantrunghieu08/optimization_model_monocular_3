@@ -589,7 +589,7 @@ def _run_learnable_smplify_stage(
         # Produce 21 keypoints computed from best_pose/best_trans.
         smpl_layer = net.human_model.layer["neutral"]
         with torch.no_grad():
-            for i in tqdm(range(frame_count), desc=f"[{stage_label}] Saving JSON Results"):
+            for frame_idx in range(frame_count):
                 pose_t = torch.tensor(best_pose[frame_idx:frame_idx+1], dtype=torch.float32, device=device)
                 trans_t = torch.tensor(best_trans[frame_idx:frame_idx+1], dtype=torch.float32, device=device)
                 betas_t = torch.tensor(result["betas"][frame_idx:frame_idx+1], dtype=torch.float32, device=device)
@@ -623,7 +623,7 @@ def _run_learnable_smplify_stage(
     }
     write_json(output_dir / "metadata.json", metadata)
 
-    for i in range(frame_count):
+    for i in tqdm(range(frame_count), desc=f"[{stage_label}] Saving JSON Results"):
         out_name = f"{output_file_prefix}{frame_ids[i]}.json"
         write_json(output_dir / "keypoints3d" / out_name, keypoints_output[i])
         metadata_data = {
