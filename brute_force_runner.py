@@ -381,39 +381,52 @@ def _evaluate_camera_pair(camA, camB, base_cfg, gt_dir, workspace) -> dict:
         return {"set": current_set, "master": camA["id"], "supplement": camB["id"], 
                 "os_version": os_v, "username": usr, "timestamp": ts}
 
+def _get_timed_input(timeout: int) -> str | None:
+    """Hàm phụ: Chờ nhận input từ console với timeout."""
+    q = queue.Queue()
+    def ask():
+        try: q.put(input(">> Tên file của bạn: ").strip())
+        except Exception: q.put(None)
+    threading.Thread(target=ask, daemon=True).start()
+    try: return q.get(timeout=timeout)
+    except queue.Empty: return None
+
+def _archive_old_spreadsheet(default_name: str):
+    """Hàm phụ: Tìm và lưu trữ (đổi tên) file mặc định cũ trên Drive."""
+    print(f"\n[+] Đang kiểm tra và lưu trữ file mặc định cũ '{default_name}'...")
+    try:
+        sh = get_gspread_client().open(default_name)
+        time_suffix = datetime.now().strftime("%Y%m%d_%H%M%S")
+        try:
+            if getattr(sh, 'creationTime', None):
+                time_suffix = datetime.fromisoformat(str(sh.creationTime).replace('Z', '')).strftime("%Y%m%d_%H%M%S")
+        except Exception: pass
+        archived_name = f"{default_name}_{time_suffix}"
+        sh.update_title(archived_name)
+        print(f"[+] Đã đổi tên Spreadsheet cũ thành: '{archived_name}'")
+    except gspread.exceptions.SpreadsheetNotFound:
+        print(f"[*] Không tìm thấy file cũ '{default_name}'. Sẽ tự động tạo file mới.")
+    except Exception as e:
+        print(f"[-] Không thể đổi tên file cũ ({e}). Sẽ dùng file mặc định hiện tại.")
+
 def get_spreadsheet_name_input(default_name: str = "Brute_Force_Report_Pipeline v260823", timeout: int = 10) -> str:
     """Hỏi người dùng tên Google Spreadsheet với timeout 10 giây."""
-    print(f"\n[?] Nhập tên file Google Spreadsheet bạn muốn xuất (Tự động dùng tên mặc định sau {timeout}s):")
-    print(f"    - Nhấn ENTER hoặc không nhập gì: Sử dụng tên mặc định ('{default_name}')")
-    print(f"    - Nhập 'now' (hoặc NOW, nOw,...): Đặt tên theo dạng 'Brute_Force_Report_Pipeline vYYMMDD'")
-    print(f"    - Nhập tên khác: Sử dụng tên tùy chỉnh của bạn.")
+    print(f"\n[?] Nhập tên file Google Spreadsheet (Mặc định: '{default_name}'):")
+    print("    - ENTER / Bỏ trống: Sử dụng tên mặc định")
+    print("    - 'new': Đổi tên file cũ (thêm timestamp) & tạo file mới | 'now': Đặt tên vYYMMDD")
     
-    q = queue.Queue()
-    
-    def ask_input():
-        try:
-            val = input(">> Tên file của bạn: ").strip()
-            q.put(val)
-        except Exception:
-            q.put(None)
-
-    t = threading.Thread(target=ask_input, daemon=True)
-    t.start()
-
-    try:
-        user_input = q.get(timeout=timeout)
-    except queue.Empty:
-        user_input = None
-
-    if user_input is None or user_input == "":
-        print(f"\n[!] Quá {timeout} giây không nhận được nhập liệu. Tự động sử dụng tên mặc định: '{default_name}'")
+    user_input = _get_timed_input(timeout)
+    if not user_input:
+        print(f"\n[!] Quá {timeout}s không nhập liệu/bỏ trống. Dùng mặc định: '{default_name}'")
         return default_name
 
-    # Kiểm tra nếu chuỗi nhập vào dạng chữ thường bằng "now" (Ví dụ: NOW, nOw, noW, now...)
-    if user_input.lower() == "now":
-        yymmdd = datetime.now().strftime("%y%m%d") # Format YYMMDD (Ví dụ 260824 cho Năm 26, Tháng 08, Ngày 24)
-        generated_name = f"Brute_Force_Report_Pipeline v{yymmdd}"
-        print(f"\n[+] Nhận từ khóa '{user_input}'. Tên file tự động khởi tạo: '{generated_name}'")
+    cmd = user_input.lower()
+    if cmd == "new":
+        _archive_old_spreadsheet(default_name)
+        return default_name
+    elif cmd == "now":
+        generated_name = f"Brute_Force_Report_Pipeline v{datetime.now().strftime('%y%m%d')}"
+        print(f"\n[+] Tên file tự động khởi tạo: '{generated_name}'")
         return generated_name
 
     print(f"\n[+] Đã ghi nhận tên file tùy chỉnh: '{user_input}'")
