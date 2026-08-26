@@ -240,28 +240,51 @@ def load_existing_spreadsheet_results(sheet_name: str) -> dict:
         if key and key[0] != "N/A": existing[key] = res
     return existing
 
+def _get_learnable_metrics(seg_name: str, master_cam: str, le_data: dict) -> tuple[str, str]:
+    """Hàm phụ trợ để trích xuất metrics cho 1 segment và 1 camera cụ thể"""
+    # Chuẩn hóa tên camera
+    cam_key = "camera2" if "2" in str(master_cam).lower() else "camera1"
+    
+    # Lấy metrics của segment (nếu dict bị lồng), hoặc lấy toàn bộ (nếu cấu trúc phẳng)
+    seg_metrics = le_data.get(seg_name, le_data)
+    cam_metrics = seg_metrics.get(cam_key, {}) if isinstance(seg_metrics, dict) else {}
+    
+    return cam_metrics.get("MPJPE", "N/A"), cam_metrics.get("PA-MPJPE", "N/A")
+
+
 def _build_report_rows(all_results: dict, joint_keys: list) -> list:
+    # 1. Khởi tạo dữ liệu từ OS một lần duy nhất
+    raw_env = os.environ.get("LEARNABLE_EXTRA_METRICS", "{}")
+    le_data = json.loads(raw_env) if raw_env.strip() else {}
+
+    # 2. Chuẩn bị header mới
     header = ['Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 'MPJPE', 'PA-MPJPE', 
+              'LE MPJPE Master', 'LE PA-MPJPE Master',  # <-- 2 Cột mới (viết tắt LE cho gọn)
               'local_belief Master', 'local_belief Slave', 'Old MPJPE', 
               'Old PA-MPJPE', '% Δ_MPJPE', '% Δ_PA-MPJPE', 
               'OS Version', 'Username', 'Timestamp'] + joint_keys
     rows = [header]
     
+    def fmt(v): return round(float(v), 2) if v != float('inf') else "N/A"
+    
+    # 3. Tạo row
     for seg_name, results in all_results.items():
         for rank, res in enumerate(results, start=1):
-            def fmt(v): return round(float(v), 2) if v != float('inf') else "N/A"
+            # Gọi hàm phụ để lấy 2 độ đo
+            le_mpjpe, le_pa_mpjpe = _get_learnable_metrics(seg_name, res.get('master', ''), le_data)
+            
             row = [
                 res.get('set', 'Unknown_Set'), seg_name, rank, res['master'], res.get('supplement', 'N/A'),
                 fmt(res.get('mpjpe', float('inf'))), fmt(res.get('pa_mpjpe', float('inf'))),
-                res.get('local_belief_master', "[]"),
-                res.get('local_belief_slave', "[]"),
-                fmt(res.get('old_mpjpe', float('inf'))),
-                fmt(res.get('old_pa_mpjpe', float('inf'))), fmt(res.get('% delta_mpjpe', 0.0)),
-                fmt(res.get('% delta_pa_mpjpe', 0.0)), res.get('os_version', 'N/A'), 
-                res.get('username', 'N/A'), res.get('timestamp', 'N/A')
+                le_mpjpe, le_pa_mpjpe, # <-- Chèn vào dòng
+                res.get('local_belief_master', "[]"), res.get('local_belief_slave', "[]"),
+                fmt(res.get('old_mpjpe', float('inf'))), fmt(res.get('old_pa_mpjpe', float('inf'))), 
+                fmt(res.get('% delta_mpjpe', 0.0)), fmt(res.get('% delta_pa_mpjpe', 0.0)), 
+                res.get('os_version', 'N/A'), res.get('username', 'N/A'), res.get('timestamp', 'N/A')
             ]
             row.extend([fmt(res.get("joints", {}).get(jk, float('inf'))) for jk in joint_keys])
             rows.append(row)
+            
     return rows
 
 def _get_or_create_worksheet(sheet_name: str, worksheet_title: str = None, silent: bool = False):
