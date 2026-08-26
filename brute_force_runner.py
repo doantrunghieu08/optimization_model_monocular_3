@@ -462,7 +462,11 @@ def run_brute_force():
     with open(WS_DIR / "configs/brute_force.yml", "r", encoding="utf-8") as f: brute_cfg = yaml.safe_load(f)
     with open(WS_DIR / "configs/pipeline.yml", "r", encoding="utf-8") as f: base_cfg = yaml.safe_load(f)
 
-    default_sh_name = "Brute_Force_Report_Pipeline v260825-08h00p"
+    # Gọi hàm get_system_metadata() để lấy RUNNER_NAME
+    _, runner_name, _ = get_system_metadata()
+    
+    # Định nghĩa tên default bằng cách ghép RUNNER_NAME với đuôi yêu cầu
+    default_sh_name = f"{runner_name}_brute_force_pipeline"
     sh_name = get_spreadsheet_name_input(default_name=default_sh_name, timeout=10)
     
     ws_title = f"Run_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
