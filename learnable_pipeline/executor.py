@@ -401,7 +401,7 @@ def infer_learnable_temporal_from_fusion(
         iter_pose_t[:, 3:66] = body0.reshape(1, -1)[:, :63]
         iter_trans_t = trans0_pred_t.clone()
 
-        for frame_idx in range(1, frame_count):
+        for frame_idx in tqdm(range(1, frame_count), desc="Inferring Temporal Frames"):
             betas_t = torch.as_tensor(betas_np[frame_idx : frame_idx + 1], dtype=torch.float32, device=device)
             target_t = torch.as_tensor(target_body25_np[frame_idx : frame_idx + 1], dtype=torch.float32, device=device)
 
@@ -589,7 +589,7 @@ def _run_learnable_smplify_stage(
         # Produce 21 keypoints computed from best_pose/best_trans.
         smpl_layer = net.human_model.layer["neutral"]
         with torch.no_grad():
-            for frame_idx in range(frame_count):
+            for i in tqdm(range(frame_count), desc=f"[{stage_label}] Saving JSON Results"):
                 pose_t = torch.tensor(best_pose[frame_idx:frame_idx+1], dtype=torch.float32, device=device)
                 trans_t = torch.tensor(best_trans[frame_idx:frame_idx+1], dtype=torch.float32, device=device)
                 betas_t = torch.tensor(result["betas"][frame_idx:frame_idx+1], dtype=torch.float32, device=device)
