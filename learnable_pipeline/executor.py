@@ -521,7 +521,7 @@ def _run_learnable_smplify_stage(
             learnable_cfg["checkpoint"] = fallback_checkpoint
         else:
             raise ValueError("Missing config parameter: learnable.checkpoint")
-    learnable_cfg.setdefault("checkpoint", str(project_root / "models" / "best_ckpt.pth.tar"))
+    learnable_cfg["checkpoint"] = str(project_root / "models" / "best_ckpt.pth.tar")
     if runtime_cfg["clean_output"]:
         _clean_learnable_output(output_dir, output_file_prefix)
     else:
