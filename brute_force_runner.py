@@ -1,4 +1,4 @@
-#version 260826
+#version 260826_fixed
 import os
 import platform
 import getpass
@@ -58,14 +58,12 @@ def extract_set_name(pkl_path: str) -> str:
 
 def _build_format_requests(sheet_id: int, total_rows: int, total_cols: int) -> list:
     reqs = []
-    # Reset background
     reqs.append({"repeatCell": {
         "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": total_rows, 
                   "startColumnIndex": 0, "endColumnIndex": total_cols},
         "cell": {"userEnteredFormat": {"backgroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}}},
         "fields": "userEnteredFormat.backgroundColor"
     }})
-    # Format Header
     reqs.append({"repeatCell": {
         "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 1, 
                   "startColumnIndex": 0, "endColumnIndex": total_cols},
@@ -73,7 +71,6 @@ def _build_format_requests(sheet_id: int, total_rows: int, total_cols: int) -> l
                                        "backgroundColor": {"red": 0.85, "green": 0.85, "blue": 0.85}}},
         "fields": "userEnteredFormat(textFormat,backgroundColor)"
     }})
-    # Format Even Rows
     for r in range(1, total_rows, 2):
         reqs.append({"repeatCell": {
             "range": {"sheetId": sheet_id, "startRowIndex": r, "endRowIndex": r + 1, 
@@ -124,51 +121,32 @@ def parse_detailed_csv(csv_path: str, prefix: str) -> tuple[float, dict[str, flo
 
 def extract_local_belief(metadata_dir: Path) -> tuple[str, str]:
     if not metadata_dir.exists(): return "[]", "[]"
-    
-    c1_acc = {}
-    c2_acc = {}
-    count = 0
-    
+    c1_acc, c2_acc, count = {}, {}, 0
     for meta_file in metadata_dir.glob("fused_data_*.json"):
         try:
             with open(meta_file, 'r', encoding='utf-8') as f:
                 conf = json.load(f).get("joint_confidence", {})
                 c1, c2 = conf.get("camera1", {}), conf.get("camera2", {})
-                
-                # Nếu c1, c2 là list, chuyển thành dict với key là index để dễ xử lý
                 if isinstance(c1, list): c1 = {str(i): v for i, v in enumerate(c1)}
                 if isinstance(c2, list): c2 = {str(i): v for i, v in enumerate(c2)}
-                
                 if c1:
-                    for k, v in c1.items():
-                        c1_acc[k] = c1_acc.get(k, 0.0) + v
+                    for k, v in c1.items(): c1_acc[k] = c1_acc.get(k, 0.0) + v
                 if c2:
-                    for k, v in c2.items():
-                        c2_acc[k] = c2_acc.get(k, 0.0) + v
+                    for k, v in c2.items(): c2_acc[k] = c2_acc.get(k, 0.0) + v
             count += 1
         except Exception: pass
-        
-    if count == 0:
-        return "[]", "[]"
-        
-    # Tính trung bình, làm tròn 2 chữ số và chuyển thành List.
-    # (Sắp xếp các key theo thứ tự số để đảm bảo đúng thứ tự khớp từ 0, 1, 2...)
+    if count == 0: return "[]", "[]"
     def sort_key(k): return int(k) if str(k).isdigit() else k
-    
     b1_list = [round(c1_acc[k] / count, 2) for k in sorted(c1_acc.keys(), key=sort_key)]
     b2_list = [round(c2_acc[k] / count, 2) for k in sorted(c2_acc.keys(), key=sort_key)]
-    
-    # Trả về luôn chuỗi string (vd: "[0.85, 0.91]") để ghi vào Excel
     return str(b1_list), str(b2_list)
 
 def _get_sheet_data(sheet_name: str) -> tuple[list, list]:
     try:
         gc = get_gspread_client()
         sh = gc.open(sheet_name)
-        # Lấy worksheet cuối cùng trong danh sách (thường là cái mới tạo nhất)
         latest_worksheet = sh.worksheets()[-1] 
         data = latest_worksheet.get_all_values()
-        
         if not data or len(data) < 2: return [], []
         return data[0], data[1:]
     except Exception: 
@@ -176,47 +154,39 @@ def _get_sheet_data(sheet_name: str) -> tuple[list, list]:
 
 def _get_header_indices(header: list) -> dict:
     idx = {}
-    
-    # Danh sách chuẩn theo đúng header đang có trong file
     keys = [
         'Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 
-        'MPJPE', 'PA-MPJPE', 'local_belief Master', 'local_belief Slave', 
+        'MPJPE', 'PA-MPJPE', 'LE MPJPE Master', 'LE PA-MPJPE Master', 
+        'local_belief Master', 'local_belief Slave', 
         'Old MPJPE', 'Old PA-MPJPE', '% Δ_MPJPE', '% Δ_PA-MPJPE', 
         'OS Version', 'Username', 'Timestamp'
     ]
-    
     for k in keys:
         if k in header:
             idx[k] = header.index(k)
-        # Hỗ trợ fallback (dự phòng) trong trường hợp sheet ghi chữ 'd' thay vì ký hiệu 'Δ'
         elif k == '% Δ_MPJPE' and '% d_MPJPE%' in header:
             idx[k] = header.index('% d_MPJPE%')
         elif k == '% Δ_PA-MPJPE' and 'd_PA-MPJPE' in header:
             idx[k] = header.index('d_PA-MPJPE')
         else:
             idx[k] = -1
-            
-    # Tự động lấy tất cả các cột Joint thông qua tiền tố
     idx['joints'] = {h: i for i, h in enumerate(header) if h.startswith(("MPJPE_", "PA-MPJPE_"))}
-    
     return idx
 
 def _parse_history_row(row: list, idx: dict) -> tuple:
-    if row[idx['Segment']] == "End":
-      return None, None
-
+    if row[idx['Segment']] == "End": return None, None
     def get_val(col, default="N/A"):
         return row[idx[col]] if idx.get(col, -1) != -1 and idx[col] < len(row) else default
-    
     def sf(col_name): 
-        v = row[idx[col_name]] if idx[col_name] != -1 else "N/A"
+        v = row[idx[col_name]] if idx.get(col_name, -1) != -1 else "N/A"
         v = str(v).strip().replace(',', '.')
         return float(v) if v not in ("N/A", "") else float('inf')
     
     key = (row[idx['Segment']], row[idx['Cam Master']], row[idx['Cam Slave']])
-    
     res = {
         "mpjpe": sf('MPJPE'), "pa_mpjpe": sf('PA-MPJPE'), 
+        "le_mpjpe_master": get_val('LE MPJPE Master', "N/A"),
+        "le_pa_mpjpe_master": get_val('LE PA-MPJPE Master', "N/A"),
         "local_belief_master": get_val('local_belief Master', "[]"),
         "local_belief_slave": get_val('local_belief Slave', "[]"),
         "old_mpjpe": sf('Old MPJPE'), "old_pa_mpjpe": sf('Old PA-MPJPE'),
@@ -231,35 +201,16 @@ def load_existing_spreadsheet_results(sheet_name: str) -> dict:
     existing = {}
     header, rows = _get_sheet_data(sheet_name)
     if not header: return existing
-    
     idx = _get_header_indices(header)
     if idx['Segment'] == -1: return existing
-
     for row in rows:
         key, res = _parse_history_row(row, idx)
         if key and key[0] != "N/A": existing[key] = res
     return existing
 
-def _get_learnable_metrics(seg_name: str, master_cam: str, le_data: dict) -> tuple[str, str]:
-    """Hàm phụ trợ để trích xuất metrics cho 1 segment và 1 camera cụ thể"""
-    # Chuẩn hóa tên camera
-    cam_key = "camera2" if "2" in str(master_cam).lower() else "camera1"
-    
-    # Lấy metrics của segment (nếu dict bị lồng), hoặc lấy toàn bộ (nếu cấu trúc phẳng)
-    seg_metrics = le_data.get(seg_name, le_data)
-    cam_metrics = seg_metrics.get(cam_key, {}) if isinstance(seg_metrics, dict) else {}
-    
-    return cam_metrics.get("MPJPE", "N/A"), cam_metrics.get("PA-MPJPE", "N/A")
-
-
 def _build_report_rows(all_results: dict, joint_keys: list) -> list:
-    # 1. Khởi tạo dữ liệu từ OS một lần duy nhất
-    raw_env = os.environ.get("LEARNABLE_EXTRA_METRICS", "{}")
-    le_data = json.loads(raw_env) if raw_env.strip() else {}
-
-    # 2. Chuẩn bị header mới
     header = ['Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 'MPJPE', 'PA-MPJPE', 
-              'LE MPJPE Master', 'LE PA-MPJPE Master',  # <-- 2 Cột mới (viết tắt LE cho gọn)
+              'LE MPJPE Master', 'LE PA-MPJPE Master', 
               'local_belief Master', 'local_belief Slave', 'Old MPJPE', 
               'Old PA-MPJPE', '% Δ_MPJPE', '% Δ_PA-MPJPE', 
               'OS Version', 'Username', 'Timestamp'] + joint_keys
@@ -267,16 +218,12 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
     
     def fmt(v): return round(float(v), 2) if v != float('inf') else "N/A"
     
-    # 3. Tạo row
     for seg_name, results in all_results.items():
         for rank, res in enumerate(results, start=1):
-            # Gọi hàm phụ để lấy 2 độ đo
-            le_mpjpe, le_pa_mpjpe = _get_learnable_metrics(seg_name, res.get('master', ''), le_data)
-            
             row = [
                 res.get('set', 'Unknown_Set'), seg_name, rank, res['master'], res.get('supplement', 'N/A'),
                 fmt(res.get('mpjpe', float('inf'))), fmt(res.get('pa_mpjpe', float('inf'))),
-                le_mpjpe, le_pa_mpjpe, # <-- Chèn vào dòng
+                res.get('le_mpjpe_master', 'N/A'), res.get('le_pa_mpjpe_master', 'N/A'),
                 res.get('local_belief_master', "[]"), res.get('local_belief_slave', "[]"),
                 fmt(res.get('old_mpjpe', float('inf'))), fmt(res.get('old_pa_mpjpe', float('inf'))), 
                 fmt(res.get('% delta_mpjpe', 0.0)), fmt(res.get('% delta_pa_mpjpe', 0.0)), 
@@ -288,7 +235,6 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
     return rows
 
 def _get_or_create_worksheet(sheet_name: str, worksheet_title: str = None, silent: bool = False):
-    """Hàm phụ trợ lấy hoặc tạo mới Spreadsheet và Worksheet."""
     gc = get_gspread_client()
     try:
         sh = gc.open(sheet_name)
@@ -296,11 +242,9 @@ def _get_or_create_worksheet(sheet_name: str, worksheet_title: str = None, silen
         sh = gc.create(sheet_name)
         try:
             sh.share('', perm_type='anyone', role='reader')
-            if not silent:
-                print(f"[+] Đã tạo Spreadsheet '{sheet_name}' và cấp quyền Public (Ai có link cũng có thể xem).")
+            if not silent: print(f"[+] Đã tạo Spreadsheet '{sheet_name}' và cấp quyền Public.")
         except Exception as e:
-            if not silent:
-                print(f"[-] Không thể tự động cấp quyền Public. Lỗi: {e}")
+            if not silent: print(f"[-] Không thể tự động cấp quyền Public. Lỗi: {e}")
 
     if worksheet_title:
         try:
@@ -309,19 +253,16 @@ def _get_or_create_worksheet(sheet_name: str, worksheet_title: str = None, silen
             worksheet = sh.add_worksheet(title=worksheet_title, rows="1000", cols="50")
     else:
         worksheet = sh.sheet1
-
     return sh, worksheet
 
 def generate_spreadsheet_report(all_results, sheet_name, worksheet_title=None, silent=False, is_final=False):
     sh, worksheet = _get_or_create_worksheet(sheet_name, worksheet_title, silent)
-
     all_joint_keys = set()
     for seg_results in all_results.values():
         for res in seg_results:
             all_joint_keys.update(res.get("joints", {}).keys())
     
     rows_to_insert = _build_report_rows(all_results, sorted(list(all_joint_keys)))
-
     if is_final and len(rows_to_insert) > 0:
         rows_to_insert.append(["End"] * len(rows_to_insert[0]))
 
@@ -332,19 +273,16 @@ def generate_spreadsheet_report(all_results, sheet_name, worksheet_title=None, s
         worksheet.update(rows_to_insert)
 
     decorate(worksheet, len(rows_to_insert), len(rows_to_insert[0]))
-
-    if not silent:
-        print(f"\nĐã xuất báo cáo ra Google Spreadsheet thành công!\n🔗 Xem file tại: {sh.url}")
+    if not silent: print(f"\nĐã xuất báo cáo ra Google Spreadsheet thành công!\n🔗 Xem file tại: {sh.url}")
 
 def generate_spreadsheet_report_safe(all_results, sheet_name, worksheet_title=None, silent=False, is_final=False, max_retries=5):
-    """Hàm bọc giúp tự động chờ và thử lại nếu đụng trần Quota API (429)."""
     for attempt in range(max_retries):
         try:
             generate_spreadsheet_report(all_results, sheet_name, worksheet_title, silent, is_final)
             return
         except gspread.exceptions.APIError as e:
             if hasattr(e, 'response') and e.response.status_code == 429:
-                wait_time = (attempt + 1) * 15  # Tăng dần thời gian chờ: 15s, 30s, 45s...
+                wait_time = (attempt + 1) * 15 
                 print(f"\n[!] Vượt quá giới hạn Google API (429). Đang chờ {wait_time}s trước khi thử lại...")
                 time.sleep(wait_time)
             else:
@@ -366,7 +304,7 @@ def _setup_pipeline_config(base_cfg, gt_dir, camA, camB, workspace):
     cfg.setdefault("learnable_extra", {})["device"] = "cuda"
     return absolutize_config_paths(cfg, workspace)
 
-def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_id: str) -> dict:
+def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_id: str, seg_name: str) -> dict:
     eval_dir = Path(config["paths"]["evaluation_output_dir"])
     t_pref = "fusion-learnable" if config.get("learnable", {}).get("enabled", True) else "fused"
     
@@ -383,15 +321,26 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
     joint_metrics.update({f"PA-MPJPE_{k}": v for k, v in pa_jts.items()})
     os_v, usr, ts = get_system_metadata()
 
+    # Trích xuất ngay lập tức metrics LE từ biến môi trường của lần chạy hiện tại
+    raw_env = os.environ.get("LEARNABLE_EXTRA_METRICS", "{}")
+    le_data = json.loads(raw_env) if raw_env.strip() else {}
+    seg_metrics = le_data.get(seg_name, le_data)
+    # Cam Master (camA) luôn luôn được pipeline gán vào role "camera1"
+    cam1_metrics = seg_metrics.get("camera1", {}) if isinstance(seg_metrics, dict) else {}
+    le_mpjpe = cam1_metrics.get("MPJPE", "N/A")
+    le_pa_mpjpe = cam1_metrics.get("PA-MPJPE", "N/A")
+
     return {
         "set": current_set, "master": camA_id, "supplement": camB_id, "mpjpe": mpjpe, 
-        "pa_mpjpe": pa_mpjpe, "local_belief_master": b1,
+        "pa_mpjpe": pa_mpjpe, 
+        "le_mpjpe_master": le_mpjpe, "le_pa_mpjpe_master": le_pa_mpjpe,
+        "local_belief_master": b1,
         "local_belief_slave": b2, "old_mpjpe": old_m, "old_pa_mpjpe": old_pa,
         "% delta_mpjpe": pd_m, "% delta_pa_mpjpe": pd_pa, "joints": joint_metrics,
         "os_version": os_v, "username": usr, "timestamp": ts
     }
 
-def _evaluate_camera_pair(camA, camB, base_cfg, gt_dir, workspace) -> dict:
+def _evaluate_camera_pair(camA, camB, base_cfg, gt_dir, workspace, seg_name: str) -> dict:
     current_set = extract_set_name(camA["pkl"])
     os_v, usr, ts = get_system_metadata()
     if not (workspace / camA["pkl"]).exists() or not (workspace / camB["pkl"]).exists():
@@ -401,13 +350,10 @@ def _evaluate_camera_pair(camA, camB, base_cfg, gt_dir, workspace) -> dict:
     try:
         config = _setup_pipeline_config(base_cfg, gt_dir, camA, camB, workspace)
         run_pipeline(config, stage_override=None)
-        res = _parse_pipeline_results(config, current_set, camA["id"], camB["id"])
+        res = _parse_pipeline_results(config, current_set, camA["id"], camB["id"], seg_name)
 
-        # Lấy giá trị delta (dùng .get để tránh lỗi nếu key không tồn tại trong một số trường hợp)
         d_mpjpe = res.get('% delta_mpjpe', 0.0)
         d_pa_mpjpe = res.get('% delta_pa_mpjpe', 0.0)
-        
-        # In ra màn hình với đầy đủ các thông số
         print(f"Kết quả {camA['id']}-{camB['id']}: "
               f"MPJPE={res['mpjpe']:.2f} (Δ {d_mpjpe:+.2f}%), "
               f"PA-MPJPE={res['pa_mpjpe']:.2f} (Δ {d_pa_mpjpe:+.2f}%)")
@@ -420,7 +366,6 @@ def _evaluate_camera_pair(camA, camB, base_cfg, gt_dir, workspace) -> dict:
                 "os_version": os_v, "username": usr, "timestamp": ts}
 
 def _get_timed_input(timeout: int) -> str | None:
-    """Hàm phụ: Chờ nhận input từ console với timeout."""
     q = queue.Queue()
     def ask():
         try: q.put(input(">> Tên file của bạn: ").strip())
@@ -430,7 +375,6 @@ def _get_timed_input(timeout: int) -> str | None:
     except queue.Empty: return None
 
 def _archive_old_spreadsheet(default_name: str):
-    """Hàm phụ: Tìm và lưu trữ (đổi tên) file mặc định cũ trên Drive."""
     print(f"\n[+] Đang kiểm tra và lưu trữ file mặc định cũ '{default_name}'...")
     try:
         sh = get_gspread_client().open(default_name)
@@ -448,7 +392,6 @@ def _archive_old_spreadsheet(default_name: str):
         print(f"[-] Không thể đổi tên file cũ ({e}). Sẽ dùng file mặc định hiện tại.")
 
 def get_spreadsheet_name_input(default_name: str = "Brute_Force_Report_Pipeline v260823", timeout: int = 10) -> str:
-    """Hỏi người dùng tên Google Spreadsheet với timeout 10 giây."""
     print(f"\n[?] Nhập tên file Google Spreadsheet (Mặc định: '{default_name}'):")
     print("    - ENTER / Bỏ trống: Sử dụng tên mặc định")
     print("    - 'new': Đổi tên file cũ (thêm timestamp) & tạo file mới | 'now': Đặt tên vYYMMDD")
@@ -471,9 +414,7 @@ def get_spreadsheet_name_input(default_name: str = "Brute_Force_Report_Pipeline 
     print(f"\n[+] Đã ghi nhận tên file tùy chỉnh: '{user_input}'")
     return user_input
 
-
 def _process_segment(seg, existing, base_cfg, ws_dir, sh_name, ws_title, all_res, current_idx, total_pairs):
-    """Hàm phụ trợ xử lý từng segment để giảm tải cho run_brute_force"""
     seg_name, cameras = seg["name"], seg.get("cameras", [])
     seg_total_pairs = len(cameras) * (len(cameras) - 1)
     print(f"\n=== Bắt đầu vét cạn cho Segment: {seg_name} ({seg_total_pairs} cặp) ===")
@@ -491,7 +432,7 @@ def _process_segment(seg, existing, base_cfg, ws_dir, sh_name, ws_title, all_res
             results.append(res)
             continue
         
-        res = _evaluate_camera_pair(cA, cB, base_cfg, str(ws_dir / seg["ground_truth_dir"]), ws_dir)
+        res = _evaluate_camera_pair(cA, cB, base_cfg, str(ws_dir / seg["ground_truth_dir"]), ws_dir, seg_name)
         results.append(res)
         
         current_time = time.time()
@@ -505,7 +446,6 @@ def _process_segment(seg, existing, base_cfg, ws_dir, sh_name, ws_title, all_res
             generate_spreadsheet_report_safe(temp_res, sh_name, ws_title, silent=True)
             last_update_time = current_time
 
-    # Trả về kết quả đã sort của segment hiện tại và biến đếm idx
     sorted_results = sorted(
         results, 
         key=lambda x: x.get("% delta_mpjpe", float('-inf')) + x.get("% delta_pa_mpjpe", float('-inf')), 
@@ -518,10 +458,7 @@ def run_brute_force():
     with open(WS_DIR / "configs/brute_force.yml", "r", encoding="utf-8") as f: brute_cfg = yaml.safe_load(f)
     with open(WS_DIR / "configs/pipeline.yml", "r", encoding="utf-8") as f: base_cfg = yaml.safe_load(f)
 
-    # Gọi hàm get_system_metadata() để lấy RUNNER_NAME
     _, runner_name, _ = get_system_metadata()
-    
-    # Định nghĩa tên default bằng cách ghép RUNNER_NAME với đuôi yêu cầu
     default_sh_name = f"{runner_name}_brute_force_pipeline"
     sh_name = get_spreadsheet_name_input(default_name=default_sh_name, timeout=10)
     
@@ -539,7 +476,6 @@ def run_brute_force():
     for seg in brute_cfg.get("segments", []):
         if len(seg.get("cameras", [])) < 2: continue
         
-        # Gọi hàm xử lý vừa tạo
         sorted_res, current_pair_idx = _process_segment(
             seg, existing, base_cfg, WS_DIR, sh_name, ws_title, all_res, current_pair_idx, total_pairs
         )
