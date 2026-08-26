@@ -506,10 +506,14 @@ def _run_learnable_smplify_stage(
     # Notebook adaptation: source project uses repo_root/Learnable-SMPLify/src;
     # this notebook keeps the vendored Learnable backend in LEARNABLE_VENDOR_ROOT/src.
     repo_root = LEARNABLE_VENDOR_ROOT
+
+    project_root = repo_root.parent # Trỏ về /content/optimization_model_monocular_3
+    
     learnable_cfg.setdefault("repo_src", str(repo_root / "src"))
     learnable_cfg.setdefault("net_config", str(repo_root / "src" / "config" / "net.yaml"))
-    learnable_cfg.setdefault("smpl_family_dir", "models")
-    learnable_cfg.setdefault("j_regressor_body25", "models/J_regressor_body25.npy")
+    # Dùng project_root để tạo đường dẫn tuyệt đối chuẩn xác
+    learnable_cfg.setdefault("smpl_family_dir", str(project_root / "models"))
+    learnable_cfg.setdefault("j_regressor_body25", str(project_root / "models" / "smpl" / "J_regressor_body25.npy"))
     learnable_cfg["smpl_neutral_path"] = paths["smpl_model"]
     if not learnable_cfg.get("checkpoint"):
         fallback_checkpoint = config.get("learnable", {}).get("checkpoint")
@@ -517,7 +521,7 @@ def _run_learnable_smplify_stage(
             learnable_cfg["checkpoint"] = fallback_checkpoint
         else:
             raise ValueError("Missing config parameter: learnable.checkpoint")
-
+    learnable_cfg.setdefault("checkpoint", str(project_root / "models" / "best_ckpt.pth.tar"))
     if runtime_cfg["clean_output"]:
         _clean_learnable_output(output_dir, output_file_prefix)
     else:
