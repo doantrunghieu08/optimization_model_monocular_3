@@ -440,7 +440,8 @@ def get_spreadsheet_name_input(default_name: str = "Brute_Force_Report_Pipeline 
         _archive_old_spreadsheet(default_name)
         return default_name
     elif cmd == "now":
-        generated_name = f"Brute_Force_Report_Pipeline v{datetime.now().strftime('%y%m%d')}"
+        _, runner_name, _ = get_system_metadata()
+        generated_name = f"{runner_name}_Brute_Force_Report_Pipeline v{datetime.now().strftime('%y%m%d')}"
         print(f"\n[+] Tên file tự động khởi tạo: '{generated_name}'")
         return generated_name
 
