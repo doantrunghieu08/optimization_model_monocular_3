@@ -313,6 +313,21 @@ def generate_spreadsheet_report(all_results, sheet_name, worksheet_title=None, s
     if not silent:
         print(f"\nĐã xuất báo cáo ra Google Spreadsheet thành công!\n🔗 Xem file tại: {sh.url}")
 
+def generate_spreadsheet_report_safe(all_results, sheet_name, worksheet_title=None, silent=False, is_final=False, max_retries=5):
+    """Hàm bọc giúp tự động chờ và thử lại nếu đụng trần Quota API (429)."""
+    for attempt in range(max_retries):
+        try:
+            generate_spreadsheet_report(all_results, sheet_name, worksheet_title, silent, is_final)
+            return
+        except gspread.exceptions.APIError as e:
+            if hasattr(e, 'response') and e.response.status_code == 429:
+                wait_time = (attempt + 1) * 15  # Tăng dần thời gian chờ: 15s, 30s, 45s...
+                print(f"\n[!] Vượt quá giới hạn Google API (429). Đang chờ {wait_time}s trước khi thử lại...")
+                time.sleep(wait_time)
+            else:
+                raise e
+    print("[-] Đã thử lại nhiều lần nhưng không thể ghi Google Sheet do nghẽn API.")
+
 def _setup_pipeline_config(base_cfg, gt_dir, camA, camB, workspace):
     import copy
     cfg = copy.deepcopy(base_cfg)
@@ -440,6 +455,8 @@ def _process_segment(seg, existing, base_cfg, ws_dir, sh_name, ws_title, all_res
     print(f"\n=== Bắt đầu vét cạn cho Segment: {seg_name} ({seg_total_pairs} cặp) ===")
     
     results = []
+    last_update_time = time.time()
+    
     for cA, cB in itertools.permutations(cameras, 2):
         current_idx += 1
         print(f"\n--- [Tiến trình: {current_idx}/{total_pairs}] Master={cA['id']} | Supplement={cB['id']} ---")
@@ -453,14 +470,16 @@ def _process_segment(seg, existing, base_cfg, ws_dir, sh_name, ws_title, all_res
         res = _evaluate_camera_pair(cA, cB, base_cfg, str(ws_dir / seg["ground_truth_dir"]), ws_dir)
         results.append(res)
         
-        # Cập nhật tạm thời và lưu lên sheet
-        temp_res = dict(all_res)
-        temp_res[seg_name] = sorted(
-            results, 
-            key=lambda x: x.get("% delta_mpjpe", float('-inf')) + x.get("% delta_pa_mpjpe", float('-inf')), 
-            reverse=True
-        )
-        generate_spreadsheet_report(temp_res, sh_name, ws_title, silent=True)
+        current_time = time.time()
+        if current_time - last_update_time > 30:
+            temp_res = dict(all_res)
+            temp_res[seg_name] = sorted(
+                results, 
+                key=lambda x: x.get("% delta_mpjpe", float('-inf')) + x.get("% delta_pa_mpjpe", float('-inf')), 
+                reverse=True
+            )
+            generate_spreadsheet_report_safe(temp_res, sh_name, ws_title, silent=True)
+            last_update_time = current_time
 
     # Trả về kết quả đã sort của segment hiện tại và biến đếm idx
     sorted_results = sorted(
@@ -502,7 +521,7 @@ def run_brute_force():
         )
         all_res[seg["name"]] = sorted_res
         
-    generate_spreadsheet_report(all_res, sh_name, ws_title, silent=False, is_final=True)
+    generate_spreadsheet_report_safe(all_res, sh_name, ws_title, silent=False, is_final=True)
 
 if __name__ == "__main__":
     run_brute_force()
