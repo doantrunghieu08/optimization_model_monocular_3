@@ -73,7 +73,8 @@ def load_config(config_path):
         raise FileNotFoundError("Config file not found: {}".format(path))
 
     with path.open("r", encoding="utf-8") as f:
-        config = yaml.safe_load(f) or {}
+        # dùng custom_yaml thay cho yaml mặc định
+        config = custom_yaml.load(f) or {}
 
     validate_config(config)
     return config
