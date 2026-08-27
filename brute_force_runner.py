@@ -11,6 +11,7 @@ from datetime import datetime
 import time
 import threading
 import queue
+from config_loader import load_config
 
 VIDEO_FOLDER = "imageSequence"
 
