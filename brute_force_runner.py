@@ -464,8 +464,8 @@ def run_brute_force():
     # Gọi hàm load_config đã được "nâng cấp" để nó tự động parse biến môi trường
     base_cfg = load_config(WS_DIR / "configs/pipeline.yml")
     # Kiểm tra xem file config đã nhận đúng giá trị chưa
-    print("Alpha trong config:", config['fusion']['belief']['alpha'])
-    print("Beta trong config:", config['fusion']['belief']['beta'])
+    print("Alpha trong config:", base_cfg['fusion']['belief']['alpha'])
+    print("Beta trong config:", base_cfg['fusion']['belief']['beta'])
     import pdb
     pdb.set_trace()
 
