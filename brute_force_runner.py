@@ -466,9 +466,7 @@ def run_brute_force():
     # Kiểm tra xem file config đã nhận đúng giá trị chưa
     print("Alpha trong config:", base_cfg['fusion']['belief']['alpha'])
     print("Beta trong config:", base_cfg['fusion']['belief']['beta'])
-    import pdb
-    pdb.set_trace()
-
+    
     _, runner_name, _ = get_system_metadata()
     default_sh_name = f"{runner_name}_brute_force_pipeline"
     sh_name = get_spreadsheet_name_input(default_name=default_sh_name, timeout=10)
