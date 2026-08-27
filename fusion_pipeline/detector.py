@@ -151,10 +151,6 @@ def compute_harmonic_precision(
     epsilon=HARMONIC_EPSILON,
 ):
     neighbors = {}
-    #Would be removed ASAP
-    import pdb
-    print(f"hệ số alpha = {alpha}, beta = {beta}")
-    pdb.set_trace()
     for child, parent in RIGID_BONES_RATIO.keys():
         neighbors.setdefault(child, []).append(parent)
         neighbors.setdefault(parent, []).append(child)
