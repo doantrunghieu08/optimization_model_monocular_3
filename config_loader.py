@@ -22,6 +22,27 @@ INPUT_KEYS = (
     "ground_truth_dir",
 )
 
+def env_var_constructor(loader, node):
+    value = loader.construct_scalar(node)
+    match = env_pattern.match(value)
+    if match:
+        env_var = match.group(1)
+        default_value = match.group(2)
+        result = os.environ.get(env_var, default_value)
+        
+        if result is None or result == 'null': return None
+        if isinstance(result, str):
+            result = result.strip('"').strip("'")
+            if result.lower() == 'true': return True
+            if result.lower() == 'false': return False
+            if result.isdigit(): return int(result)
+            try:
+                return float(result)
+            except ValueError:
+                pass
+        return result
+    return value
+
 def resolve_inputs(config):
     inputs = config.get("inputs")
     if not isinstance(inputs, dict):
