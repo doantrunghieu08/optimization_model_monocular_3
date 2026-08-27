@@ -6,6 +6,8 @@ from pathlib import Path
 import sys
 import numpy as np
 
+# --- LOGIC PHÂN GIẢI BIẾN MÔI TRƯỜNG Ở ĐÂY ---
+env_pattern = re.compile(r'^\${([a-zA-Z0-9_]+)(?::-([^}]+))?}$')
 
 ALLOWED_STAGES = {
     "visualization",
