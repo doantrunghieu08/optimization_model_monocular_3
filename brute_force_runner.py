@@ -460,7 +460,13 @@ def _process_segment(seg, existing, base_cfg, ws_dir, sh_name, ws_title, all_res
 def run_brute_force():
     WS_DIR = Path(__file__).parent.resolve()
     with open(WS_DIR / "configs/brute_force.yml", "r", encoding="utf-8") as f: brute_cfg = yaml.safe_load(f)
-    with open(WS_DIR / "configs/pipeline.yml", "r", encoding="utf-8") as f: base_cfg = yaml.safe_load(f)
+    # Gọi hàm load_config đã được "nâng cấp" để nó tự động parse biến môi trường
+    base_cfg = load_config(WS_DIR / "configs/pipeline.yml")
+    # Kiểm tra xem file config đã nhận đúng giá trị chưa
+    print("Alpha trong config:", config['fusion']['belief']['alpha'])
+    print("Beta trong config:", config['fusion']['belief']['beta'])
+    import pdb
+    pdb.set_trace()
 
     _, runner_name, _ = get_system_metadata()
     default_sh_name = f"{runner_name}_brute_force_pipeline"
