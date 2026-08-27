@@ -58,7 +58,7 @@ learnable:
   checkpoint: "models/best_ckpt.pth.tar"
 
 learnable_extra:
-  enabled: false
+  enabled: true
 
 visualization:
   enabled: false
