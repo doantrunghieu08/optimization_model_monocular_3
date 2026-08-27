@@ -22,12 +22,12 @@ def set_env_from_filename(notebook_filename: str):
         beta_val = float(match.group(2))
         
         # Nạp vào os.environ (cùng tên biến với file pipeline.yml)
-        os.environ["FUSION_ALPHA"] = str(alpha_val)
-        os.environ["FUSION_BETA"] = str(beta_val)
+        os.environ["ALPHA"] = str(alpha_val)
+        os.environ["BETA"] = str(beta_val)
         
         print(f"[INFO] Đã nạp biến môi trường từ tên file:")
-        print(f"       FUSION_ALPHA = {alpha_val}")
-        print(f"       FUSION_BETA  = {beta_val}")
+        print(f"       ALPHA = {alpha_val}")
+        print(f"       BETA  = {beta_val}")
     else:
         print("[WARNING] Không tìm thấy alpha/beta trong tên file, sẽ dùng giá trị default trong tệp YML.")
 
