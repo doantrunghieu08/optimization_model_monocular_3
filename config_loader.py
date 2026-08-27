@@ -43,6 +43,12 @@ def env_var_constructor(loader, node):
         return result
     return value
 
+# Khởi tạo đối tượng yaml mới
+custom_yaml = YAML(typ='safe')
+custom_yaml.resolver.add_implicit_resolver('!env_var', env_pattern, None)
+custom_yaml.constructor.add_constructor('!env_var', env_var_constructor)
+# ----------------------------------------------------
+
 def resolve_inputs(config):
     inputs = config.get("inputs")
     if not isinstance(inputs, dict):
