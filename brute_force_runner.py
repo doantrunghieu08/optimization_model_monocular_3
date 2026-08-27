@@ -357,7 +357,10 @@ def _evaluate_camera_pair(camA, camB, base_cfg, gt_dir, workspace, seg_name: str
         d_pa_mpjpe = res.get('% delta_pa_mpjpe', 0.0)
         le_mpjpe = res.get('le_mpjpe_master', 0.0)
         le_pa_mpjpe = res.get('le_pa_mpjpe_master', 0.0)
-        print(f"Kết quả {camA['id']}-{camB['id']}: "
+
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        print(f"[{current_time}] Kết quả {camA['id']}-{camB['id']}: "
               f"MPJPE={res['mpjpe']:.2f} (Δ {d_mpjpe:+.2f}%), "
               f"PA-MPJPE={res['pa_mpjpe']:.2f} (Δ {d_pa_mpjpe:+.2f}%)",
               f"LE MPJPE={le_mpjpe} (LE PA-MPJPE {le_pa_mpjpe}), "
