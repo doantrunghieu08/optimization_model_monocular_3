@@ -9,6 +9,28 @@ import numpy as np
 # --- LOGIC PHÂN GIẢI BIẾN MÔI TRƯỜNG Ở ĐÂY ---
 env_pattern = re.compile(r'^\${([a-zA-Z0-9_]+)(?::-([^}]+))?}$')
 
+def set_env_from_filename(notebook_filename: str):
+    """
+    Hàm này lấy alpha, beta từ tên file notebook và nạp vào os.environ
+    để tệp pipeline.yml có thể đọc được.
+    """
+    pattern = r"_alpha(\d+[Ee]-?\d+)_beta(\d+[Ee]-?\d+)"
+    match = re.search(pattern, notebook_filename)
+    
+    if match:
+        alpha_val = float(match.group(1))
+        beta_val = float(match.group(2))
+        
+        # Nạp vào os.environ (cùng tên biến với file pipeline.yml)
+        os.environ["FUSION_ALPHA"] = str(alpha_val)
+        os.environ["FUSION_BETA"] = str(beta_val)
+        
+        print(f"[INFO] Đã nạp biến môi trường từ tên file:")
+        print(f"       FUSION_ALPHA = {alpha_val}")
+        print(f"       FUSION_BETA  = {beta_val}")
+    else:
+        print("[WARNING] Không tìm thấy alpha/beta trong tên file, sẽ dùng giá trị default trong tệp YML.")
+
 ALLOWED_STAGES = {
     "visualization",
     "evaluation",
