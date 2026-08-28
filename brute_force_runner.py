@@ -1,4 +1,4 @@
-#version 260826_fixed
+#version 260828
 import os
 import platform
 import getpass
@@ -156,6 +156,7 @@ def _get_sheet_data(sheet_name: str) -> tuple[list, list]:
 def _get_header_indices(header: list) -> dict:
     idx = {}
     keys = [
+        'alpha', 'beta',
         'Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 
         'MPJPE', 'PA-MPJPE', 'LE MPJPE Master', 'LE PA-MPJPE Master', 
         'local_belief Master', 'local_belief Slave', 
@@ -185,6 +186,7 @@ def _parse_history_row(row: list, idx: dict) -> tuple:
     
     key = (row[idx['Segment']], row[idx['Cam Master']], row[idx['Cam Slave']])
     res = {
+        "alpha": get_val('alpha', "N/A"), "beta": get_val('beta', "N/A"),
         "mpjpe": sf('MPJPE'), "pa_mpjpe": sf('PA-MPJPE'), 
         "le_mpjpe_master": get_val('LE MPJPE Master', "N/A"),
         "le_pa_mpjpe_master": get_val('LE PA-MPJPE Master', "N/A"),
@@ -210,7 +212,7 @@ def load_existing_spreadsheet_results(sheet_name: str) -> dict:
     return existing
 
 def _build_report_rows(all_results: dict, joint_keys: list) -> list:
-    header = ['Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 'MPJPE', 'PA-MPJPE', 
+    header = ['alpha', 'beta', 'Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 'MPJPE', 'PA-MPJPE', 
               'LE MPJPE Master', 'LE PA-MPJPE Master', 
               'local_belief Master', 'local_belief Slave', 'Old MPJPE', 
               'Old PA-MPJPE', '% Δ_MPJPE', '% Δ_PA-MPJPE', 
@@ -222,6 +224,7 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
     for seg_name, results in all_results.items():
         for rank, res in enumerate(results, start=1):
             row = [
+                res.get('alpha', 'N/A'), res.get('beta', 'N/A'),
                 res.get('set', 'Unknown_Set'), seg_name, rank, res['master'], res.get('supplement', 'N/A'),
                 fmt(res.get('mpjpe', float('inf'))), fmt(res.get('pa_mpjpe', float('inf'))),
                 res.get('le_mpjpe_master', 'N/A'), res.get('le_pa_mpjpe_master', 'N/A'),
@@ -331,7 +334,12 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
     le_mpjpe = cam1_metrics.get("MPJPE", "N/A")
     le_pa_mpjpe = cam1_metrics.get("PA-MPJPE", "N/A")
 
+    # <--- Nạp alpha beta từ config cho lượt chạy hiện tại
+    alpha_val = config.get("fusion", {}).get("belief", {}).get("alpha", "N/A")
+    beta_val = config.get("fusion", {}).get("belief", {}).get("beta", "N/A")
+
     return {
+        "alpha": alpha_val, "beta": beta_val,
         "set": current_set, "master": camA_id, "supplement": camB_id, "mpjpe": mpjpe, 
         "pa_mpjpe": pa_mpjpe, 
         "le_mpjpe_master": le_mpjpe, "le_pa_mpjpe_master": le_pa_mpjpe,
@@ -344,6 +352,13 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
 def _evaluate_camera_pair(camA, camB, base_cfg, gt_dir, workspace, seg_name: str) -> dict:
     current_set = extract_set_name(camA["pkl"])
     os_v, usr, ts = get_system_metadata()
+
+    alpha_val = base_cfg.get("fusion", {}).get("belief", {}).get("alpha", "N/A")
+    beta_val = base_cfg.get("fusion", {}).get("belief", {}).get("beta", "N/A")
+
+    import pdb
+    pdb.set_trace()
+
     if not (workspace / camA["pkl"]).exists() or not (workspace / camB["pkl"]).exists():
         print("Bỏ qua cặp này do thiếu file pkl đầu vào.")
         return {"set": current_set, "master": camA["id"], "supplement": camB["id"], 
@@ -436,7 +451,15 @@ def _process_segment(seg, existing, base_cfg, ws_dir, sh_name, ws_title, all_res
 
         if (seg_name, cA["id"], cB["id"]) in existing:
             res = existing[(seg_name, cA["id"], cB["id"])]
-            res.update({"set": res.get("set", extract_set_name(cA["pkl"])), "master": cA["id"], "supplement": cB["id"]})
+            alpha_val = base_cfg.get("fusion", {}).get("belief", {}).get("alpha", "N/A")
+            beta_val = base_cfg.get("fusion", {}).get("belief", {}).get("beta", "N/A")
+            res.update({
+                "alpha": alpha_val,
+                "beta": beta_val,
+                "set": res.get("set", extract_set_name(cA["pkl"])), 
+                "master": cA["id"], 
+                "supplement": cB["id"]
+            })
             results.append(res)
             continue
         
