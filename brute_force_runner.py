@@ -356,8 +356,8 @@ def _evaluate_camera_pair(camA, camB, base_cfg, gt_dir, workspace, seg_name: str
     alpha_val = base_cfg.get("fusion", {}).get("belief", {}).get("alpha", "N/A")
     beta_val = base_cfg.get("fusion", {}).get("belief", {}).get("beta", "N/A")
 
-    import pdb
-    pdb.set_trace()
+    #import pdb
+    #pdb.set_trace()
 
     if not (workspace / camA["pkl"]).exists() or not (workspace / camB["pkl"]).exists():
         print("Bỏ qua cặp này do thiếu file pkl đầu vào.")
