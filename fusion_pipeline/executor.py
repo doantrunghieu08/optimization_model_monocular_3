@@ -239,6 +239,8 @@ def run_phase3_pipeline(
     all_weights = detected["weights"]
     H1_all = detected["H1"]
     H2_all = detected["H2"]
+    occlusion1 = detected["occlusion1"]
+    occlusion2 = detected["occlusion2"]
 
     t12, t21, a_list = estimate_bidirectional_similarity(
         cam1,
@@ -300,6 +302,7 @@ def run_phase3_pipeline(
         "joint_confidence": {"camera1": H1_all, "camera2": H2_all},
         "vis1": {k: bool(v) for k, v in vis1.items()},
         "vis2": {k: bool(v) for k, v in vis2.items()},
+        "occlusion1" : occlusion1
     }
     #end of def run_phase3_pipeline
 
@@ -348,6 +351,8 @@ def run_fusion(config: dict) -> None:
     opt_cfg = fusion_cfg["optimization"]
 
     prev_result = None
+    occlusion1 = 0
+    count = 0
     # --- THÊM TQDM Ở ĐÂY ---
     for path in tqdm(file_paths, desc="[Fusion] Processing", unit="frame", dynamic_ncols=True):
         frame_idx = _frame_index(path)
@@ -432,10 +437,13 @@ def run_fusion(config: dict) -> None:
             "camera1": result.get("optimized", {}).get("camera1", {}),
             "camera2": result.get("optimized", {}).get("camera2", {}),
         }
+        occlusion1 = occlusion1 + int(result.get("occlusion1", 0))
+        count = count + 1
         fused_metadata = {k: v for k, v in result.items() if k not in ("camera1", "camera2", "optimized")}
         write_json(output_dir / "keypoints3d" / out_name, fused_keypoints)
         write_json(output_dir / "metadata" / out_name, fused_metadata)
-
+        #write_json(output_dir / "occlusion1" / out_name, occlusion1)
+    os.environ["Occlusion1"] = str(round(occlusion1/count, 2)) if count != 0 else "0"
     print(f"\n[Fusion] Done. Output: {output_dir}")
 
 """## 9. Chuan bi Learnable backend
