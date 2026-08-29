@@ -157,14 +157,16 @@ def compute_harmonic_precision(
     #Dự phòng sửa hàm này: https://docs.google.com/document/d/1yWfUcBP3AAykBXCK-aihj92ZplWtqjaSpFuPn-7N-eg/edit?usp=sharing
     def calc_P(cam, vis):
         P = {}
+        count_occlusion = 0
         for name in joint_names:
             if name not in cam:
                 P[name] = 0.0
                 continue
             C = 1.0 if vis.get(name, True) else 0.0
+            count_occlusion = count_occlusion + (1 - C)
             L = float(np.linalg.norm(as_xyz(cam[name])))
             P[name] = C / (1.0 + alpha * (L ** 2))
-        return P
+        return P, count_occlusion
 
     def calc_H(P):
         H = {}
@@ -175,13 +177,13 @@ def compute_harmonic_precision(
             H[name] = (2.0 * b * p) / (b + p + epsilon)
         return H
 
-    P1, P2 = calc_P(cam1, vis1), calc_P(cam2, vis2)
+    P1, o1, P2, o2 = calc_P(cam1, vis1), calc_P(cam2, vis2)
     H1, H2 = calc_H(P1), calc_H(P2)
     weights = {name: (H1[name] + H2[name]) / 2.0 for name in joint_names}
     # Cập nhật giá trị vào biến context lưu ngữ cảnh
     context.current_H1 = H1
     context.current_H2 = H2
-    return weights, H1, H2
+    return weights, H1, H2, o1, o2
 
 
 def _confidence_value(confidence_by_joint, name):
@@ -236,7 +238,7 @@ def detect_cross_view_errors(
         or (flags1.get(n, 0) == -1 and flags2.get(n, 0) == 1)
     }
 
-    _, H1_old, H2_old = compute_harmonic_precision(cam1, cam2, names, vis1, vis2, alpha=alpha, beta=beta)
+    _, H1_old, H2_old, occlusion1, occlusion2 = compute_harmonic_precision(cam1, cam2, names, vis1, vis2, alpha=alpha, beta=beta)
     H1_all = _blend_detector_confidences(names, H1_old, confidence2d1)
     H2_all = _blend_detector_confidences(names, H2_old, confidence2d2)
     all_weights = {name: (H1_all[name] + H2_all[name]) / 2.0 for name in names}
@@ -258,6 +260,8 @@ def detect_cross_view_errors(
         "H2": H2_all,
         "flags1": flags1,
         "flags2": flags2,
+        "occlusion1" : occlusion1,
+        "occlusion2" : occlusion2
     }
 
 
