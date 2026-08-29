@@ -177,7 +177,8 @@ def compute_harmonic_precision(
             H[name] = (2.0 * b * p) / (b + p + epsilon)
         return H
 
-    P1, o1, P2, o2 = calc_P(cam1, vis1), calc_P(cam2, vis2)
+    P1, o1 = calc_P(cam1, vis1)
+    P2, o2 = calc_P(cam2, vis2)
     H1, H2 = calc_H(P1), calc_H(P2)
     weights = {name: (H1[name] + H2[name]) / 2.0 for name in joint_names}
     # Cập nhật giá trị vào biến context lưu ngữ cảnh
