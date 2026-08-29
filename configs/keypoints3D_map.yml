@@ -65,19 +65,12 @@ priority2:
   - left_shoulder
   - left_elbow
   - left_wrist
-  - pelvis
   - right_hip
   - right_knee
   - right_ankle
   - left_hip
   - left_knee
   - left_ankle
-  - left_toe
-  - left_foot
-  - right_toe
-  - right_foot
-  - left_hand
-  - right_hand
 
 skeleton:
   - [head, neck]
