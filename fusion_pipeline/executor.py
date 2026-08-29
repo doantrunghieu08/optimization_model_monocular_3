@@ -372,7 +372,7 @@ def run_fusion(config: dict) -> None:
             verts_input = None
 
         try:
-            pdb.set_trace()
+            #pdb.set_trace()
             prev_opt = prev_result["optimized"] if prev_result and "optimized" in prev_result else None
             confidence2d_by_cam = _confidence2d_for_frame(data, frame_idx, confidence2d_profiles)
             result = run_phase3_pipeline(
