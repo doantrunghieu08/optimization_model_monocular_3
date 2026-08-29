@@ -341,7 +341,7 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
     # <--- Nạp alpha beta từ config cho lượt chạy hiện tại
     alpha_val = config.get("fusion", {}).get("belief", {}).get("alpha", "N/A")
     beta_val = config.get("fusion", {}).get("belief", {}).get("beta", "N/A")
-    num_occlus1 = os.get('Occlusion1', "N/A")
+    num_occlus1 = os.environ.get('Occlusion1', "N/A")
 
     return {
         "alpha": alpha_val, "beta": beta_val,
