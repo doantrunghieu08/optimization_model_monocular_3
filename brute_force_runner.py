@@ -159,6 +159,7 @@ def _get_header_indices(header: list) -> dict:
         'alpha', 'beta',
         'Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 
         'MPJPE', 'PA-MPJPE', 'LE MPJPE Master', 'LE PA-MPJPE Master', 
+        '# Occlus1',
         'local_belief Master', 'local_belief Slave', 
         'Old MPJPE', 'Old PA-MPJPE', '% Δ_MPJPE', '% Δ_PA-MPJPE', 
         'OS Version', 'Username', 'Timestamp'
@@ -191,6 +192,7 @@ def _parse_history_row(row: list, idx: dict) -> tuple:
         "le_mpjpe_master": get_val('LE MPJPE Master', "N/A"),
         "le_pa_mpjpe_master": get_val('LE PA-MPJPE Master', "N/A"),
         "local_belief_master": get_val('local_belief Master', "[]"),
+        '# Occlus1' : os.environ.get('Occlusion1'),
         "local_belief_slave": get_val('local_belief Slave', "[]"),
         "old_mpjpe": sf('Old MPJPE'), "old_pa_mpjpe": sf('Old PA-MPJPE'),
         "% delta_mpjpe": sf('% Δ_MPJPE') if sf('% Δ_MPJPE') != float('inf') else 0.0,
@@ -214,6 +216,7 @@ def load_existing_spreadsheet_results(sheet_name: str) -> dict:
 def _build_report_rows(all_results: dict, joint_keys: list) -> list:
     header = ['alpha', 'beta', 'Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 'MPJPE', 'PA-MPJPE', 
               'LE MPJPE Master', 'LE PA-MPJPE Master', 
+              '# Occlus1',
               'local_belief Master', 'local_belief Slave', 'Old MPJPE', 
               'Old PA-MPJPE', '% Δ_MPJPE', '% Δ_PA-MPJPE', 
               'OS Version', 'Username', 'Timestamp'] + joint_keys
@@ -228,6 +231,7 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
                 res.get('set', 'Unknown_Set'), seg_name, rank, res['master'], res.get('supplement', 'N/A'),
                 fmt(res.get('mpjpe', float('inf'))), fmt(res.get('pa_mpjpe', float('inf'))),
                 res.get('le_mpjpe_master', 'N/A'), res.get('le_pa_mpjpe_master', 'N/A'),
+                res.get('# Occlus1', 'N/A'),
                 res.get('local_belief_master', "[]"), res.get('local_belief_slave', "[]"),
                 fmt(res.get('old_mpjpe', float('inf'))), fmt(res.get('old_pa_mpjpe', float('inf'))), 
                 fmt(res.get('% delta_mpjpe', 0.0)), fmt(res.get('% delta_pa_mpjpe', 0.0)), 
@@ -337,12 +341,14 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
     # <--- Nạp alpha beta từ config cho lượt chạy hiện tại
     alpha_val = config.get("fusion", {}).get("belief", {}).get("alpha", "N/A")
     beta_val = config.get("fusion", {}).get("belief", {}).get("beta", "N/A")
+    num_occlus1 = os.get('Occlusion1', "N/A")
 
     return {
         "alpha": alpha_val, "beta": beta_val,
         "set": current_set, "master": camA_id, "supplement": camB_id, "mpjpe": mpjpe, 
         "pa_mpjpe": pa_mpjpe, 
         "le_mpjpe_master": le_mpjpe, "le_pa_mpjpe_master": le_pa_mpjpe,
+        "# Occlus1" : str(num_occlus1)
         "local_belief_master": b1,
         "local_belief_slave": b2, "old_mpjpe": old_m, "old_pa_mpjpe": old_pa,
         "% delta_mpjpe": pd_m, "% delta_pa_mpjpe": pd_pa, "joints": joint_metrics,
