@@ -24,6 +24,7 @@ from fusion_pipeline.detector import as_xyz
 from fusion_pipeline.detector import make_raw_judgement_fallback
 from fusion_pipeline.correction import apply_rotation_mismatch_corrections
 from fusion_pipeline.correction import apply_confidence_corrections
+from fusion_pipeline.correction import apply_similarity, estimate_umeyama
 from fusion_pipeline.optimization import optimize_f_points
 from fusion_pipeline import context
 import pdb
