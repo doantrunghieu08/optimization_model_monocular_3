@@ -239,8 +239,8 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
                 res.get('# Occlus1', 'N/A'),
                 res.get('local_belief_master', "[]"), res.get('local_belief_slave', "[]"),
                 fmt(res.get('old_mpjpe', float('inf'))), fmt(res.get('old_pa_mpjpe', float('inf'))), 
-                res.get('code_version', 'N/A'),
                 fmt(res.get('% delta_mpjpe', 0.0)), fmt(res.get('% delta_pa_mpjpe', 0.0)), 
+                res.get('code_version', 'N/A'),
                 res.get('os_version', 'N/A'), res.get('username', 'N/A'), res.get('timestamp', 'N/A')
             ]
             row.extend([fmt(res.get("joints", {}).get(jk, float('inf'))) for jk in joint_keys])
