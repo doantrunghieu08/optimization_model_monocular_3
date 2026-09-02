@@ -54,6 +54,22 @@ def calculate_sequence_average_belief(sequence_results: list) -> tuple[float, fl
     return avg_c1, avg_c2
 #end of calculate_sequence_average_belief From ThanhNT: 23-08-2026
 
+#From ThanhNT: 02-09-2026
+#def get_averaged_pose(cam1, cam2, t21, names)
+def get_averaged_pose(cam1, cam2, t21, names):
+    """
+    Chuyển pose từ cam2 sang cam1 và tính trung bình cộng.
+    """
+    avg_pose = {}
+    for name in names:
+        pt1 = as_xyz(cam1[name])
+        # Chuyển điểm từ cam2 sang hệ tọa độ của cam1
+        pt2_in_cam1 = apply_similarity(cam2[name], t21)
+        
+        # Tính trung bình cộng
+        avg_pose[name] = (pt1 + pt2_in_cam1) / 2.0
+    return avg_pose
+#end of get_averaged_pose From ThanhNT: 02-09-2026
 
 def _frame_index(path: Path) -> int:
     match = re.search(r"\d+", path.name)
