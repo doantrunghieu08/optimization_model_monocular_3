@@ -1,4 +1,4 @@
-#version 260828
+#version 260902
 import os
 import platform
 import getpass
@@ -11,7 +11,6 @@ from datetime import datetime
 import time
 import threading
 import queue
-from config_loader import load_config
 
 VIDEO_FOLDER = "imageSequence"
 
@@ -35,14 +34,18 @@ def get_gspread_client():
         GC_CLIENT = gspread.authorize(creds)
     return GC_CLIENT
 
-def get_system_metadata() -> tuple[str, str, str]:
+def get_system_metadata() -> tuple[str, str, str, str]:
     try:
         username = os.environ.get('RUNNER_NAME', getpass.getuser())
     except Exception:
         username = os.environ.get('USER', os.environ.get('USERNAME', 'unknown'))
+    try:
+        code_version = os.environ.get('CODE_VERSION', "")
+    except Exception:
+        code_version = "26XXXX"
     os_version = platform.platform()
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    return os_version, username, timestamp
+    return os_version, username, timestamp, code_version
 
 def extract_set_name(pkl_path: str) -> str:
     parts = Path(pkl_path).parts
@@ -156,12 +159,13 @@ def _get_sheet_data(sheet_name: str) -> tuple[list, list]:
 def _get_header_indices(header: list) -> dict:
     idx = {}
     keys = [
-        'alpha', 'beta',
+        'alpha', 'beta', 
         'Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 
         'MPJPE', 'PA-MPJPE', 'LE MPJPE Master', 'LE PA-MPJPE Master', 
         '# Occlus1',
         'local_belief Master', 'local_belief Slave', 
         'Old MPJPE', 'Old PA-MPJPE', '% Δ_MPJPE', '% Δ_PA-MPJPE', 
+        'Code Version',
         'OS Version', 'Username', 'Timestamp'
     ]
     for k in keys:
@@ -197,6 +201,7 @@ def _parse_history_row(row: list, idx: dict) -> tuple:
         "old_mpjpe": sf('Old MPJPE'), "old_pa_mpjpe": sf('Old PA-MPJPE'),
         "% delta_mpjpe": sf('% Δ_MPJPE') if sf('% Δ_MPJPE') != float('inf') else 0.0,
         "% delta_pa_mpjpe": sf('% Δ_PA-MPJPE') if sf('% Δ_PA-MPJPE') != float('inf') else 0.0,
+        "code_version" : get_val('Code Version'),
         "os_version": get_val('OS Version'), "username": get_val('Username'), "timestamp": get_val('Timestamp'),
         "joints": {jn: float(str(row[ji]).strip().replace(',', '.')) for jn, ji in idx['joints'].items() if ji < len(row) and row[ji] not in ("N/A", "")}
     }
@@ -218,7 +223,7 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
               'LE MPJPE Master', 'LE PA-MPJPE Master', 
               '# Occlus1',
               'local_belief Master', 'local_belief Slave', 'Old MPJPE', 
-              'Old PA-MPJPE', '% Δ_MPJPE', '% Δ_PA-MPJPE', 
+              'Old PA-MPJPE', '% Δ_MPJPE', '% Δ_PA-MPJPE', 'Code Version',
               'OS Version', 'Username', 'Timestamp'] + joint_keys
     rows = [header]
     
@@ -234,6 +239,7 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
                 res.get('# Occlus1', 'N/A'),
                 res.get('local_belief_master', "[]"), res.get('local_belief_slave', "[]"),
                 fmt(res.get('old_mpjpe', float('inf'))), fmt(res.get('old_pa_mpjpe', float('inf'))), 
+                res.get('code_version', 'N/A'),
                 fmt(res.get('% delta_mpjpe', 0.0)), fmt(res.get('% delta_pa_mpjpe', 0.0)), 
                 res.get('os_version', 'N/A'), res.get('username', 'N/A'), res.get('timestamp', 'N/A')
             ]
@@ -327,7 +333,7 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
     
     joint_metrics = {f"MPJPE_{k}": v for k, v in m_jts.items()}
     joint_metrics.update({f"PA-MPJPE_{k}": v for k, v in pa_jts.items()})
-    os_v, usr, ts = get_system_metadata()
+    os_v, usr, ts, code_v = get_system_metadata()
 
     # Trích xuất ngay lập tức metrics LE từ biến môi trường của lần chạy hiện tại
     raw_env = os.environ.get("LEARNABLE_EXTRA_METRICS", "{}")
@@ -351,13 +357,14 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
         "# Occlus1" : str(num_occlus1),
         "local_belief_master": b1,
         "local_belief_slave": b2, "old_mpjpe": old_m, "old_pa_mpjpe": old_pa,
+        "code_version" : code_v,
         "% delta_mpjpe": pd_m, "% delta_pa_mpjpe": pd_pa, "joints": joint_metrics,
         "os_version": os_v, "username": usr, "timestamp": ts
     }
 
 def _evaluate_camera_pair(camA, camB, base_cfg, gt_dir, workspace, seg_name: str) -> dict:
     current_set = extract_set_name(camA["pkl"])
-    os_v, usr, ts = get_system_metadata()
+    os_v, usr, ts, code_v = get_system_metadata()
 
     alpha_val = base_cfg.get("fusion", {}).get("belief", {}).get("alpha", "N/A")
     beta_val = base_cfg.get("fusion", {}).get("belief", {}).get("beta", "N/A")
@@ -369,6 +376,7 @@ def _evaluate_camera_pair(camA, camB, base_cfg, gt_dir, workspace, seg_name: str
     if not Path(camA["pkl"]).exists() or not Path(camB["pkl"]).exists():
         print("Bỏ qua cặp này do thiếu file pkl đầu vào.")
         return {"set": current_set, "master": camA["id"], "supplement": camB["id"], 
+                "code_version" : code_v,
                 "os_version": os_v, "username": usr, "timestamp": ts}
     try:
         config = _setup_pipeline_config(base_cfg, gt_dir, camA, camB, workspace)
@@ -393,6 +401,7 @@ def _evaluate_camera_pair(camA, camB, base_cfg, gt_dir, workspace, seg_name: str
         print(f"Lỗi khi chạy cặp {camA['id']}-{camB['id']}: {e}")
         traceback.print_exc()
         return {"set": current_set, "master": camA["id"], "supplement": camB["id"], 
+                "code_version" : code_v,
                 "os_version": os_v, "username": usr, "timestamp": ts}
 
 def _get_timed_input(timeout: int) -> str | None:
@@ -436,9 +445,9 @@ def get_spreadsheet_name_input(default_name: str = "Brute_Force_Report_Pipeline 
         _archive_old_spreadsheet(default_name)
         return default_name
     elif cmd == "now":
-        _, runner_name, _ = get_system_metadata()
+        _, runner_name, _, code_v = get_system_metadata()
         generated_name = f"{runner_name}_Brute_Force_Report_Pipeline v{datetime.now().strftime('%y%m%d')}"
-        print(f"\n[+] Tên file tự động khởi tạo: '{generated_name}'")
+        print(f"\n[+] Tên file tự động khởi tạo: '{generated_name} do phiên bản {code_v}'")
         return generated_name
 
     print(f"\n[+] Đã ghi nhận tên file tùy chỉnh: '{user_input}'")
@@ -500,7 +509,7 @@ def run_brute_force():
     print("Alpha trong config:", base_cfg['fusion']['belief']['alpha'])
     print("Beta trong config:", base_cfg['fusion']['belief']['beta'])
     
-    _, runner_name, _ = get_system_metadata()
+    _, runner_name, _, _ = get_system_metadata()
     default_sh_name = f"{runner_name}_brute_force_pipeline"
     sh_name = get_spreadsheet_name_input(default_name=default_sh_name, timeout=10)
     
