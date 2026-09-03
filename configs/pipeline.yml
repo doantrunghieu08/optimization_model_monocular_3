@@ -50,6 +50,7 @@ fusion:
   # Cấu hình tối ưu hóa cho nhóm điểm F trong fusion.
   optimization:
     use_kinematic_constraints: ${KINEMATIC_CONSTRAINTS:-true} #true: ám chỉ việc sử dụng Ràng buộc Động học (Kinematic Constraints)
+    loss_type: ${LOSS_TYPE:-huber} #loss_type có hai giá trị: huber hoặc mse 
     regularization: true
     regularization_lambda: 1.0 # Hệ số phạt của proximity regularization.
     temporal_lambda: 2.0 # Hệ số phạt theo thời gian so với frame trước.
