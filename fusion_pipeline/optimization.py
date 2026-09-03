@@ -52,7 +52,10 @@ def compute_dynamic_scale(cam_dict, f_list, ratios):
     return (sum_len / sum_ratio) if sum_ratio > 0 else HEIGHT
 
 
-def optimize_f_points(data, anchors, f_list, conf1=None, conf2=None, vis1=None, vis2=None, occluded_factor=DEFAULT_OCCLUDED_FACTOR, regularization=False, regularization_lambda=1.0, prev_data=None, temporal_lambda=1.0, max_iter=1000):
+def optimize_f_points(data, anchors, f_list, conf1=None, conf2=None, vis1=None, vis2=None, 
+                      occluded_factor=DEFAULT_OCCLUDED_FACTOR, regularization=False, 
+                      regularization_lambda=1.0, prev_data=None, temporal_lambda=1.0, 
+                      max_iter=1000, use_kinematic_constraints=True):
     cam1 = {k: as_xyz(v) for k, v in data["camera1"].items()}
     cam2 = {k: as_xyz(v) for k, v in data["camera2"].items()}
     f_weights = {}
@@ -108,52 +111,54 @@ def optimize_f_points(data, anchors, f_list, conf1=None, conf2=None, vis1=None, 
         return obj_val
 
     constraints = []
-    dyn_scale_cam1 = compute_dynamic_scale(cam1, f_list, RIGID_BONES_RATIO)
-    dyn_scale_cam2 = compute_dynamic_scale(cam2, f_list, RIGID_BONES_RATIO)
-    for (child, parent), ratio in RIGID_BONES_RATIO.items():
-        if child not in cam1 or parent not in cam1 or (child not in f_list and parent not in f_list):
-            continue
-        target1 = ratio * dyn_scale_cam1
-        lower_sq1 = (BONE_LENGTH_MIN_SCALE * target1) ** 2
-        upper_sq1 = (BONE_LENGTH_MAX_SCALE * target1) ** 2
+    # Chỉ tính và thêm constraints nếu cờ này là True
+    if use_kinematic_constraints:
+        dyn_scale_cam1 = compute_dynamic_scale(cam1, f_list, RIGID_BONES_RATIO)
+        dyn_scale_cam2 = compute_dynamic_scale(cam2, f_list, RIGID_BONES_RATIO)
+        for (child, parent), ratio in RIGID_BONES_RATIO.items():
+            if child not in cam1 or parent not in cam1 or (child not in f_list and parent not in f_list):
+                continue
+            target1 = ratio * dyn_scale_cam1
+            lower_sq1 = (BONE_LENGTH_MIN_SCALE * target1) ** 2
+            upper_sq1 = (BONE_LENGTH_MAX_SCALE * target1) ** 2
 
-        def constr_lower1(x, c=child, p=parent, low=lower_sq1):
-            pts = dict(cam1)
-            for i, name in enumerate(f_list):
-                pts[name] = x[i * 3:i * 3 + 3]
-            dist_sq = float(np.dot(pts[c] - pts[p], pts[c] - pts[p]))
-            return dist_sq - low
-
-        def constr_upper1(x, c=child, p=parent, up=upper_sq1):
-            pts = dict(cam1)
-            for i, name in enumerate(f_list):
-                pts[name] = x[i * 3:i * 3 + 3]
-            dist_sq = float(np.dot(pts[c] - pts[p], pts[c] - pts[p]))
-            return up - dist_sq
-
-        constraints.append({"type": "ineq", "fun": constr_lower1})
-        constraints.append({"type": "ineq", "fun": constr_upper1})
-
-        target2 = ratio * dyn_scale_cam2
-        lower_sq2 = (BONE_LENGTH_MIN_SCALE * target2) ** 2
-        upper_sq2 = (BONE_LENGTH_MAX_SCALE * target2) ** 2
-
-        def constr_lower2(x, c=child, p=parent, low=lower_sq2):
-            pts = dict(cam2)
-            for i, name in enumerate(f_list):
-                pts[name] = x[(num_f + i) * 3:(num_f + i) * 3 + 3]
-            dist_sq = float(np.dot(pts[c] - pts[p], pts[c] - pts[p]))
-            return dist_sq - low
-
-        def constr_upper2(x, c=child, p=parent, up=upper_sq2):
-            pts = dict(cam2)
-            for i, name in enumerate(f_list):
-                pts[name] = x[(num_f + i) * 3:(num_f + i) * 3 + 3]
-            dist_sq = float(np.dot(pts[c] - pts[p], pts[c] - pts[p]))
-            return up - dist_sq
-
-        constraints.append({"type": "ineq", "fun": constr_lower2})
-        constraints.append({"type": "ineq", "fun": constr_upper2})
+            def constr_lower1(x, c=child, p=parent, low=lower_sq1):
+                pts = dict(cam1)
+                for i, name in enumerate(f_list):
+                    pts[name] = x[i * 3:i * 3 + 3]
+                dist_sq = float(np.dot(pts[c] - pts[p], pts[c] - pts[p]))
+                return dist_sq - low
+    
+            def constr_upper1(x, c=child, p=parent, up=upper_sq1):
+                pts = dict(cam1)
+                for i, name in enumerate(f_list):
+                    pts[name] = x[i * 3:i * 3 + 3]
+                dist_sq = float(np.dot(pts[c] - pts[p], pts[c] - pts[p]))
+                return up - dist_sq
+    
+            constraints.append({"type": "ineq", "fun": constr_lower1})
+            constraints.append({"type": "ineq", "fun": constr_upper1})
+    
+            target2 = ratio * dyn_scale_cam2
+            lower_sq2 = (BONE_LENGTH_MIN_SCALE * target2) ** 2
+            upper_sq2 = (BONE_LENGTH_MAX_SCALE * target2) ** 2
+    
+            def constr_lower2(x, c=child, p=parent, low=lower_sq2):
+                pts = dict(cam2)
+                for i, name in enumerate(f_list):
+                    pts[name] = x[(num_f + i) * 3:(num_f + i) * 3 + 3]
+                dist_sq = float(np.dot(pts[c] - pts[p], pts[c] - pts[p]))
+                return dist_sq - low
+    
+            def constr_upper2(x, c=child, p=parent, up=upper_sq2):
+                pts = dict(cam2)
+                for i, name in enumerate(f_list):
+                    pts[name] = x[(num_f + i) * 3:(num_f + i) * 3 + 3]
+                dist_sq = float(np.dot(pts[c] - pts[p], pts[c] - pts[p]))
+                return up - dist_sq
+    
+            constraints.append({"type": "ineq", "fun": constr_lower2})
+            constraints.append({"type": "ineq", "fun": constr_upper2})
 
     x0 = []
     for name in f_list:
