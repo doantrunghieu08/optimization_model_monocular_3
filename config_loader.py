@@ -186,7 +186,7 @@ def validate_config(config):
             raise ValueError("Missing config visualization parameter: visualization.{}".format(key))
 
     belief_cfg = fusion_cfg["belief"]
-    for key in ("alpha", "beta"):
+    for key in ("alpha", "beta", "global"):
         if key not in belief_cfg or belief_cfg[key] is None:
             raise ValueError("Missing config fusion belief parameter: fusion.belief.{}".format(key))
 
