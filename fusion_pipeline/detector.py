@@ -151,7 +151,7 @@ def compute_harmonic_precision(
     alpha,
     beta,
     epsilon=HARMONIC_EPSILON,
-    used_global_belief
+    used_global_belief="True"
 ):
     neighbors = {}
     for child, parent in RIGID_BONES_RATIO.keys():
