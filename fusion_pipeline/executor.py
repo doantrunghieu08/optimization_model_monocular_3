@@ -246,11 +246,11 @@ def run_phase3_pipeline(
         names,
         vis1,
         vis2,
-        used_global_belief,
         confidence2d1=confidence2d_by_cam.get("camera1"),
         confidence2d2=confidence2d_by_cam.get("camera2"),
         alpha=belief_alpha,
         beta=belief_beta,
+        used_global_belief=used_global_belief,
     )
     m_set = detected["M"]
     k1_set = detected["K1"]
