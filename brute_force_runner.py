@@ -123,7 +123,7 @@ def parse_detailed_csv(csv_path: str, prefix: str) -> tuple[float, dict[str, flo
                 return float(row[t_idx]), j_dict
     return float('inf'), {}
 
-def extract_local_belief(metadata_dir: Path) -> tuple[str, str]:
+def extract_belief(metadata_dir: Path) -> tuple[str, str]:
     if not metadata_dir.exists(): return "[]", "[]"
     c1_acc, c2_acc, count = {}, {}, 0
     for meta_file in metadata_dir.glob("fused_data_*.json"):
@@ -162,8 +162,8 @@ def _get_header_indices(header: list) -> dict:
         'alpha', 'beta', 
         'Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 
         'MPJPE', 'PA-MPJPE', 'LE MPJPE Master', 'LE PA-MPJPE Master', 
-        '# Occlus1',
-        'local_belief Master', 'local_belief Slave', 
+        '# Occlus1', 'scope of belief',
+        'belief Master', 'belief Slave', 
         'Old MPJPE', 'Old PA-MPJPE', '% Δ_MPJPE', '% Δ_PA-MPJPE', 
         'Code Version',
         'OS Version', 'Username', 'Timestamp'
@@ -195,9 +195,10 @@ def _parse_history_row(row: list, idx: dict) -> tuple:
         "mpjpe": sf('MPJPE'), "pa_mpjpe": sf('PA-MPJPE'), 
         "le_mpjpe_master": get_val('LE MPJPE Master', "N/A"),
         "le_pa_mpjpe_master": get_val('LE PA-MPJPE Master', "N/A"),
-        "local_belief_master": get_val('local_belief Master', "[]"),
-        '# Occlus1' : os.environ.get('Occlusion1'),
-        "local_belief_slave": get_val('local_belief Slave', "[]"),
+        "belief_master": get_val('belief Master', "[]"),
+        '# Occlus1' : os.environ.get('Occlusion1', "N/A"),
+        'scope of belief' : get_val('scope of belief', "global"),
+        "belief_slave": get_val('belief Slave', "[]"),
         "old_mpjpe": sf('Old MPJPE'), "old_pa_mpjpe": sf('Old PA-MPJPE'),
         "% delta_mpjpe": sf('% Δ_MPJPE') if sf('% Δ_MPJPE') != float('inf') else 0.0,
         "% delta_pa_mpjpe": sf('% Δ_PA-MPJPE') if sf('% Δ_PA-MPJPE') != float('inf') else 0.0,
@@ -221,8 +222,8 @@ def load_existing_spreadsheet_results(sheet_name: str) -> dict:
 def _build_report_rows(all_results: dict, joint_keys: list) -> list:
     header = ['alpha', 'beta', 'Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 'MPJPE', 'PA-MPJPE', 
               'LE MPJPE Master', 'LE PA-MPJPE Master', 
-              '# Occlus1',
-              'local_belief Master', 'local_belief Slave', 'Old MPJPE', 
+              '# Occlus1', 'scope of belief',
+              'belief Master', 'belief Slave', 'Old MPJPE', 
               'Old PA-MPJPE', '% Δ_MPJPE', '% Δ_PA-MPJPE', 'Code Version',
               'OS Version', 'Username', 'Timestamp'] + joint_keys
     rows = [header]
@@ -237,7 +238,8 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
                 fmt(res.get('mpjpe', float('inf'))), fmt(res.get('pa_mpjpe', float('inf'))),
                 res.get('le_mpjpe_master', 'N/A'), res.get('le_pa_mpjpe_master', 'N/A'),
                 res.get('# Occlus1', 'N/A'),
-                res.get('local_belief_master', "[]"), res.get('local_belief_slave', "[]"),
+                res.get('scope of belief', 'N/A'),
+                res.get('belief_master', "[]"), res.get('belief_slave', "[]"),
                 fmt(res.get('old_mpjpe', float('inf'))), fmt(res.get('old_pa_mpjpe', float('inf'))), 
                 fmt(res.get('% delta_mpjpe', 0.0)), fmt(res.get('% delta_pa_mpjpe', 0.0)), 
                 res.get('code_version', 'N/A'),
@@ -329,7 +331,7 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
     
     pd_m = (old_m - mpjpe)*100/old_m if (old_m != float('inf') and mpjpe != float('inf')) else 0.0
     pd_pa = (old_pa - pa_mpjpe)*100/old_pa if (old_pa != float('inf') and pa_mpjpe != float('inf')) else 0.0
-    b1, b2 = extract_local_belief(Path(config["paths"]["fused_output_dir"]) / "metadata")
+    b1, b2 = extract_belief(Path(config["paths"]["fused_output_dir"]) / "metadata")
     
     joint_metrics = {f"MPJPE_{k}": v for k, v in m_jts.items()}
     joint_metrics.update({f"PA-MPJPE_{k}": v for k, v in pa_jts.items()})
@@ -347,6 +349,7 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
     # <--- Nạp alpha beta từ config cho lượt chạy hiện tại
     alpha_val = config.get("fusion", {}).get("belief", {}).get("alpha", "N/A")
     beta_val = config.get("fusion", {}).get("belief", {}).get("beta", "N/A")
+    scope_of_belief = "local" if str(config.get("fusion", {}).get("belief", {}).get("global", "N/A")) == "False" else "global"
     num_occlus1 = os.environ.get('Occlusion1', "N/A")
 
     return {
@@ -355,8 +358,9 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
         "pa_mpjpe": pa_mpjpe, 
         "le_mpjpe_master": le_mpjpe, "le_pa_mpjpe_master": le_pa_mpjpe,
         "# Occlus1" : str(num_occlus1),
-        "local_belief_master": b1,
-        "local_belief_slave": b2, "old_mpjpe": old_m, "old_pa_mpjpe": old_pa,
+        "scope of belief" : str(scope_of_belief),
+        "belief_master": b1,
+        "belief_slave": b2, "old_mpjpe": old_m, "old_pa_mpjpe": old_pa,
         "code_version" : code_v,
         "% delta_mpjpe": pd_m, "% delta_pa_mpjpe": pd_pa, "joints": joint_metrics,
         "os_version": os_v, "username": usr, "timestamp": ts
@@ -469,9 +473,8 @@ def _process_segment(seg, existing, base_cfg, ws_dir, sh_name, ws_title, all_res
             res = existing[(seg_name, cA["id"], cB["id"])]
             alpha_val = base_cfg.get("fusion", {}).get("belief", {}).get("alpha", "N/A")
             beta_val = base_cfg.get("fusion", {}).get("belief", {}).get("beta", "N/A")
+            scope_val = "local" if str(base_cfg.get("fusion", {}).get("belief", {}).get("global", "N/A")) == "False" else "global"
             res.update({
-                "alpha": alpha_val,
-                "beta": beta_val,
                 "set": res.get("set", extract_set_name(cA["pkl"])), 
                 "master": cA["id"], 
                 "supplement": cB["id"]
