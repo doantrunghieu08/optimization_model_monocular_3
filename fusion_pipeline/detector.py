@@ -245,7 +245,7 @@ def detect_cross_view_errors(
         or (flags1.get(n, 0) == -1 and flags2.get(n, 0) == 1)
     }
 
-    _, H1_old, H2_old, occlusion1, occlusion2 = compute_harmonic_precision(cam1, cam2, names, vis1, vis2, alpha=alpha, beta=beta, used_global_belief)
+    _, H1_old, H2_old, occlusion1, occlusion2 = compute_harmonic_precision(cam1, cam2, names, vis1, vis2, alpha=alpha, beta=beta, used_global_belief=used_global_belief)
     H1_all = _blend_detector_confidences(names, H1_old, confidence2d1)
     H2_all = _blend_detector_confidences(names, H2_old, confidence2d2)
     all_weights = {name: (H1_all[name] + H2_all[name]) / 2.0 for name in names}
