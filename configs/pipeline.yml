@@ -36,6 +36,7 @@ fusion:
   belief:
     alpha: ${ALPHA:-0.001} # alpha: hệ số phạt theo khoảng cách 3D của joint, càng lớn thì joint xa camera càng bị giảm tin cậy mạnh hơn.
     beta: ${BETA:-0.8} # beta: hệ số trộn tin cậy của láng giềng xương trong harmonic mean, càng lớn thì belief càng chịu ảnh hưởng bởi skeleton lân cận.
+    global: ${SCOPE:-true} #global: true ám chỉ việc belief của một pose phải được dung hòa bởi các pose lân cận
 
   occlusion:
     enabled: false  # Tắt vì WHAM pkl không có verts_cam (chỉ có verts world space)
