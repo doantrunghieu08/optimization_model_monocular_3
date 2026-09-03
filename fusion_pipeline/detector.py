@@ -151,7 +151,7 @@ def compute_harmonic_precision(
     alpha,
     beta,
     epsilon=HARMONIC_EPSILON,
-    belief_scope
+    used_global_belief
 ):
     neighbors = {}
     for child, parent in RIGID_BONES_RATIO.keys():
@@ -172,7 +172,7 @@ def compute_harmonic_precision(
         return P, count_occlusion
 
     def calc_H(P):
-        if belief_scope == "local" or belief_scope == False or belief_scope == "false" or belief_scope == "False":
+        if used_global_belief == "local" or used_global_belief == False or used_global_belief == "false" or used_global_belief == "False":
             return P.copy()
         H = {}
         for name in joint_names:
@@ -234,7 +234,7 @@ def detect_cross_view_errors(
     beta,
     confidence2d1=None,
     confidence2d2=None,
-    belief_scope="global",
+    used_global_belief="global",
 ):
     flags1 = get_orientation_flag(cam1)
     flags2 = get_orientation_flag(cam2)
@@ -245,7 +245,7 @@ def detect_cross_view_errors(
         or (flags1.get(n, 0) == -1 and flags2.get(n, 0) == 1)
     }
 
-    _, H1_old, H2_old, occlusion1, occlusion2 = compute_harmonic_precision(cam1, cam2, names, vis1, vis2, alpha=alpha, beta=beta, belief_scope)
+    _, H1_old, H2_old, occlusion1, occlusion2 = compute_harmonic_precision(cam1, cam2, names, vis1, vis2, alpha=alpha, beta=beta, used_global_belief)
     H1_all = _blend_detector_confidences(names, H1_old, confidence2d1)
     H2_all = _blend_detector_confidences(names, H2_old, confidence2d2)
     all_weights = {name: (H1_all[name] + H2_all[name]) / 2.0 for name in names}
