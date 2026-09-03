@@ -508,6 +508,7 @@ def run_brute_force():
     # Kiểm tra xem file config đã nhận đúng giá trị chưa
     print("Alpha trong config:", base_cfg['fusion']['belief']['alpha'])
     print("Beta trong config:", base_cfg['fusion']['belief']['beta'])
+    print("Global belief trong config:", base_cfg['fusion']['belief']['global'])
     
     _, runner_name, _, _ = get_system_metadata()
     default_sh_name = f"{runner_name}_brute_force_pipeline"
