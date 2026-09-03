@@ -213,6 +213,7 @@ def run_phase3_pipeline(
     frame_idx=None,
     prev_optimized_data=None,
     confidence2d_by_cam=None,
+    used_global_belief="True",
 ):
     cam1 = {k: as_xyz(v) for k, v in data_in["camera1"].items()}
     cam2 = {k: as_xyz(v) for k, v in data_in["camera2"].items()}
@@ -249,6 +250,7 @@ def run_phase3_pipeline(
         confidence2d2=confidence2d_by_cam.get("camera2"),
         alpha=belief_alpha,
         beta=belief_beta,
+        used_global_belief
     )
     m_set = detected["M"]
     k1_set = detected["K1"]
@@ -409,6 +411,7 @@ def run_fusion(config: dict) -> None:
                 confidence2d_by_cam=confidence2d_by_cam,
                 belief_alpha=belief_cfg["alpha"],
                 belief_beta=belief_cfg["beta"],
+                used_global_belief=belief_cfg["global"],
             )
             # 1. Lấy dữ liệu an toàn
             joint_conf = result.get("joint_confidence", {})
