@@ -13,6 +13,9 @@ import threading
 import queue
 
 VIDEO_FOLDER = "imageSequence"
+GC_CLIENT = None
+LOGGED_TO_CENTRAL = False # Thêm dòng này
+CENTRAL_LOG_SHEET_URL = "https://docs.google.com/spreadsheets/d/1jZuRWoI2hmM5xhcHqPsvnYibl5mG8IvaptvqlcN9KRg/edit?usp=sharing" # <--- Chú ý thay link
 
 try:
     from google.colab import auth
@@ -25,6 +28,32 @@ from config_loader import load_config, absolutize_config_paths
 from pipeline import run_pipeline
 
 GC_CLIENT = None
+
+# [CHÈN THÊM HÀM NÀY VÀO CODE]
+def log_to_central_tracker_once(sh_url: str, sh_name: str):
+    global LOGGED_TO_CENTRAL
+    # Nếu đã ghi log rồi thì bỏ qua, tránh ghi trùng lặp
+    if LOGGED_TO_CENTRAL:
+        return
+        
+    try:
+        gc = get_gspread_client()
+        central_sh = gc.open_by_url(CENTRAL_LOG_SHEET_URL)
+        central_ws = central_sh.sheet1 # Ghi vào Sheet đầu tiên của file Log
+        
+        # Lấy thông tin người chạy
+        os_version, username, timestamp, code_version = get_system_metadata()
+        
+        # Tạo dữ liệu 1 hàng: [Thời gian, Tên user, Phiên bản code, Tên file kết quả, Link file]
+        row_data = [timestamp, username, code_version, sh_name, sh_url]
+        
+        central_ws.append_row(row_data)
+        print(f"[+] Đã báo cáo quá trình chạy về máy chủ trung tâm thành công.")
+        
+        # Đánh dấu là đã ghi log
+        LOGGED_TO_CENTRAL = True
+    except Exception as e:
+        print(f"[-] Lỗi khi ghi log về máy chủ (có thể sai link hoặc chưa mở quyền): {e}")
 
 def get_gspread_client():
     global GC_CLIENT
@@ -276,6 +305,9 @@ def _get_or_create_worksheet(sheet_name: str, worksheet_title: str = None, silen
 
 def generate_spreadsheet_report(all_results, sheet_name, worksheet_title=None, silent=False, is_final=False):
     sh, worksheet = _get_or_create_worksheet(sheet_name, worksheet_title, silent)
+
+    log_to_central_tracker_once(sh.url, sheet_name)
+    
     all_joint_keys = set()
     for seg_results in all_results.values():
         for res in seg_results:
