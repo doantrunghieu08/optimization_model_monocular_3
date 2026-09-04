@@ -141,6 +141,73 @@ def compute_visibility_from_mesh_vertices(joints, verts, intrinsics, occlusion_t
         visibility[name] = not (kp_3d[2] > (z_local + occlusion_tau))
     return visibility
 
+def calc_optical_aware_belief(cam, vis, joint_names, L_min=1.5, L_max=8.0, alpha=0.1, sigma1=0.2, sigma2=0.5):
+    """
+    Tính độ tin cậy (Confidence) của các joint từ camera.
+   
+    Args:
+        L_min: Khoảng cách tối thiểu camera hoạt động tốt (VD: 0.5 mét)
+        L_max: Khoảng cách tối đa camera hoạt động đáng tin cậy (VD: 4.0 mét)
+        alpha: Hệ số suy giảm ở vùng giữa (giữ nguyên từ code cũ)
+        sigma1: Tốc độ tụt độ tin cậy khi vật quá gần (nhỏ = tụt nhanh)
+        sigma2: Tốc độ tụt độ tin cậy khi vật quá xa
+    """
+    P = {}
+    count_occlusions = 0
+   
+    for name in joint_names:
+        # 1. Xử lý logic cơ bản
+        if name not in cam:
+            P[name] = 0.0
+            count_occlusions = count_occlusions + 1
+            continue
+           
+        C = 1.0 if vis.get(name, True) else 0.0
+       
+        # Nếu đã không nhìn thấy (C=0), bỏ qua tính toán khoảng cách cho nhẹ máy
+        if C == 0.0:
+            P[name] = 0.0
+            continue
+           
+        # L là khoảng cách X như bạn định nghĩa
+        L = float(np.linalg.norm(as_xyz(cam[name])))
+       
+        # 2. Tính toán độ tin cậy dựa trên khoảng cách L (Mô hình phân nhánh)
+        dist_conf = 0.0
+       
+        if L < L_min:
+            # Điểm mù: Càng gần 0 càng tụt nhanh về 0. Đạt 1.0 tại L_min.
+            dist_conf = math.exp(-((L - L_min) ** 2) / (2 * sigma1 ** 2))
+           
+        elif L <= L_max:
+            # Vùng an toàn: Sử dụng công thức cũ của bạn nhưng tịnh tiến về L_min
+            # Đảm bảo tại L = L_min thì dist_conf = 1.0
+            dist_conf = 1.0 / (1.0 + alpha * ((L - L_min) ** 2))
+           
+        else:
+            # Vượt max: Lấy giá trị tại L_max làm gốc, rồi tụt dốc nhanh (càng xa càng mù)
+            val_at_max = 1.0 / (1.0 + alpha * ((L_max - L_min) ** 2))
+            dist_conf = val_at_max * math.exp(-((L - L_max) ** 2) / (2 * sigma2 ** 2))
+           
+        # 3. Kết quả cuối cùng
+        P[name] = C * dist_conf
+        if P[name] == 0.0:
+            count_occlusions = count_occlusions + 1
+       
+    return P, count_occlusions
+    
+def calc_naive_distance_belief(cam, vis, joint_names):
+    P = {}
+    count_occlusion = 0
+    for name in joint_names:
+        if name not in cam:
+            P[name] = 0.0
+            continue
+        C = 1.0 if vis.get(name, True) else 0.0
+        count_occlusion = count_occlusion + (1 - C)
+        L = float(np.linalg.norm(as_xyz(cam[name])))
+        P[name] = C / (1.0 + alpha * (L ** 2))
+    return P, count_occlusion
 
 def compute_harmonic_precision(
     cam1,
@@ -157,19 +224,6 @@ def compute_harmonic_precision(
     for child, parent in RIGID_BONES_RATIO.keys():
         neighbors.setdefault(child, []).append(parent)
         neighbors.setdefault(parent, []).append(child)
-    #Dự phòng sửa hàm này: https://docs.google.com/document/d/1yWfUcBP3AAykBXCK-aihj92ZplWtqjaSpFuPn-7N-eg/edit?usp=sharing
-    def calc_P(cam, vis):
-        P = {}
-        count_occlusion = 0
-        for name in joint_names:
-            if name not in cam:
-                P[name] = 0.0
-                continue
-            C = 1.0 if vis.get(name, True) else 0.0
-            count_occlusion = count_occlusion + (1 - C)
-            L = float(np.linalg.norm(as_xyz(cam[name])))
-            P[name] = C / (1.0 + alpha * (L ** 2))
-        return P, count_occlusion
 
     def calc_H(P):
         if used_global_belief == "local" or used_global_belief == False or used_global_belief == "false" or used_global_belief == "False":
