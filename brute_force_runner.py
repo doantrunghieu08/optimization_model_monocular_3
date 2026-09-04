@@ -113,10 +113,68 @@ def _build_format_requests(sheet_id: int, total_rows: int, total_cols: int) -> l
         }})
     return reqs
 
-def decorate(worksheet, total_rows: int, total_cols: int):
+def decorate(worksheet, total_rows: int, total_cols: int, rows_data: list = None, max_width: int = 350, char_threshold: int = 50):
     try:
         worksheet.freeze(rows=1)
         requests = _build_format_requests(worksheet.id, total_rows, total_cols)
+        # Nếu có truyền dữ liệu vào để tính toán độ rộng
+        if rows_data:
+            for c in range(total_cols):
+                # Tìm ô có chuỗi dài nhất trong cột 'c'
+                max_len = max([len(str(row[c])) for row in rows_data if c < len(row)] + [0])
+                
+                if max_len > char_threshold:
+                    # NẾU QUÁ DÀI: Cố định độ rộng cột (max_width)
+                    requests.append({
+                        "updateDimensionProperties": {
+                            "range": {
+                                "sheetId": worksheet.id,
+                                "dimension": "COLUMNS",
+                                "startIndex": c,
+                                "endIndex": c + 1
+                            },
+                            "properties": {"pixelSize": max_width},
+                            "fields": "pixelSize"
+                        }
+                    })
+                    # Bật tính năng Wrap Text (xuống dòng tự động) để xem được hết chữ
+                    requests.append({
+                        "repeatCell": {
+                            "range": {
+                                "sheetId": worksheet.id,
+                                "startRowIndex": 0,
+                                "endRowIndex": total_rows,
+                                "startColumnIndex": c,
+                                "endColumnIndex": c + 1
+                            },
+                            "cell": {"userEnteredFormat": {"wrapStrategy": "WRAP"}},
+                            "fields": "userEnteredFormat.wrapStrategy"
+                        }
+                    })
+                else:
+                    # NẾU BÌNH THƯỜNG: Cho phép auto-fit
+                    requests.append({
+                        "autoResizeDimensions": {
+                            "dimensions": {
+                                "sheetId": worksheet.id,
+                                "dimension": "COLUMNS",
+                                "startIndex": c,
+                                "endIndex": c + 1
+                            }
+                        }
+                    })
+        else:
+            # Fallback nếu gọi hàm mà không truyền data: auto-fit toàn bộ
+            requests.append({
+                "autoResizeDimensions": {
+                    "dimensions": {
+                        "sheetId": worksheet.id,
+                        "dimension": "COLUMNS",
+                        "startIndex": 0,
+                        "endIndex": total_cols
+                    }
+                }
+            })
         worksheet.spreadsheet.batch_update({"requests": requests})
     except Exception as e:
         print(f"Lỗi khi trang trí Google Sheets: {e}")
