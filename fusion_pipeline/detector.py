@@ -143,7 +143,7 @@ def compute_visibility_from_mesh_vertices(joints, verts, intrinsics, occlusion_t
         visibility[name] = not (kp_3d[2] > (z_local + occlusion_tau))
     return visibility
 
-def calc_optical_aware_belief(cam, vis, joint_names, L_min=1.5, L_max=8.0, alpha=0.1, sigma1=0.2, sigma2=0.5):
+def calc_optical_aware_belief(cam, vis, joint_names, alpha, L_min=1.5, L_max=8.0, sigma1=0.2, sigma2=0.5):
     """
     Tính độ tin cậy (Confidence) của các joint từ camera.
    
@@ -198,7 +198,7 @@ def calc_optical_aware_belief(cam, vis, joint_names, L_min=1.5, L_max=8.0, alpha
        
     return P, count_occlusions
     
-def calc_naive_distance_belief(cam, vis, joint_names):
+def calc_naive_distance_belief(cam, vis, joint_names, alpha):
     P = {}
     count_occlusion = 0
     for name in joint_names:
@@ -239,8 +239,8 @@ def compute_harmonic_precision(
             H[name] = (2.0 * b * p) / (b + p + epsilon)
         return H
 
-    P1, o1 = calc_optical_aware_belief(cam1, vis1, joint_names) if local_method == "optical_aware_belief" else calc_naive_distance_belief(cam1, vis1, joint_names)
-    P2, o2 = calc_optical_aware_belief(cam2, vis2, joint_names) if local_method == "optical_aware_belief" else calc_naive_distance_belief(cam2, vis2, joint_names)
+    P1, o1 = calc_optical_aware_belief(cam1, vis1, joint_names, alpha) if local_method == "optical_aware_belief" else calc_naive_distance_belief(cam1, vis1, joint_names, alpha)
+    P2, o2 = calc_optical_aware_belief(cam2, vis2, joint_names, alpha) if local_method == "optical_aware_belief" else calc_naive_distance_belief(cam2, vis2, joint_names, alpha)
     H1, H2 = calc_H(P1), calc_H(P2)
     weights = {name: (H1[name] + H2[name]) / 2.0 for name in joint_names}
     # Cập nhật giá trị vào biến context lưu ngữ cảnh
