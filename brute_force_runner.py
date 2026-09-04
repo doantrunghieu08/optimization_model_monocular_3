@@ -383,7 +383,7 @@ def generate_spreadsheet_report(all_results, sheet_name, worksheet_title=None, s
     except TypeError:
         worksheet.update(rows_to_insert)
 
-    decorate(worksheet, len(rows_to_insert), len(rows_to_insert[0]))
+    decorate(worksheet, len(rows_to_insert), len(rows_to_insert[0]), rows_data=rows_to_insert)
     if not silent: print(f"\nĐã xuất báo cáo ra Google Spreadsheet thành công!\n🔗 Xem file tại: {sh.url}")
 
 def generate_spreadsheet_report_safe(all_results, sheet_name, worksheet_title=None, silent=False, is_final=False, max_retries=5):
