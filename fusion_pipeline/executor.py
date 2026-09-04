@@ -214,6 +214,7 @@ def run_phase3_pipeline(
     prev_optimized_data=None,
     confidence2d_by_cam=None,
     used_global_belief="True",
+    local_method="optical_aware_belief",
 ):
     cam1 = {k: as_xyz(v) for k, v in data_in["camera1"].items()}
     cam2 = {k: as_xyz(v) for k, v in data_in["camera2"].items()}
@@ -251,6 +252,7 @@ def run_phase3_pipeline(
         alpha=belief_alpha,
         beta=belief_beta,
         used_global_belief=used_global_belief,
+        local_method=local_method
     )
     m_set = detected["M"]
     k1_set = detected["K1"]
@@ -350,6 +352,7 @@ def run_fusion(config: dict) -> None:
 
     occlusion_cfg = fusion_cfg["occlusion"]
     belief_cfg = fusion_cfg["belief"]
+    local_method_cfg = belief_cfg["local_method"]
     occlusion_enabled = occlusion_cfg["enabled"]
     if occlusion_enabled:
         load_torso_mask(paths["segmentation"])
@@ -412,6 +415,7 @@ def run_fusion(config: dict) -> None:
                 belief_alpha=belief_cfg["alpha"],
                 belief_beta=belief_cfg["beta"],
                 used_global_belief=belief_cfg["global"],
+                local_method = local_method_cfg,
             )
             # 1. Lấy dữ liệu an toàn
             joint_conf = result.get("joint_confidence", {})
