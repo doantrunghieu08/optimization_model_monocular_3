@@ -386,8 +386,8 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
     # <--- Nạp alpha beta từ config cho lượt chạy hiện tại
     alpha_val = config.get("fusion", {}).get("belief", {}).get("alpha", "N/A")
     beta_val = config.get("fusion", {}).get("belief", {}).get("beta", "N/A")
-    kinematic_constraints = str(config.get("fusion", {}).get("optimization", {}).get("use_kinematic_constraints", "N/A")),
-    local_method = str(config.get("fusion", {}).get("belief", {}).get('local_method', "N/A")),
+    kinematic_constraints = str(config.get("fusion", {}).get("optimization", {}).get("use_kinematic_constraints", "N/A"))
+    local_method = str(config.get("fusion", {}).get("belief", {}).get('local_method', "N/A"))
     scope_of_belief = "local" if str(config.get("fusion", {}).get("belief", {}).get("global", "N/A")) == "False" else "global"
     num_occlus1 = os.environ.get('Occlusion1', "N/A")
 
