@@ -113,7 +113,7 @@ def _build_format_requests(sheet_id: int, total_rows: int, total_cols: int) -> l
         }})
     return reqs
 
-def decorate(worksheet, total_rows: int, total_cols: int, rows_data: list = None, max_width: int = 350, char_threshold: int = 50):
+def decorate(worksheet, total_rows: int, total_cols: int, rows_data: list = None, max_width: int = 50, char_threshold: int = 50):
     try:
         worksheet.freeze(rows=1)
         requests = _build_format_requests(worksheet.id, total_rows, total_cols)
@@ -135,20 +135,6 @@ def decorate(worksheet, total_rows: int, total_cols: int, rows_data: list = None
                             },
                             "properties": {"pixelSize": max_width},
                             "fields": "pixelSize"
-                        }
-                    })
-                    # Bật tính năng Wrap Text (xuống dòng tự động) để xem được hết chữ
-                    requests.append({
-                        "repeatCell": {
-                            "range": {
-                                "sheetId": worksheet.id,
-                                "startRowIndex": 0,
-                                "endRowIndex": total_rows,
-                                "startColumnIndex": c,
-                                "endColumnIndex": c + 1
-                            },
-                            "cell": {"userEnteredFormat": {"wrapStrategy": "WRAP"}},
-                            "fields": "userEnteredFormat.wrapStrategy"
                         }
                     })
                 else:
