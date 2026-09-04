@@ -218,7 +218,8 @@ def compute_harmonic_precision(
     alpha,
     beta,
     epsilon=HARMONIC_EPSILON,
-    used_global_belief="True"
+    used_global_belief="True",
+    local_method="optical_aware_belief",
 ):
     neighbors = {}
     for child, parent in RIGID_BONES_RATIO.keys():
@@ -236,8 +237,8 @@ def compute_harmonic_precision(
             H[name] = (2.0 * b * p) / (b + p + epsilon)
         return H
 
-    P1, o1 = calc_P(cam1, vis1)
-    P2, o2 = calc_P(cam2, vis2)
+    P1, o1 = calc_optical_aware_belief(cam1, vis1, joint_names) if local_method == "optical_aware_belief" else calc_naive_distance_belief(cam1, vis1, joint_names)
+    P2, o2 = calc_optical_aware_belief(cam2, vis2, joint_names) if local_method == "optical_aware_belief" else calc_naive_distance_belief(cam2, vis2, joint_names)
     H1, H2 = calc_H(P1), calc_H(P2)
     weights = {name: (H1[name] + H2[name]) / 2.0 for name in joint_names}
     # Cập nhật giá trị vào biến context lưu ngữ cảnh
@@ -289,6 +290,7 @@ def detect_cross_view_errors(
     confidence2d1=None,
     confidence2d2=None,
     used_global_belief="global",
+    local_method="optical_aware_belief"
 ):
     flags1 = get_orientation_flag(cam1)
     flags2 = get_orientation_flag(cam2)
@@ -299,7 +301,11 @@ def detect_cross_view_errors(
         or (flags1.get(n, 0) == -1 and flags2.get(n, 0) == 1)
     }
 
-    _, H1_old, H2_old, occlusion1, occlusion2 = compute_harmonic_precision(cam1, cam2, names, vis1, vis2, alpha=alpha, beta=beta, used_global_belief=used_global_belief)
+    _, H1_old, H2_old, occlusion1, occlusion2 = compute_harmonic_precision(cam1, cam2, names, vis1, vis2, 
+                                                                           alpha=alpha, beta=beta, 
+                                                                           used_global_belief=used_global_belief,
+                                                                           local_method=local_method
+                                                                          )
     H1_all = _blend_detector_confidences(names, H1_old, confidence2d1)
     H2_all = _blend_detector_confidences(names, H2_old, confidence2d2)
     all_weights = {name: (H1_all[name] + H2_all[name]) / 2.0 for name in names}
