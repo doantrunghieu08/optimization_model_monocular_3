@@ -195,6 +195,7 @@ def _get_header_indices(header: list) -> dict:
         'belief Master', 'belief Slave', 
         'Old MPJPE', 'Old PA-MPJPE', '% Δ_MPJPE', '% Δ_PA-MPJPE', 
         'Kinematic Constraints', 'Code Version', 
+        'local method',
         'OS Version', 'Username', 'Timestamp'
     ]
     for k in keys:
@@ -232,7 +233,8 @@ def _parse_history_row(row: list, idx: dict) -> tuple:
         "% delta_mpjpe": sf('% Δ_MPJPE') if sf('% Δ_MPJPE') != float('inf') else 0.0,
         "% delta_pa_mpjpe": sf('% Δ_PA-MPJPE') if sf('% Δ_PA-MPJPE') != float('inf') else 0.0,
         "kinematic_constr" : get_val('Kinematic Constraints', "N/A"),
-        "code_version" : get_val('Code Version'),
+        "code_version" : get_val('Code Version', "N/A"),
+        'local_method' : get_val('local method', "N/A"),
         "os_version": get_val('OS Version'), "username": get_val('Username'), "timestamp": get_val('Timestamp'),
         "joints": {jn: float(str(row[ji]).strip().replace(',', '.')) for jn, ji in idx['joints'].items() if ji < len(row) and row[ji] not in ("N/A", "")}
     }
@@ -255,7 +257,7 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
               '# Occlus1', 'scope of belief',
               'belief Master', 'belief Slave', 'Old MPJPE', 
               'Old PA-MPJPE', '% Δ_MPJPE', '% Δ_PA-MPJPE', 
-              'Kinematic Constraints', 'Code Version',
+              'Kinematic Constraints', 'Code Version', 'Local Method',
               'OS Version', 'Username', 'Timestamp'] + joint_keys
     rows = [header]
     
@@ -274,7 +276,7 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
                 fmt(res.get('old_mpjpe', float('inf'))), fmt(res.get('old_pa_mpjpe', float('inf'))), 
                 fmt(res.get('% delta_mpjpe', 0.0)), fmt(res.get('% delta_pa_mpjpe', 0.0)), 
                 res.get('kinematic_constr', 'N/A'),
-                res.get('code_version', 'N/A'),
+                res.get('code_version', 'N/A'), res.get('local method', 'N/A'),
                 res.get('os_version', 'N/A'), res.get('username', 'N/A'), res.get('timestamp', 'N/A')
             ]
             row.extend([fmt(res.get("joints", {}).get(jk, float('inf'))) for jk in joint_keys])
@@ -384,7 +386,8 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
     # <--- Nạp alpha beta từ config cho lượt chạy hiện tại
     alpha_val = config.get("fusion", {}).get("belief", {}).get("alpha", "N/A")
     beta_val = config.get("fusion", {}).get("belief", {}).get("beta", "N/A")
-    kinematic_constraints = str(config.get("fusion", {}).get("optimization", {}).get("use_kinematic_constraints", "N/A"))
+    kinematic_constraints = str(config.get("fusion", {}).get("optimization", {}).get("use_kinematic_constraints", "N/A")),
+    local_method = str(config.get("fusion", {}).get("belief", {}).get('local_method', "N/A"),
     scope_of_belief = "local" if str(config.get("fusion", {}).get("belief", {}).get("global", "N/A")) == "False" else "global"
     num_occlus1 = os.environ.get('Occlusion1', "N/A")
 
@@ -398,7 +401,7 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
         "belief_master": b1,
         "belief_slave": b2, "old_mpjpe": old_m, "old_pa_mpjpe": old_pa,
         "kinematic_constr" : kinematic_constraints,
-        "code_version" : code_v,
+        "code_version" : code_v, 'local_method' : local_method,
         "% delta_mpjpe": pd_m, "% delta_pa_mpjpe": pd_pa, "joints": joint_metrics,
         "os_version": os_v, "username": usr, "timestamp": ts
     }
