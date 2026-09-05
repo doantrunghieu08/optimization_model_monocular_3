@@ -215,6 +215,7 @@ def run_phase3_pipeline(
     confidence2d_by_cam=None,
     used_global_belief="True",
     local_method="optical_aware_belief",
+    use_kinematic_constraints="True",
 ):
     cam1 = {k: as_xyz(v) for k, v in data_in["camera1"].items()}
     cam2 = {k: as_xyz(v) for k, v in data_in["camera2"].items()}
@@ -290,6 +291,7 @@ def run_phase3_pipeline(
     a_new = sorted(set(a_list) | k1_set | k2_set)
     f_list = [n for n in names if n not in set(a_new)]
     before_stats = calculate_stats(cam1_corr, cam2_corr, names, a_new, conf1=H1_all, conf2=H2_all, vis1=vis1, vis2=vis2, f_weights=all_weights)
+    use_kinematic_constraints = str(use_kinematic_constraints).lower() == "true"
     optimized_data, _ = optimize_f_points(
         {"camera1": cam1_corr, "camera2": cam2_corr},
         a_new,
@@ -303,6 +305,7 @@ def run_phase3_pipeline(
         prev_data=prev_optimized_data,
         temporal_lambda=temporal_lambda,
         max_iter=max_iter,
+        use_kinematic_constraints=use_kinematic_constraints
     )
     after_stats = calculate_stats(optimized_data["camera1"], optimized_data["camera2"], names, a_new, conf1=H1_all, conf2=H2_all, vis1=vis1, vis2=vis2, f_weights=all_weights)
 
@@ -416,6 +419,7 @@ def run_fusion(config: dict) -> None:
                 belief_beta=belief_cfg["beta"],
                 used_global_belief=belief_cfg["global"],
                 local_method = local_method_cfg,
+                use_kinematic_constraints=opt_cfg["use_kinematic_constraints"],
             )
             # 1. Lấy dữ liệu an toàn
             joint_conf = result.get("joint_confidence", {})
