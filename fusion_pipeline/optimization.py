@@ -38,9 +38,20 @@ def calculate_stats(cam1, cam2, f_list, anchors, conf1=None, conf2=None, vis1=No
     q3 = float(np.percentile(arr_diffs, 75))
     mean_val = float(np.mean(arr_diffs))
     median_val = float(np.median(arr_diffs))
-    huber = np.where(arr_diffs <= huber_delta, 0.5 * arr_diffs ** 2, huber_delta * (arr_diffs - 0.5 * huber_delta))
-    huber_loss = float(np.mean(huber))
-    return q1, q3, mean_val, median_val, huber_loss
+    final_loss = 0
+    import os
+    loss_type = str(os.environ.get("LOSS_TYPE", "huber"))
+    if loss_type == "huber":
+        huber = np.where(arr_diffs <= huber_delta, 0.5 * arr_diffs ** 2, huber_delta * (arr_diffs - 0.5 * huber_delta))
+        final_loss = float(np.mean(huber))
+    elif loss_type == "mse":
+        # So sánh với MSE thuần túy (Bình phương sai số)
+        final_loss = float(np.mean(arr_diffs ** 2))
+    else:
+        raise ValueError("loss_type must be 'huber' or 'mse'")
+    #huber = np.where(arr_diffs <= huber_delta, 0.5 * arr_diffs ** 2, huber_delta * (arr_diffs - 0.5 * huber_delta))
+    #huber_loss = float(np.mean(huber))
+    return q1, q3, mean_val, median_val, final_loss
 
 
 def compute_dynamic_scale(cam_dict, f_list, ratios):
