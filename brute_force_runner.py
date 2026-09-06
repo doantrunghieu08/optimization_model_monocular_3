@@ -321,7 +321,7 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
                 fmt(res.get('old_mpjpe', float('inf'))), fmt(res.get('old_pa_mpjpe', float('inf'))), 
                 fmt(res.get('% delta_mpjpe', 0.0)), fmt(res.get('% delta_pa_mpjpe', 0.0)), 
                 res.get('kinematic_constr', 'N/A'),
-                res.get('code_version', 'N/A'), res.get('local method', 'N/A'),
+                res.get('code_version', 'N/A'), res.get('local_method', 'N/A'),
                 res.get('os_version', 'N/A'), res.get('username', 'N/A'), res.get('timestamp', 'N/A')
             ]
             row.extend([fmt(res.get("joints", {}).get(jk, float('inf'))) for jk in joint_keys])
