@@ -11,6 +11,7 @@ from datetime import datetime
 import time
 import threading
 import queue
+import re
 
 VIDEO_FOLDER = "imageSequence"
 GC_CLIENT = None
@@ -352,6 +353,15 @@ def _get_or_create_worksheet(sheet_name: str, worksheet_title: str = None, silen
 def generate_spreadsheet_report(all_results, sheet_name, worksheet_title=None, silent=False, is_final=False):
     sh, worksheet = _get_or_create_worksheet(sheet_name, worksheet_title, silent)
 
+    # NÂNG CẤP: Trích xuất fileID từ sh.url và lưu vào biến môi trường
+    # URL thường có dạng: https://docs.google.com/spreadsheets/d/1abc...xyz/edit
+    match = re.search(r'/d/([a-zA-Z0-9-_]+)', sh.url)
+    if match:
+        file_id = match.group(1)
+        os.environ["SPREAD_SHEET_REPORT"] = file_id
+        if not silent: 
+            print(f"Đã lưu File ID: {file_id} vào biến môi trường SPREAD_SHEET_REPORT")
+
     log_to_central_tracker_once(sh.url, sheet_name)
     
     all_joint_keys = set()
@@ -370,7 +380,8 @@ def generate_spreadsheet_report(all_results, sheet_name, worksheet_title=None, s
         worksheet.update(rows_to_insert)
 
     decorate(worksheet, len(rows_to_insert), len(rows_to_insert[0]), rows_data=rows_to_insert)
-    if not silent: print(f"\nĐã xuất báo cáo ra Google Spreadsheet thành công!\n🔗 Xem file tại: {sh.url}")
+    if not silent: 
+        print(f"\nĐã xuất báo cáo ra Google Spreadsheet thành công!\n🔗 Xem file tại: {sh.url}")
 
 def generate_spreadsheet_report_safe(all_results, sheet_name, worksheet_title=None, silent=False, is_final=False, max_retries=5):
     for attempt in range(max_retries):
