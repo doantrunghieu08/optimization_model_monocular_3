@@ -618,6 +618,7 @@ def run_brute_force():
     print("Global belief trong config:", base_cfg['fusion']['belief']['global'])
     print("Kinematic constraints trong config: ", base_cfg['fusion']['optimization']['use_kinematic_constraints'])
     print("Local method for calculation trong config: ", base_cfg['fusion']['belief']['local_method'])
+    print("Loss type for Fusion trong config:", base_cfg['fusion']['optimization']['loss_type'])
     
     _, runner_name, _, _ = get_system_metadata()
     default_sh_name = f"{runner_name}_brute_force_pipeline"
