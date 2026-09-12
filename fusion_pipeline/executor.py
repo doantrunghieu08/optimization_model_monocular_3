@@ -276,7 +276,6 @@ def run_phase3_pipeline(
 
     a_new = sorted(set(a_list) | k1_set | k2_set)
     f_list = [n for n in names if n not in set(a_new)]
-    before_stats = calculate_stats(cam1_corr, cam2_corr, names, a_new, conf1=H1_all, conf2=H2_all, vis1=vis1, vis2=vis2, f_weights=all_weights)
     use_kinematic_constraints = str(use_kinematic_constraints).lower() == "true"
 
     if os.environ.get("ALIGNED_AVERAGING", "false").lower() == "true" and len(a_list) >= 3:
