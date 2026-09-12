@@ -2,8 +2,6 @@ from pathlib import Path
 import pickle
 
 import numpy as np
-from scipy.spatial import ConvexHull
-from fusion_pipeline.config import OCCLUSION_NEIGHBORS
 from fusion_pipeline.config import TORSO_PART_IDS
 from fusion_pipeline.config import ROTATION_PARENT_JOINTS
 from fusion_pipeline.config import NON_REPLACEABLE_ANCHORS
@@ -13,9 +11,6 @@ from fusion_pipeline.config import RIGID_BONES_RATIO
 from fusion_pipeline.config import OCCLUSION_CHECK_JOINTS
 from fusion_pipeline.config import CONFIDENCE_DELTA_CAP
 from fusion_pipeline import context
-
-_TORSO_MASK = None
-
 
 def as_xyz(point):
     arr = np.asarray(point, dtype=float)
@@ -55,8 +50,7 @@ def get_orientation_flag(joints, epsilon=ORIENTATION_EPSILON):
     return flags
 
 
-def load_torso_mask(seg_path):
-    global _TORSO_MASK
+def load_torso_faces(seg_path, faces):
     if not seg_path:
         raise ValueError("Missing required fusion occlusion input: paths.segmentation")
     seg_path = Path(seg_path)
@@ -64,79 +58,69 @@ def load_torso_mask(seg_path):
         raise FileNotFoundError(f"Segmentation mask file not found: {seg_path}")
     with seg_path.open("rb") as f:
         seg = pickle.load(f, encoding="latin1")
-    _TORSO_MASK = np.isin(seg["smpl_index"], list(TORSO_PART_IDS))
-    print("[Fusion] Torso mask loaded: {} / 6890 vertices".format(int(_TORSO_MASK.sum())))
-    return _TORSO_MASK
+    if not isinstance(seg, dict) or "smpl_index" not in seg:
+        raise ValueError(f"Invalid SMPL segmentation file: {seg_path}")
+    vertex_parts = np.asarray(seg["smpl_index"])
+    faces = np.asarray(faces, dtype=np.int64)
+    if vertex_parts.shape != (6890,) or faces.ndim != 2 or faces.shape[1] != 3:
+        raise ValueError("Invalid SMPL segmentation or faces for occlusion ray-casting")
+    if faces.size and (faces.min() < 0 or faces.max() >= len(vertex_parts)):
+        raise ValueError("SMPL face index is outside the segmentation vertex range")
+    torso_mask = np.isin(vertex_parts, list(TORSO_PART_IDS))
+    torso_faces = faces[np.all(torso_mask[faces], axis=1)]
+    if not len(torso_faces):
+        raise ValueError("No torso faces found in SMPL segmentation")
+    print(f"[Fusion] Torso ray-casting mesh: {len(torso_faces)} triangles")
+    return torso_faces
 
 
-def _intrinsics_to_params(intrinsics):
-    arr = np.asarray(intrinsics, dtype=float)
-    if arr.shape != (3, 3):
-        raise ValueError(f"Expected intrinsics shape (3, 3), got {arr.shape}")
-    fx = float(arr[0, 0])
-    fy = float(arr[1, 1])
-    cx = float(arr[0, 2])
-    cy = float(arr[1, 2])
-    return fx, fy, cx, cy
+def _ray_hits_before_target(target, triangle_origins, edge1, edge2, margin):
+    target_distance = float(np.linalg.norm(target))
+    if target_distance <= margin:
+        return False
+
+    direction = target / target_distance
+    direction_rows = np.broadcast_to(direction, edge2.shape)
+    pvec = np.cross(direction_rows, edge2)
+    determinant = np.einsum("ij,ij->i", edge1, pvec)
+    valid = np.abs(determinant) > 1e-9
+    inverse = np.zeros_like(determinant)
+    inverse[valid] = 1.0 / determinant[valid]
+
+    tvec = -triangle_origins
+    u = np.einsum("ij,ij->i", tvec, pvec) * inverse
+    qvec = np.cross(tvec, edge1)
+    v = np.einsum("ij,ij->i", direction_rows, qvec) * inverse
+    distance = np.einsum("ij,ij->i", edge2, qvec) * inverse
+    hit = valid & (u >= -1e-9) & (v >= -1e-9) & (u + v <= 1.0 + 1e-9)
+    hit &= (distance > 1e-9) & (distance < target_distance - margin)
+    return bool(np.any(hit))
 
 
-def _project_to_image(points_3d, intrinsics):
-    fx, fy, cx, cy = _intrinsics_to_params(intrinsics)
-    X, Y, Z = points_3d[:, 0], points_3d[:, 1], points_3d[:, 2]
-    valid = Z > 1e-6
-    u = np.where(valid, fx * (X / np.where(valid, Z, 1.0)) + cx, np.nan)
-    v = np.where(valid, fy * (Y / np.where(valid, Z, 1.0)) + cy, np.nan)
-    return np.stack([u, v], axis=1)
-
-
-def _extract_torso_data(verts, torso_mask, intrinsics):
-    V_torso = verts[torso_mask]
-    uv = _project_to_image(V_torso, intrinsics)
-    valid = ~np.isnan(uv).any(axis=1)
-    all_torso_uv = uv[valid]
-    all_torso_z = V_torso[valid, 2]
-    if len(all_torso_uv) < 3:
-        return None, None, None
-    try:
-        hull_2d_obj = ConvexHull(all_torso_uv)
-        return hull_2d_obj, all_torso_uv, all_torso_z
-    except Exception:
-        return None, None, None
-
-
-def _point_in_hull2d(pt, hull):
-    p = np.array([pt[0], pt[1], 1.0])
-    return bool(np.all(hull.equations @ p <= 1e-10))
-
-
-def _local_torso_z(u_k, v_k, all_torso_uv, all_torso_z):
-    dists_2d = np.sqrt((all_torso_uv[:, 0] - u_k) ** 2 + (all_torso_uv[:, 1] - v_k) ** 2)
-    k = min(OCCLUSION_NEIGHBORS, len(dists_2d))
-    nn_idx = np.argpartition(dists_2d, k - 1)[:k]
-    return float(all_torso_z[nn_idx].min())
-
-
-def compute_visibility_from_mesh_vertices(joints, verts, intrinsics, occlusion_tau=0.05):
+def compute_visibility_from_mesh_vertices(joints, verts, torso_faces, occlusion_tau=0.05):
+    # ponytail: torso-only covers the dominant self-occlusion; use part-aware full mesh if limb-on-limb cases matter.
     visibility = {name: True for name in joints.keys()}
     verts = np.asarray(verts, dtype=float)
-    if _TORSO_MASK is None or len(verts) != 6890:
-        return visibility
-    hull_2d_obj, all_torso_uv, all_torso_z = _extract_torso_data(verts, _TORSO_MASK, intrinsics)
-    if hull_2d_obj is None:
-        return visibility
-    fx, fy, cx, cy = _intrinsics_to_params(intrinsics)
+    torso_faces = np.asarray(torso_faces, dtype=np.int64)
+    if verts.shape != (6890, 3):
+        raise ValueError(f"Expected SMPL vertices shape (6890, 3), got {verts.shape}")
+    if occlusion_tau < 0:
+        raise ValueError("fusion.occlusion.tau must be non-negative")
+
+    triangles = verts[torso_faces]
+    triangle_origins = triangles[:, 0]
+    edge1 = triangles[:, 1] - triangle_origins
+    edge2 = triangles[:, 2] - triangle_origins
     for name, pos in joints.items():
         if name not in OCCLUSION_CHECK_JOINTS:
             continue
         kp_3d = as_xyz(pos)
         if kp_3d[2] <= 0:
+            visibility[name] = False
             continue
-        u_k = fx * (kp_3d[0] / kp_3d[2]) + cx
-        v_k = fy * (kp_3d[1] / kp_3d[2]) + cy
-        if not _point_in_hull2d(np.array([u_k, v_k]), hull_2d_obj):
-            continue
-        z_local = _local_torso_z(u_k, v_k, all_torso_uv, all_torso_z)
-        visibility[name] = not (kp_3d[2] > (z_local + occlusion_tau))
+        visibility[name] = not _ray_hits_before_target(
+            kp_3d, triangle_origins, edge1, edge2, float(occlusion_tau)
+        )
     return visibility
 
 
@@ -293,3 +277,12 @@ def make_raw_judgement_fallback(data, index, error=None):
         "vis1": {j: True for j in common},
         "vis2": {j: True for j in common},
     }
+
+
+if __name__ == "__main__":
+    triangle = np.array([[[-1.0, -1.0, 1.0], [1.0, -1.0, 1.0], [0.0, 1.0, 1.0]]])
+    origin = triangle[:, 0]
+    edge1, edge2 = triangle[:, 1] - origin, triangle[:, 2] - origin
+    assert _ray_hits_before_target(np.array([0.0, 0.0, 2.0]), origin, edge1, edge2, 0.01)
+    assert not _ray_hits_before_target(np.array([0.0, 0.0, 0.5]), origin, edge1, edge2, 0.01)
+    print("Occlusion ray-casting self-check passed")

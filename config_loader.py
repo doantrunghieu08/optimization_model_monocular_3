@@ -194,6 +194,8 @@ def validate_config(config):
     for key in ("enabled", "tau"):
         if key not in occlusion_cfg or occlusion_cfg[key] is None:
             raise ValueError("Missing config fusion occlusion parameter: fusion.occlusion.{}".format(key))
+    if not isinstance(occlusion_cfg["tau"], (int, float)) or occlusion_cfg["tau"] < 0:
+        raise ValueError("fusion.occlusion.tau must be a non-negative number")
 
     ransac_cfg = fusion_cfg["ransac"]
     for key in ("threshold", "max_combos"):

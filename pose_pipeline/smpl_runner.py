@@ -22,7 +22,7 @@ def create_smpl_model(model_path):
     return model.eval()
 
 
-def get_3d_joints_for_frame(model, person_data, frame_idx, regressor_path, map_path):
+def get_3d_joints_for_frame(model, person_data, frame_idx, regressor_path, map_path, return_vertices=False):
     pose = person_data["pose"][frame_idx:frame_idx + 1]
     trans = person_data["trans"][frame_idx:frame_idx + 1]
     curr_betas = person_data["betas"][frame_idx:frame_idx + 1]
@@ -51,4 +51,4 @@ def get_3d_joints_for_frame(model, person_data, frame_idx, regressor_path, map_p
     for kp in map_data["keypoints"]:
         x, y, z = joints_all[kp["regressor_index"]]
         result[kp["name"]] = [float(x), float(y), float(z)]
-    return result
+    return (result, vertices) if return_vertices else result

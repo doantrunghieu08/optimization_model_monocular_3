@@ -12,7 +12,6 @@ opencv-python
 gdown
 loguru
 fastdtw
-trimesh
 python-decouple
 kornia==0.8.2
 ultralytics==8.4.53

@@ -134,13 +134,15 @@ def parse_frame_metric_csv(csv_path: str, module: str, target_column: str) -> fl
                 continue
     return sum(frame_values.values()) / len(frame_values) if frame_values else float('inf')
 
-def extract_local_belief(metadata_dir: Path) -> tuple[str, str]:
-    if not metadata_dir.exists(): return "[]", "[]"
+def extract_local_belief(metadata_dir: Path) -> tuple[str, str, int, int]:
+    if not metadata_dir.exists(): return "[]", "[]", 0, 0
     c1_acc, c2_acc, count = {}, {}, 0
+    occluded_master = occluded_slave = 0
     for meta_file in metadata_dir.glob("fused_data_*.json"):
         try:
             with open(meta_file, 'r', encoding='utf-8') as f:
-                conf = json.load(f).get("joint_confidence", {})
+                metadata = json.load(f)
+                conf = metadata.get("joint_confidence", {})
                 c1, c2 = conf.get("camera1", {}), conf.get("camera2", {})
                 if isinstance(c1, list): c1 = {str(i): v for i, v in enumerate(c1)}
                 if isinstance(c2, list): c2 = {str(i): v for i, v in enumerate(c2)}
@@ -148,13 +150,15 @@ def extract_local_belief(metadata_dir: Path) -> tuple[str, str]:
                     for k, v in c1.items(): c1_acc[k] = c1_acc.get(k, 0.0) + v
                 if c2:
                     for k, v in c2.items(): c2_acc[k] = c2_acc.get(k, 0.0) + v
+                occluded_master += sum(visible is False for visible in metadata.get("vis1", {}).values())
+                occluded_slave += sum(visible is False for visible in metadata.get("vis2", {}).values())
             count += 1
         except Exception: pass
-    if count == 0: return "[]", "[]"
+    if count == 0: return "[]", "[]", 0, 0
     def sort_key(k): return int(k) if str(k).isdigit() else k
     b1_list = [round(c1_acc[k] / count, 2) for k in sorted(c1_acc.keys(), key=sort_key)]
     b2_list = [round(c2_acc[k] / count, 2) for k in sorted(c2_acc.keys(), key=sort_key)]
-    return str(b1_list), str(b2_list)
+    return str(b1_list), str(b2_list), occluded_master, occluded_slave
 
 def _get_sheet_data(sheet_name: str) -> tuple[list, list]:
     try:
@@ -177,7 +181,8 @@ def _get_header_indices(header: list) -> dict:
         'Fusion Accel Error (mm/frame^2)', 'LE Accel Error (mm/frame^2)',
         'Old Accel Error (mm/frame^2)',
         'LE MPJPE Master', 'LE PA-MPJPE Master',
-        'belief Master', 'belief Slave',
+        'belief Master', 'belief Slave', 'Occluded Joint-Frames Master',
+        'Occluded Joint-Frames Slave',
         'Old MPJPE', 'Old PA-MPJPE', '% Δ_MPJPE', '% Δ_PA-MPJPE', 
         'OS Version', 'Username', 'Timestamp'
     ]
@@ -221,6 +226,8 @@ def _parse_history_row(row: list, idx: dict) -> tuple:
         "le_pa_mpjpe_master": get_val('LE PA-MPJPE Master', "N/A"),
         "belief_master": get_val('belief Master', "[]"),
         "belief_slave": get_val('belief Slave', "[]"),
+        "occluded_joint_frames_master": sf('Occluded Joint-Frames Master'),
+        "occluded_joint_frames_slave": sf('Occluded Joint-Frames Slave'),
         "old_mpjpe": sf('Old MPJPE'), "old_pa_mpjpe": sf('Old PA-MPJPE'),
         "% delta_mpjpe": sf('% Δ_MPJPE') if sf('% Δ_MPJPE') != float('inf') else 0.0,
         "% delta_pa_mpjpe": sf('% Δ_PA-MPJPE') if sf('% Δ_PA-MPJPE') != float('inf') else 0.0,
@@ -239,6 +246,7 @@ def load_existing_spreadsheet_results(sheet_name: str) -> dict:
         'Fusion MBLE', 'LE MBLE', 'Old MBLE', 'GT Accel Error (mm/frame^2)',
         'Fusion Accel Error (mm/frame^2)', 'LE Accel Error (mm/frame^2)',
         'Old Accel Error (mm/frame^2)',
+        'Occluded Joint-Frames Master', 'Occluded Joint-Frames Slave',
     )
     if any(idx[column] == -1 for column in required): return existing
     for row in rows:
@@ -253,7 +261,8 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
               'GT Accel Error (mm/frame^2)', 'Fusion Accel Error (mm/frame^2)',
               'LE Accel Error (mm/frame^2)', 'Old Accel Error (mm/frame^2)',
               'LE MPJPE Master', 'LE PA-MPJPE Master', 
-              'belief Master', 'belief Slave', 'Old MPJPE',
+              'belief Master', 'belief Slave', 'Occluded Joint-Frames Master',
+              'Occluded Joint-Frames Slave', 'Old MPJPE',
               'Old PA-MPJPE', '% Δ_MPJPE', '% Δ_PA-MPJPE', 
               'OS Version', 'Username', 'Timestamp'] + joint_keys
     rows = [header]
@@ -275,6 +284,8 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
                 fmt(res.get('old_accel_error', float('inf'))),
                 res.get('le_mpjpe_master', 'N/A'), res.get('le_pa_mpjpe_master', 'N/A'),
                 res.get('belief_master', "[]"), res.get('belief_slave', "[]"),
+                fmt(res.get('occluded_joint_frames_master', float('inf'))),
+                fmt(res.get('occluded_joint_frames_slave', float('inf'))),
                 fmt(res.get('old_mpjpe', float('inf'))), fmt(res.get('old_pa_mpjpe', float('inf'))), 
                 fmt(res.get('% delta_mpjpe', 0.0)), fmt(res.get('% delta_pa_mpjpe', 0.0)), 
                 res.get('os_version', 'N/A'), res.get('username', 'N/A'), res.get('timestamp', 'N/A')
@@ -378,7 +389,9 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
     
     pd_m = (old_m - mpjpe)*100/old_m if (old_m != float('inf') and mpjpe != float('inf')) else 0.0
     pd_pa = (old_pa - pa_mpjpe)*100/old_pa if (old_pa != float('inf') and pa_mpjpe != float('inf')) else 0.0
-    b1, b2 = extract_local_belief(Path(config["paths"]["fused_output_dir"]) / "metadata")
+    b1, b2, occluded_master, occluded_slave = extract_local_belief(
+        Path(config["paths"]["fused_output_dir"]) / "metadata"
+    )
     
     joint_metrics = {f"MPJPE_{k}": v for k, v in m_jts.items()}
     joint_metrics.update({f"PA-MPJPE_{k}": v for k, v in pa_jts.items()})
@@ -402,7 +415,10 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
         "le_accel_error": le_accel_error, "old_accel_error": old_accel_error,
         "le_mpjpe_master": le_mpjpe, "le_pa_mpjpe_master": le_pa_mpjpe,
         "belief_master": b1,
-        "belief_slave": b2, "old_mpjpe": old_m, "old_pa_mpjpe": old_pa,
+        "belief_slave": b2,
+        "occluded_joint_frames_master": occluded_master,
+        "occluded_joint_frames_slave": occluded_slave,
+        "old_mpjpe": old_m, "old_pa_mpjpe": old_pa,
         "% delta_mpjpe": pd_m, "% delta_pa_mpjpe": pd_pa, "joints": joint_metrics,
         "os_version": os_v, "username": usr, "timestamp": ts
     }

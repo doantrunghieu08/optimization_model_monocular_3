@@ -38,8 +38,8 @@ fusion:
     beta: ${BETA:-0.8} # beta: hệ số trộn tin cậy của láng giềng xương trong harmonic mean, càng lớn thì belief càng chịu ảnh hưởng bởi skeleton lân cận.
 
   occlusion:
-    enabled: false  # Tắt vì WHAM pkl không có verts_cam (chỉ có verts world space)
-    tau: 0.01 # Ngưỡng khoảng cách z để kết luận joint bị che khuất.
+    enabled: true # Ray-casting trên mesh torso trong hệ tọa độ camera.
+    tau: 0.01 # Khoảng cách an toàn (m) giữa giao điểm mesh và joint.
 
   # Cấu hình RANSAC dùng để ước lượng similarity transform giữa 2 camera.
   ransac:

@@ -31,7 +31,6 @@ ROTATION_PARENT_JOINTS = {
 
 NON_REPLACEABLE_ANCHORS = {"left_hip", "left_shoulder", "right_hip", "right_shoulder"}
 
-OCCLUSION_NEIGHBORS = 10
 TORSO_PART_IDS = {0, 3, 6, 9, 13, 14}
 OCCLUSION_CHECK_JOINTS = {
     "left_elbow",

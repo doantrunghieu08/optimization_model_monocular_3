@@ -1,24 +1,20 @@
 from pathlib import Path
 import re
 import copy
-import joblib
 import numpy as np
 import sys
 from tqdm.auto import tqdm
 from json_io import read_json
-from config_loader import resolve_inputs
 from fusion_pipeline.detector import compute_visibility_from_mesh_vertices
 from keypoints_map import load_keypoints3d_map
 from json_io import write_json
 from fusion_pipeline.detector import detect_cross_view_errors
-from preprocess_pipeline.calib import resolve_selected_intrinsics
-from compat import load_joblib_compat
 from fusion_pipeline.optimization import calculate_stats
 from config_loader import resolve_preprocess_output_dir
 from fusion_pipeline.correction import estimate_bidirectional_similarity
 from fusion_pipeline.detector import get_orientation_flag
 from fusion_pipeline.config import OUTPUT_SUBDIRS
-from fusion_pipeline.detector import load_torso_mask
+from fusion_pipeline.detector import load_torso_faces
 from fusion_pipeline.detector import as_xyz
 from fusion_pipeline.detector import make_raw_judgement_fallback
 from fusion_pipeline.correction import apply_rotation_mismatch_corrections
@@ -73,44 +69,24 @@ def _clean_output(output_dir: Path, pattern: str = "*.json", create_split_dirs: 
                 old_json.unlink(missing_ok=True)
 
 
-def _extract_person_payload(wham_data):
-    if isinstance(wham_data, dict):
-        if 0 in wham_data:
-            return wham_data[0]
-        if "0" in wham_data:
-            return wham_data["0"]
-        for value in wham_data.values():
-            if isinstance(value, dict):
-                return value
-    if isinstance(wham_data, list):
-        for value in wham_data:
-            if isinstance(value, dict):
-                return value
-    return None
-
-
-def _load_verts_if_available(paths: dict, occlusion_enabled: bool):
+def _load_pose_meshes(paths: dict, occlusion_enabled: bool):
     if not occlusion_enabled:
-        return False, None, None, 0, 0
+        return False, None, None, None, 0
 
-    wham_path_1 = Path(paths["cam1_pkl"])
-    wham_path_2 = Path(paths["cam2_pkl"])
-    if not wham_path_1.exists():
-        raise FileNotFoundError(f"WHAM PKL file not found: {wham_path_1}")
-    if not wham_path_2.exists():
-        raise FileNotFoundError(f"WHAM PKL file not found: {wham_path_2}")
-
-    person_1 = _extract_person_payload(load_joblib_compat(wham_path_1))
-    person_2 = _extract_person_payload(load_joblib_compat(wham_path_2))
-
-    if person_1 is None or person_2 is None or "verts_cam" not in person_1 or "verts_cam" not in person_2:
-        raise ValueError("verts_cam not found in WHAM PKL inputs; fusion.occlusion.enabled requires verts_cam")
-
-    verts_cam1 = person_1["verts_cam"]
-    verts_cam2 = person_2["verts_cam"]
-    print(f"[Fusion] WHAM cam1 verts: {verts_cam1.shape[0]} frames")
-    print(f"[Fusion] WHAM cam2 verts: {verts_cam2.shape[0]} frames")
-    return True, verts_cam1, verts_cam2, verts_cam1.shape[0], verts_cam2.shape[0]
+    mesh_path = Path(paths["pose_output_dir"]) / "camera_meshes.npz"
+    if not mesh_path.exists():
+        raise FileNotFoundError(f"Pose mesh cache not found: {mesh_path}. Run pose export first.")
+    with np.load(mesh_path, allow_pickle=False) as meshes:
+        verts_cam1 = np.asarray(meshes["camera1"])
+        verts_cam2 = np.asarray(meshes["camera2"])
+        faces = np.asarray(meshes["faces"], dtype=np.int64)
+    if verts_cam1.ndim != 3 or verts_cam2.ndim != 3 or verts_cam1.shape[1:] != (6890, 3) or verts_cam2.shape[1:] != (6890, 3):
+        raise ValueError(f"Invalid pose mesh cache: {mesh_path}")
+    if len(verts_cam1) != len(verts_cam2):
+        raise ValueError(f"Camera mesh frame counts do not match in {mesh_path}")
+    frame_count = len(verts_cam1)
+    print(f"[Fusion] Camera-space mesh cache: {frame_count} synced frames")
+    return True, verts_cam1, verts_cam2, faces, frame_count
 
 
 def _load_pose_frame(path: Path, metadata_dir: Path):
@@ -149,13 +125,6 @@ def _load_2d_profiles(config: dict) -> dict:
     }
 
 
-def _load_occlusion_intrinsics(config: dict) -> dict:
-    return {
-        "camera1": np.asarray(resolve_selected_intrinsics(config, "cam1"), dtype=float),
-        "camera2": np.asarray(resolve_selected_intrinsics(config, "cam2"), dtype=float),
-    }
-
-
 def _frame_confidence_from_profile(profile, source_idx, frame_idx: int):
     if not profile:
         return None
@@ -191,7 +160,7 @@ def run_phase3_pipeline(
     belief_alpha,
     belief_beta,
     verts_by_cam=None,
-    intrinsics_by_cam=None,
+    torso_faces=None,
     frame_idx=None,
     prev_optimized_data=None,
     confidence2d_by_cam=None,
@@ -210,10 +179,10 @@ def run_phase3_pipeline(
     cam2 = {k: cam2[k] for k in names}
 
     if verts_by_cam is not None:
-        if intrinsics_by_cam is None:
-            raise ValueError("intrinsics_by_cam is required when verts_by_cam is provided")
-        vis1 = compute_visibility_from_mesh_vertices(cam1, verts_by_cam["camera1"], intrinsics_by_cam["camera1"], occlusion_tau)
-        vis2 = compute_visibility_from_mesh_vertices(cam2, verts_by_cam["camera2"], intrinsics_by_cam["camera2"], occlusion_tau)
+        if torso_faces is None:
+            raise ValueError("torso_faces is required when verts_by_cam is provided")
+        vis1 = compute_visibility_from_mesh_vertices(cam1, verts_by_cam["camera1"], torso_faces, occlusion_tau)
+        vis2 = compute_visibility_from_mesh_vertices(cam2, verts_by_cam["camera2"], torso_faces, occlusion_tau)
     else:
         vis1 = {n: True for n in names}
         vis2 = {n: True for n in names}
@@ -306,7 +275,6 @@ def run_phase3_pipeline(
 
 def run_fusion(config: dict) -> None:
     paths = config["paths"]
-    inputs = resolve_inputs(config)
     runtime_cfg = config.get("runtime", {})
     fusion_cfg = config.get("fusion", {})
 
@@ -328,12 +296,9 @@ def run_fusion(config: dict) -> None:
     occlusion_cfg = fusion_cfg["occlusion"]
     belief_cfg = fusion_cfg["belief"]
     occlusion_enabled = occlusion_cfg["enabled"]
-    if occlusion_enabled:
-        load_torso_mask(paths["segmentation"])
-
-    wham_loaded, verts_cam1, verts_cam2, n_frames_1, n_frames_2 = _load_verts_if_available(inputs, occlusion_enabled)
+    mesh_loaded, verts_cam1, verts_cam2, faces, mesh_frame_count = _load_pose_meshes(paths, occlusion_enabled)
+    torso_faces = load_torso_faces(paths["segmentation"], faces) if mesh_loaded else None
     confidence2d_profiles = _load_2d_profiles(config)
-    occlusion_intrinsics = _load_occlusion_intrinsics(config) if occlusion_enabled and wham_loaded else None
 
     keypoints_dir = input_dir / "keypoints3d"
     metadata_dir = input_dir / "metadata"
@@ -343,6 +308,8 @@ def run_fusion(config: dict) -> None:
         raise FileNotFoundError(f"Pose metadata directory not found: {metadata_dir}")
     file_paths = sorted(keypoints_dir.glob("pose_data_*.json"), key=_frame_index)
     print(f"[Fusion] Found {len(file_paths)} pose JSON files")
+    if mesh_loaded and mesh_frame_count != len(file_paths):
+        raise ValueError(f"Pose mesh cache has {mesh_frame_count} frames but pose output has {len(file_paths)}")
 
     ransac_cfg = fusion_cfg["ransac"]
     opt_cfg = fusion_cfg["optimization"]
@@ -354,13 +321,13 @@ def run_fusion(config: dict) -> None:
         out_name = f"fused_data_{frame_idx}.json"
         data = _load_pose_frame(path, metadata_dir=metadata_dir)
 
-        if wham_loaded:
-            wham_frame = frame_idx - 1
-            if 0 <= wham_frame < n_frames_1 and wham_frame < n_frames_2:
-                verts_input = {"camera1": verts_cam1[wham_frame], "camera2": verts_cam2[wham_frame]}
+        if mesh_loaded:
+            mesh_frame = frame_idx - 1
+            if 0 <= mesh_frame < mesh_frame_count:
+                verts_input = {"camera1": verts_cam1[mesh_frame], "camera2": verts_cam2[mesh_frame]}
             else:
                 # Dùng tqdm.write thay cho print trong vòng lặp
-                tqdm.write(f"[Fusion] Frame {frame_idx}: WHAM frame out of range. Occlusion skipped.")
+                tqdm.write(f"[Fusion] Frame {frame_idx}: mesh frame out of range. Occlusion skipped.")
                 verts_input = None
         else:
             verts_input = None
@@ -372,7 +339,7 @@ def run_fusion(config: dict) -> None:
                 data,
                 map_path=paths["keypoints3d_map"],
                 verts_by_cam=verts_input,
-                intrinsics_by_cam=occlusion_intrinsics,
+                torso_faces=torso_faces,
                 occlusion_tau=occlusion_cfg["tau"],
                 regularization=opt_cfg["regularization"],
                 regularization_lambda=opt_cfg["regularization_lambda"],

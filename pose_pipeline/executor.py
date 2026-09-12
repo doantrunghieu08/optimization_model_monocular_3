@@ -74,6 +74,7 @@ def _resolve_tracking_frame_ids(person_data):
 
 def _clean_pose_output(output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "camera_meshes.npz").unlink(missing_ok=True)
     for old_json in output_dir.glob("pose_data_*.json"):
         old_json.unlink(missing_ok=True)
     for subdir in POSE_OUTPUT_SUBDIRS:
@@ -135,13 +136,21 @@ def run_pose_export(config: dict) -> None:
 
     cam1_export_data = slice_person_frames(cam1_data, cam1_start, min_frames)
     cam2_export_data = slice_person_frames(cam2_data, cam2_start, min_frames)
+    cam1_vertices = np.empty((min_frames, 6890, 3), dtype=np.float32)
+    cam2_vertices = np.empty((min_frames, 6890, 3), dtype=np.float32)
 
     # Sử dụng tqdm bọc quanh range() để tạo progress bar
     for i in tqdm(range(min_frames), desc="[Pose] Exporting JSONs", unit="frame"):
         out_frame_id = i + 1
+        cam1_joints, cam1_vertices[i] = get_3d_joints_for_frame(
+            model, cam1_export_data, i, j_regressor_path, paths["keypoints3d_map"], return_vertices=True
+        )
+        cam2_joints, cam2_vertices[i] = get_3d_joints_for_frame(
+            model, cam2_export_data, i, j_regressor_path, paths["keypoints3d_map"], return_vertices=True
+        )
         keypoints3d_data = {
-            "camera1": get_3d_joints_for_frame(model, cam1_export_data, i, j_regressor_path, paths["keypoints3d_map"]),
-            "camera2": get_3d_joints_for_frame(model, cam2_export_data, i, j_regressor_path, paths["keypoints3d_map"]),
+            "camera1": cam1_joints,
+            "camera2": cam2_joints,
         }
         metadata_data = {
             "metadata": {
@@ -156,6 +165,13 @@ def run_pose_export(config: dict) -> None:
         metadata_path = output_dir / "metadata" / f"pose_data_{out_frame_id}.json"
         write_json(keypoints_path, keypoints3d_data)
         write_json(metadata_path, metadata_data)
+
+    np.savez(
+        output_dir / "camera_meshes.npz",
+        camera1=cam1_vertices,
+        camera2=cam2_vertices,
+        faces=np.asarray(model.faces, dtype=np.int32),
+    )
 
     print(f"[Pose] Done. Output: {output_dir}")
 
