@@ -244,7 +244,7 @@ def _get_header_indices(header: list) -> dict:
         '# Occlus1', 'scope of belief',
         'belief Master', 'belief Slave', 
         'Old MPJPE', 'Old PA-MPJPE', '% Δ_MPJPE', '% Δ_PA-MPJPE', 
-        'Kinematic Constraints', 'Code Version', 
+        'Kinematic Constraints', 'Loss Type', 'Code Version', # <--- THÊM 'Loss Type'
         'local method',
         'OS Version', 'Username', 'Timestamp'
     ]
@@ -284,6 +284,7 @@ def _parse_history_row(row: list, idx: dict) -> tuple:
         "% delta_mpjpe": sf('% Δ_MPJPE') if sf('% Δ_MPJPE') != float('inf') else 0.0,
         "% delta_pa_mpjpe": sf('% Δ_PA-MPJPE') if sf('% Δ_PA-MPJPE') != float('inf') else 0.0,
         "kinematic_constr" : get_val('Kinematic Constraints', "N/A"),
+        "loss_type" : get_val('Loss Type', "N/A"), # <--- DÒNG THÊM MỚI (Lấy dữ liệu từ file cũ)
         "code_version" : get_val('Code Version', "N/A"),
         'local_method' : get_val('local method', "N/A"),
         "os_version": get_val('OS Version'), "username": get_val('Username'), "timestamp": get_val('Timestamp'),
@@ -308,7 +309,7 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
               '# Occlus1', 'scope of belief',
               'belief Master', 'belief Slave', 'Old MPJPE', 
               'Old PA-MPJPE', '% Δ_MPJPE', '% Δ_PA-MPJPE', 
-              'Kinematic Constraints', 'Code Version', 'Local Method',
+              'Kinematic Constraints', 'Loss Type', 'Code Version', 'Local Method', # <--- THÊM 'Loss Type' vào Header
               'OS Version', 'Username', 'Timestamp'] + joint_keys
     rows = [header]
     
@@ -328,6 +329,7 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
                 fmt(res.get('old_mpjpe', float('inf'))), fmt(res.get('old_pa_mpjpe', float('inf'))), 
                 fmt(res.get('% delta_mpjpe', 0.0)), fmt(res.get('% delta_pa_mpjpe', 0.0)), 
                 res.get('kinematic_constr', 'N/A'),
+                res.get('loss_type', 'N/A'), # <--- DÒNG THÊM MỚI (Xuất ra cột Loss Type)
                 res.get('code_version', 'N/A'), res.get('local_method', 'N/A'),
                 res.get('os_version', 'N/A'), res.get('username', 'N/A'), res.get('timestamp', 'N/A')
             ]
@@ -449,6 +451,7 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
     alpha_val = config.get("fusion", {}).get("belief", {}).get("alpha", "N/A")
     beta_val = config.get("fusion", {}).get("belief", {}).get("beta", "N/A")
     kinematic_constraints = str(config.get("fusion", {}).get("optimization", {}).get("use_kinematic_constraints", "N/A"))
+    loss_type_val = str(config.get("fusion", {}).get("optimization", {}).get("loss_type", "N/A")) # <--- DÒNG THÊM MỚI (Lấy loss type từ config file)
     local_method = str(config.get("fusion", {}).get("belief", {}).get('local_method', "N/A"))
     scope_of_belief = "local" if str(config.get("fusion", {}).get("belief", {}).get("global", "N/A")) == "False" else "global"
     num_occlus1 = os.environ.get('Occlusion1', "N/A")
@@ -465,6 +468,7 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
         "belief_master": b1,
         "belief_slave": b2, "old_mpjpe": old_m, "old_pa_mpjpe": old_pa,
         "kinematic_constr" : kinematic_constraints,
+        "loss_type" : loss_type_val, # <--- DÒNG THÊM MỚI
         "code_version" : code_v, 'local_method' : local_method,
         "% delta_mpjpe": pd_m, "% delta_pa_mpjpe": pd_pa, "joints": joint_metrics,
         "os_version": os_v, "username": usr, "timestamp": ts
