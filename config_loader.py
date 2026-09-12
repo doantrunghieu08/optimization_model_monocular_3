@@ -201,9 +201,10 @@ def validate_config(config):
             raise ValueError("Missing config fusion ransac parameter: fusion.ransac.{}".format(key))
 
     opt_cfg = fusion_cfg["optimization"]
-    for key in ("regularization", "regularization_lambda", "temporal_lambda", "max_iter"):
+    for key in ("regularization", "regularization_lambda", "temporal_lambda", "max_iter", "loss_type"):
         if key not in opt_cfg or opt_cfg[key] is None:
             raise ValueError("Missing config fusion optimization parameter: fusion.optimization.{}".format(key))
+
 
     for key in ("pa_mpjpe", "mpjpe", "pck"):
         if key not in metrics_cfg or metrics_cfg[key] is None:
