@@ -423,10 +423,10 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
     eval_dir = Path(config["paths"]["evaluation_output_dir"])
     t_pref = "fusion-learnable" if config.get("learnable", {}).get("enabled", True) else "fused"
     
-    mpjpe, m_jts, num_frames = parse_detailed_csv(eval_dir / "MPJPE_cam1.csv", t_pref)
-    pa_mpjpe, pa_jts, _ = parse_detailed_csv(eval_dir / "PA-MPJPE_cam1.csv", t_pref)
-    old_m, _, _ = parse_detailed_csv(eval_dir / "MPJPE_cam1.csv", "posed")
-    old_pa, _, _ = parse_detailed_csv(eval_dir / "PA-MPJPE_cam1.csv", "posed")
+    mpjpe, m_jts = parse_detailed_csv(eval_dir / "MPJPE_cam1.csv", t_pref)
+    pa_mpjpe, pa_jts = parse_detailed_csv(eval_dir / "PA-MPJPE_cam1.csv", t_pref)
+    old_m, _ = parse_detailed_csv(eval_dir / "MPJPE_cam1.csv", "posed")
+    old_pa, _ = parse_detailed_csv(eval_dir / "PA-MPJPE_cam1.csv", "posed")
     
     pd_m = (old_m - mpjpe)*100/old_m if (old_m != float('inf') and mpjpe != float('inf')) else 0.0
     pd_pa = (old_pa - pa_mpjpe)*100/old_pa if (old_pa != float('inf') and pa_mpjpe != float('inf')) else 0.0
@@ -452,6 +452,7 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
     local_method = str(config.get("fusion", {}).get("belief", {}).get('local_method', "N/A"))
     scope_of_belief = "local" if str(config.get("fusion", {}).get("belief", {}).get("global", "N/A")) == "False" else "global"
     num_occlus1 = os.environ.get('Occlusion1', "N/A")
+    num_frames = os.environ.get("FUSION_FRAME_COUNT", "0")
 
     return {
         "alpha": alpha_val, "beta": beta_val,
