@@ -129,10 +129,11 @@ def parse_frame_metric_csv(csv_path: str, module: str, target_column: str) -> fl
             if row.get("Module") != module or not row.get(target_column):
                 continue
             try:
-                frame_values[row["Frame"]] = float(row[target_column])
+                frame_values.setdefault(row["Frame"], []).append(float(row[target_column]))
             except (KeyError, ValueError):
                 continue
-    return sum(frame_values.values()) / len(frame_values) if frame_values else float('inf')
+    frame_means = [sum(values) / len(values) for values in frame_values.values()]
+    return sum(frame_means) / len(frame_means) if frame_means else float('inf')
 
 def extract_local_belief(metadata_dir: Path) -> tuple[str, str]:
     if not metadata_dir.exists(): return "[]", "[]"
@@ -170,8 +171,11 @@ def _get_sheet_data(sheet_name: str) -> tuple[list, list]:
 def _get_header_indices(header: list) -> dict:
     idx = {}
     keys = [
-        'Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 
-        'MPJPE', 'PA-MPJPE', 'MBLE', 'Accel', 'LE MPJPE Master', 'LE PA-MPJPE Master',
+        'Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 'Alpha', 'Beta',
+        'MPJPE', 'PA-MPJPE', 'MBLE', 'Accel',
+        'Fusion MBLE', 'LE MBLE', 'Old MBLE',
+        'GT Accel', 'Fusion Accel', 'LE Accel', 'Old Accel',
+        'LE MPJPE Master', 'LE PA-MPJPE Master',
         'belief Master', 'belief Slave',
         'Old MPJPE', 'Old PA-MPJPE', '% Δ_MPJPE', '% Δ_PA-MPJPE', 
         'OS Version', 'Username', 'Timestamp'
@@ -201,8 +205,13 @@ def _parse_history_row(row: list, idx: dict) -> tuple:
     
     key = (row[idx['Segment']], row[idx['Cam Master']], row[idx['Cam Slave']])
     res = {
+        "alpha": sf('Alpha'), "beta": sf('Beta'),
         "mpjpe": sf('MPJPE'), "pa_mpjpe": sf('PA-MPJPE'),
         "mble": sf('MBLE'), "accel": sf('Accel'),
+        "fusion_mble": sf('Fusion MBLE'), "le_mble": sf('LE MBLE'),
+        "old_mble": sf('Old MBLE'),
+        "gt_accel": sf('GT Accel'), "fusion_accel": sf('Fusion Accel'),
+        "le_accel": sf('LE Accel'), "old_accel": sf('Old Accel'),
         "le_mpjpe_master": get_val('LE MPJPE Master', "N/A"),
         "le_pa_mpjpe_master": get_val('LE PA-MPJPE Master', "N/A"),
         "belief_master": get_val('belief Master', "[]"),
@@ -220,14 +229,21 @@ def load_existing_spreadsheet_results(sheet_name: str) -> dict:
     header, rows = _get_sheet_data(sheet_name)
     if not header: return existing
     idx = _get_header_indices(header)
-    if idx['Segment'] == -1 or idx['MBLE'] == -1 or idx['Accel'] == -1: return existing
+    required = (
+        'Segment', 'Alpha', 'Beta', 'MBLE', 'Accel', 'Fusion MBLE', 'LE MBLE', 'Old MBLE',
+        'GT Accel', 'Fusion Accel', 'LE Accel', 'Old Accel',
+    )
+    if any(idx[column] == -1 for column in required): return existing
     for row in rows:
         key, res = _parse_history_row(row, idx)
         if key and key[0] != "N/A": existing[key] = res
     return existing
 
 def _build_report_rows(all_results: dict, joint_keys: list) -> list:
-    header = ['Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 'MPJPE', 'PA-MPJPE', 'MBLE', 'Accel',
+    header = ['Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 'Alpha', 'Beta',
+              'MPJPE', 'PA-MPJPE', 'MBLE', 'Accel',
+              'Fusion MBLE', 'LE MBLE', 'Old MBLE',
+              'GT Accel', 'Fusion Accel', 'LE Accel', 'Old Accel',
               'LE MPJPE Master', 'LE PA-MPJPE Master', 
               'belief Master', 'belief Slave', 'Old MPJPE',
               'Old PA-MPJPE', '% Δ_MPJPE', '% Δ_PA-MPJPE', 
@@ -240,8 +256,13 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
         for rank, res in enumerate(results, start=1):
             row = [
                 res.get('set', 'Unknown_Set'), seg_name, rank, res['master'], res.get('supplement', 'N/A'),
+                res.get('alpha', 'N/A'), res.get('beta', 'N/A'),
                 fmt(res.get('mpjpe', float('inf'))), fmt(res.get('pa_mpjpe', float('inf'))),
                 fmt(res.get('mble', float('inf'))), fmt(res.get('accel', float('inf'))),
+                fmt(res.get('fusion_mble', float('inf'))), fmt(res.get('le_mble', float('inf'))),
+                fmt(res.get('old_mble', float('inf'))),
+                fmt(res.get('gt_accel', float('inf'))), fmt(res.get('fusion_accel', float('inf'))),
+                fmt(res.get('le_accel', float('inf'))), fmt(res.get('old_accel', float('inf'))),
                 res.get('le_mpjpe_master', 'N/A'), res.get('le_pa_mpjpe_master', 'N/A'),
                 res.get('belief_master', "[]"), res.get('belief_slave', "[]"),
                 fmt(res.get('old_mpjpe', float('inf'))), fmt(res.get('old_pa_mpjpe', float('inf'))), 
@@ -326,11 +347,22 @@ def _setup_pipeline_config(base_cfg, gt_dir, camA, camB, workspace):
 def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_id: str, seg_name: str) -> dict:
     eval_dir = Path(config["paths"]["evaluation_output_dir"])
     t_pref = "fusion-learnable" if config.get("learnable", {}).get("enabled", True) else "fused"
+    belief_cfg = config["fusion"]["belief"]
     
     mpjpe, m_jts = parse_detailed_csv(eval_dir / "MPJPE_cam1.csv", t_pref)
     pa_mpjpe, pa_jts = parse_detailed_csv(eval_dir / "PA-MPJPE_cam1.csv", t_pref)
-    mble = parse_frame_metric_csv(eval_dir / "MBLE_cam1.csv", t_pref, "Frame_MBLE_mm")
+    mble_csv = eval_dir / "MBLE_cam1.csv"
+    mble = parse_frame_metric_csv(mble_csv, t_pref, "Frame_MBLE_mm")
+    fusion_mble = parse_frame_metric_csv(mble_csv, "fused", "Frame_MBLE_mm")
+    le_mble = parse_frame_metric_csv(mble_csv, "only_learnable", "Frame_MBLE_mm")
+    old_mble = parse_frame_metric_csv(mble_csv, "posed", "Frame_MBLE_mm")
     accel = parse_frame_metric_csv(eval_dir / "Accel_cam1.csv", t_pref, "Frame_Accel_Error_mm_s2")
+    accel_csv = eval_dir / "Accel_cam1.csv"
+    gt_accel = parse_frame_metric_csv(accel_csv, "posed", "GT_Accel_mm_s2")
+    fusion_accel = parse_frame_metric_csv(accel_csv, "fused", "Pred_Accel_mm_s2")
+    le_accel = parse_frame_metric_csv(accel_csv, "only_learnable", "Pred_Accel_mm_s2")
+    # "posed" is reconstructed directly from the synchronized WHAM PKL pose/trans/betas.
+    old_accel = parse_frame_metric_csv(accel_csv, "posed", "Pred_Accel_mm_s2")
     old_m, _ = parse_detailed_csv(eval_dir / "MPJPE_cam1.csv", "posed")
     old_pa, _ = parse_detailed_csv(eval_dir / "PA-MPJPE_cam1.csv", "posed")
     
@@ -352,8 +384,12 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
     le_pa_mpjpe = cam1_metrics.get("PA-MPJPE", "N/A")
 
     return {
-        "set": current_set, "master": camA_id, "supplement": camB_id, "mpjpe": mpjpe, 
+        "set": current_set, "master": camA_id, "supplement": camB_id,
+        "alpha": belief_cfg["alpha"], "beta": belief_cfg["beta"], "mpjpe": mpjpe,
         "pa_mpjpe": pa_mpjpe, "mble": mble, "accel": accel,
+        "fusion_mble": fusion_mble, "le_mble": le_mble, "old_mble": old_mble,
+        "gt_accel": gt_accel, "fusion_accel": fusion_accel,
+        "le_accel": le_accel, "old_accel": old_accel,
         "le_mpjpe_master": le_mpjpe, "le_pa_mpjpe_master": le_pa_mpjpe,
         "belief_master": b1,
         "belief_slave": b2, "old_mpjpe": old_m, "old_pa_mpjpe": old_pa,
