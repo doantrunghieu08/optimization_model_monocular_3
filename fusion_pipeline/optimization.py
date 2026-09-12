@@ -27,7 +27,9 @@ def get_diff_f(f_name, anchors, cam1, cam2, conf1=None, conf2=None, vis1=None, v
     return sum_wdiff / max(sum_w, 1e-12)
 
 
-def calculate_stats(cam1, cam2, f_list, anchors, conf1=None, conf2=None, vis1=None, vis2=None, occluded_factor=DEFAULT_OCCLUDED_FACTOR, f_weights=None, huber_delta=HUBER_DELTA):
+def calculate_stats(cam1, cam2, f_list, anchors, conf1=None, conf2=None, \
+                    vis1=None, vis2=None, occluded_factor=DEFAULT_OCCLUDED_FACTOR, \
+                    f_weights=None, huber_delta=HUBER_DELTA, loss_type="huber"):
     if not f_list or not anchors:
         return 0.0, 0.0, 0.0, 0.0, 0.0
     diffs = [get_diff_f(f, anchors, cam1, cam2, conf1=conf1, conf2=conf2, vis1=vis1, vis2=vis2, occluded_factor=occluded_factor) for f in f_list]
@@ -39,8 +41,6 @@ def calculate_stats(cam1, cam2, f_list, anchors, conf1=None, conf2=None, vis1=No
     mean_val = float(np.mean(arr_diffs))
     median_val = float(np.median(arr_diffs))
     final_loss = 0
-    import os
-    loss_type = str(os.environ.get("LOSS_TYPE", "huber"))
     if loss_type == "huber":
         huber = np.where(arr_diffs <= huber_delta, 0.5 * arr_diffs ** 2, huber_delta * (arr_diffs - 0.5 * huber_delta))
         final_loss = float(np.mean(huber))
@@ -66,7 +66,7 @@ def compute_dynamic_scale(cam_dict, f_list, ratios):
 def optimize_f_points(data, anchors, f_list, conf1=None, conf2=None, vis1=None, vis2=None, 
                       occluded_factor=DEFAULT_OCCLUDED_FACTOR, regularization=False, 
                       regularization_lambda=1.0, prev_data=None, temporal_lambda=1.0, 
-                      max_iter=1000, use_kinematic_constraints=True):
+                      max_iter=1000, use_kinematic_constraints=True, loss_type = "huber"):
     cam1 = {k: as_xyz(v) for k, v in data["camera1"].items()}
     cam2 = {k: as_xyz(v) for k, v in data["camera2"].items()}
     f_weights = {}
@@ -113,8 +113,10 @@ def optimize_f_points(data, anchors, f_list, conf1=None, conf2=None, vis1=None, 
         for i, name in enumerate(f_list):
             p1[name] = x[i * 3:i * 3 + 3]
             p2[name] = x[(num_f + i) * 3:(num_f + i) * 3 + 3]
-        _, _, _, _, huber_loss = calculate_stats(p1, p2, f_list, anchors, conf1=conf1, conf2=conf2, vis1=vis1, vis2=vis2, occluded_factor=occluded_factor, f_weights=f_weights, huber_delta=HUBER_DELTA)
-        obj_val = huber_loss
+        _, _, _, _, loss_func = calculate_stats(p1, p2, f_list, anchors, conf1=conf1, conf2=conf2, \
+                                                vis1=vis1, vis2=vis2, occluded_factor=occluded_factor, \
+                                                f_weights=f_weights, huber_delta=HUBER_DELTA, loss_type)
+        obj_val = loss_func
         if regularization:
             obj_val += regularization_lambda * proximity_penalty(x)
         if prev_data is not None:
