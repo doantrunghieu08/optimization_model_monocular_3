@@ -115,7 +115,7 @@ def optimize_f_points(data, anchors, f_list, conf1=None, conf2=None, vis1=None, 
             p2[name] = x[(num_f + i) * 3:(num_f + i) * 3 + 3]
         _, _, _, _, loss_func = calculate_stats(p1, p2, f_list, anchors, conf1=conf1, conf2=conf2, \
                                                 vis1=vis1, vis2=vis2, occluded_factor=occluded_factor, \
-                                                f_weights=f_weights, huber_delta=HUBER_DELTA, loss_type)
+                                                f_weights=f_weights, huber_delta=HUBER_DELTA, loss_type=loss_type)
         obj_val = loss_func
         if regularization:
             obj_val += regularization_lambda * proximity_penalty(x)
