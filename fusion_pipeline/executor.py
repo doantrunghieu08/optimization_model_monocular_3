@@ -373,6 +373,8 @@ def run_fusion(config: dict) -> None:
     file_paths = sorted(keypoints_dir.glob("pose_data_*.json"), key=_frame_index)
     print(f"[Fusion] Found {len(file_paths)} pose JSON files")
 
+    os.environ["FUSION_FRAME_COUNT"] = str(len(file_paths))
+
     ransac_cfg = fusion_cfg["ransac"]
     opt_cfg = fusion_cfg["optimization"]
 
