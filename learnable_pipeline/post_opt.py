@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+from tqdm import tqdm  # thư viện tqdm để chuẩn bị hiển thị progress bar 
 
 def post_optimize_smpl_sequence(
     pose_init: np.ndarray,
@@ -52,7 +53,9 @@ def post_optimize_smpl_sequence(
     best_trans = trans_init.copy()
     initial_loss = 0.0
 
-    for step in range(iters):
+    # Dùng desc="..." để đặt tên cho thanh tiến trình
+    # leave=False để thanh tiến trình biến mất sau khi chạy xong (đỡ rác màn hình terminal)
+    for step in tqdm(range(iters), desc="Post-optimizing SMPL", leave=False):
         optimizer.zero_grad()
 
         root_orient = pose_var[:, :3]

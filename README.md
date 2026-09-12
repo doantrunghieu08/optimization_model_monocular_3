@@ -2,6 +2,8 @@
 
 Dự án này cung cấp một đường ống (pipeline) hoàn chỉnh để tối ưu hóa dáng điệu cơ thể người 3D (3D Human Pose Estimation) từ nhiều camera đơn (monocular cameras). Hệ thống tự động tiền xử lý, ước lượng độ trễ (offset), kết hợp (fusion) dữ liệu từ các camera, chạy mô hình tối ưu hóa (Learnable SMPLify) và đánh giá độ chính xác so với Ground Truth.
 
+Nếu bạn muốn chạy trên Colab Notebook thì có thể truy cập đường link sau (phiên bản 260821): https://colab.research.google.com/drive/1aV1j6aKP3EiMsqS5OKXRd-mLE8Nkpair
+
 ## Cấu trúc Pipeline
 
 Pipeline bao gồm các module chính:

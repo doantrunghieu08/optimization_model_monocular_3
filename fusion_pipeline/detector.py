@@ -12,7 +12,7 @@ from fusion_pipeline.config import ORIENTATION_EPSILON
 from fusion_pipeline.config import RIGID_BONES_RATIO
 from fusion_pipeline.config import OCCLUSION_CHECK_JOINTS
 from fusion_pipeline.config import CONFIDENCE_DELTA_CAP
-
+from fusion_pipeline import context
 
 _TORSO_MASK = None
 
@@ -154,7 +154,7 @@ def compute_harmonic_precision(
     for child, parent in RIGID_BONES_RATIO.keys():
         neighbors.setdefault(child, []).append(parent)
         neighbors.setdefault(parent, []).append(child)
-
+    #Dự phòng sửa hàm này: https://docs.google.com/document/d/1yWfUcBP3AAykBXCK-aihj92ZplWtqjaSpFuPn-7N-eg/edit?usp=sharing
     def calc_P(cam, vis):
         P = {}
         for name in joint_names:
@@ -178,6 +178,9 @@ def compute_harmonic_precision(
     P1, P2 = calc_P(cam1, vis1), calc_P(cam2, vis2)
     H1, H2 = calc_H(P1), calc_H(P2)
     weights = {name: (H1[name] + H2[name]) / 2.0 for name in joint_names}
+    # Cập nhật giá trị vào biến context lưu ngữ cảnh
+    context.current_H1 = H1
+    context.current_H2 = H2
     return weights, H1, H2
 
 

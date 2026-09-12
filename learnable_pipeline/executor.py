@@ -1,3 +1,5 @@
+#version 260826
+from tqdm import tqdm
 from pathlib import Path
 from datetime import datetime
 import copy
@@ -11,6 +13,7 @@ import joblib
 import numpy as np
 import torch
 import yaml
+import pdb
 from config_loader import resolve_inputs
 from keypoints_map import load_keypoints3d_map
 from learnable_pipeline.post_opt import post_optimize_smpl_sequence
@@ -258,6 +261,10 @@ def load_netbody25(learnable_cfg: dict, device: torch.device):
         if explicit_regressor:
             explicit_regressor_path = Path(explicit_regressor)
             regressor_path.parent.mkdir(parents=True, exist_ok=True)
+            #pdb.set_trace()
+            if 'google.colab' in sys.modules:
+                explicit_regressor_path = Path('/content/optimization_model_monocular_3/') / explicit_regressor_path
+                regressor_path = Path('/content/optimization_model_monocular_3/') / regressor_path
             shutil.copy2(explicit_regressor_path, regressor_path)
 
     smpl_dir = smpl_family_dir / "smpl"
@@ -394,7 +401,7 @@ def infer_learnable_temporal_from_fusion(
         iter_pose_t[:, 3:66] = body0.reshape(1, -1)[:, :63]
         iter_trans_t = trans0_pred_t.clone()
 
-        for frame_idx in range(1, frame_count):
+        for frame_idx in tqdm(range(1, frame_count), desc="Inferring Temporal Frames"):
             betas_t = torch.as_tensor(betas_np[frame_idx : frame_idx + 1], dtype=torch.float32, device=device)
             target_t = torch.as_tensor(target_body25_np[frame_idx : frame_idx + 1], dtype=torch.float32, device=device)
 
@@ -501,10 +508,14 @@ def _run_learnable_smplify_stage(
     # Notebook adaptation: source project uses repo_root/Learnable-SMPLify/src;
     # this notebook keeps the vendored Learnable backend in LEARNABLE_VENDOR_ROOT/src.
     repo_root = LEARNABLE_VENDOR_ROOT
+
+    project_root = repo_root.parent # Trỏ về /content/optimization_model_monocular_3
+    
     learnable_cfg.setdefault("repo_src", str(repo_root / "src"))
     learnable_cfg.setdefault("net_config", str(repo_root / "src" / "config" / "net.yaml"))
-    learnable_cfg.setdefault("smpl_family_dir", "models")
-    learnable_cfg.setdefault("j_regressor_body25", "models/J_regressor_body25.npy")
+    # Dùng project_root để tạo đường dẫn tuyệt đối chuẩn xác
+    learnable_cfg.setdefault("smpl_family_dir", str(project_root / "models"))
+    learnable_cfg.setdefault("j_regressor_body25", str(project_root / "models" / "smpl" / "J_regressor_body25.npy"))
     learnable_cfg["smpl_neutral_path"] = paths["smpl_model"]
     if not learnable_cfg.get("checkpoint"):
         fallback_checkpoint = config.get("learnable", {}).get("checkpoint")
@@ -512,7 +523,7 @@ def _run_learnable_smplify_stage(
             learnable_cfg["checkpoint"] = fallback_checkpoint
         else:
             raise ValueError("Missing config parameter: learnable.checkpoint")
-
+    learnable_cfg["checkpoint"] = str(project_root / "models" / "best_ckpt.pth.tar")
     if runtime_cfg["clean_output"]:
         _clean_learnable_output(output_dir, output_file_prefix)
     else:
@@ -612,7 +623,7 @@ def _run_learnable_smplify_stage(
     }
     write_json(output_dir / "metadata.json", metadata)
 
-    for i in range(frame_count):
+    for i in tqdm(range(frame_count), desc=f"[{stage_label}] Saving JSON Results"):
         out_name = f"{output_file_prefix}{frame_ids[i]}.json"
         write_json(output_dir / "keypoints3d" / out_name, keypoints_output[i])
         metadata_data = {

@@ -4,6 +4,7 @@ import copy
 import joblib
 import numpy as np
 import sys
+from tqdm.auto import tqdm
 from json_io import read_json
 from config_loader import resolve_inputs
 from fusion_pipeline.detector import compute_visibility_from_mesh_vertices
@@ -23,8 +24,34 @@ from fusion_pipeline.detector import make_raw_judgement_fallback
 from fusion_pipeline.correction import apply_rotation_mismatch_corrections
 from fusion_pipeline.correction import apply_confidence_corrections
 from fusion_pipeline.optimization import optimize_f_points
+from fusion_pipeline import context
+import pdb
 
 LEARNABLE_VENDOR_ROOT = Path(__file__).resolve().parent.parent / "_learnable_backend"
+
+#From ThanhNT: 23-08-2026
+#def calculate_sequence_average_belief
+def calculate_sequence_average_belief(sequence_results: list) -> tuple[float, float]:
+    """
+    Tính trung bình local belief của tất cả các khớp trong 1 frame, 
+    sau đó trung bình cộng cho tất cả các frames.
+    """
+    c1_frame_beliefs, c2_frame_beliefs = [], []
+    
+    for frame_data in sequence_results:
+        conf = frame_data.get("joint_confidence", {})
+        c1, c2 = conf.get("camera1", {}), conf.get("camera2", {})
+        
+        # Tính trung bình các khớp (poses) trong nội bộ 1 frame
+        if c1: c1_frame_beliefs.append(sum(c1.values()) / len(c1))
+        if c2: c2_frame_beliefs.append(sum(c2.values()) / len(c2))
+        
+    # Lấy ra danh sách các giá trị đã tính trung bình (theo đúng thứ tự gốc)
+    avg_h1 = [round(context.H1[k] / context.count_of_frames, 2) for k in context.H1]
+    avg_h2 = [round(context.H2[k] / context.count_of_frames, 2) for k in context.H2]
+    
+    return avg_c1, avg_c2
+#end of calculate_sequence_average_belief From ThanhNT: 23-08-2026
 
 
 def _frame_index(path: Path) -> int:
@@ -274,6 +301,7 @@ def run_phase3_pipeline(
         "vis1": {k: bool(v) for k, v in vis1.items()},
         "vis2": {k: bool(v) for k, v in vis2.items()},
     }
+    #end of def run_phase3_pipeline
 
 
 def run_fusion(config: dict) -> None:
@@ -320,7 +348,8 @@ def run_fusion(config: dict) -> None:
     opt_cfg = fusion_cfg["optimization"]
 
     prev_result = None
-    for path in file_paths:
+    # --- THÊM TQDM Ở ĐÂY ---
+    for path in tqdm(file_paths, desc="[Fusion] Processing", unit="frame", dynamic_ncols=True):
         frame_idx = _frame_index(path)
         out_name = f"fused_data_{frame_idx}.json"
         data = _load_pose_frame(path, metadata_dir=metadata_dir)
@@ -330,7 +359,8 @@ def run_fusion(config: dict) -> None:
             if 0 <= wham_frame < n_frames_1 and wham_frame < n_frames_2:
                 verts_input = {"camera1": verts_cam1[wham_frame], "camera2": verts_cam2[wham_frame]}
             else:
-                print(f"[Fusion] Frame {frame_idx}: WHAM frame out of range. Occlusion skipped.")
+                # Dùng tqdm.write thay cho print trong vòng lặp
+                tqdm.write(f"[Fusion] Frame {frame_idx}: WHAM frame out of range. Occlusion skipped.")
                 verts_input = None
         else:
             verts_input = None
@@ -356,6 +386,32 @@ def run_fusion(config: dict) -> None:
                 belief_alpha=belief_cfg["alpha"],
                 belief_beta=belief_cfg["beta"],
             )
+            # 1. Lấy dữ liệu an toàn
+            joint_conf = result.get("joint_confidence", {})
+            cam1 = np.array(joint_conf.get("camera1", []))
+            cam2 = np.array(joint_conf.get("camera2", []))
+            
+            # Hàm hỗ trợ ép dữ liệu về dict thuần an toàn
+            def to_dict(obj):
+                if hasattr(obj, 'item'): # Nếu là NumPy 0-d array
+                    return obj.item()
+                return obj if isinstance(obj, dict) else {}
+
+            # Chuyển đổi an toàn cho cả cam1, cam2 và context hiện tại
+            cam1_dict = to_dict(cam1)
+            cam2_dict = to_dict(cam2)
+            h1_dict = to_dict(context.H1)
+            h2_dict = to_dict(context.H2)
+
+            if prev_result is not None:
+                context.H1 = {k: h1_dict.get(k, 0) + cam1_dict.get(k, 0) for k in cam1_dict}
+                context.H2 = {k: h2_dict.get(k, 0) + cam2_dict.get(k, 0) for k in cam2_dict}
+                context.count_of_frames += 1
+            else:
+                context.H1 = cam1_dict.copy()
+                context.H2 = cam2_dict.copy()
+                context.count_of_frames = 1
+                
             occluded_cam1 = sorted(name for name, visible in result.get("vis1", {}).items() if not visible)
             occluded_cam2 = sorted(name for name, visible in result.get("vis2", {}).items() if not visible)
             occlusion_parts = []
@@ -364,10 +420,12 @@ def run_fusion(config: dict) -> None:
             if occluded_cam2:
                 occlusion_parts.append(f"cam2: {', '.join(occluded_cam2)}")
             if occlusion_parts:
-                print(f"[Fusion] Frame {frame_idx}: Occlusion: {' | '.join(occlusion_parts)}")
+                # Dùng tqdm.write thay cho print
+                tqdm.write(f"[Fusion] Frame {frame_idx}: Occlusion: {' | '.join(occlusion_parts)}")
             prev_result = result
         except Exception as e:
-            print(f"[Fusion] Frame {frame_idx}: FAILED ({e}) -> fallback")
+            # Dùng tqdm.write thay cho print
+            tqdm.write(f"[Fusion] Frame {frame_idx}: FAILED ({e}) -> fallback")
             result = copy.deepcopy(prev_result) if prev_result is not None else make_raw_judgement_fallback(data, frame_idx, e)
 
         fused_keypoints = {
@@ -378,7 +436,7 @@ def run_fusion(config: dict) -> None:
         write_json(output_dir / "keypoints3d" / out_name, fused_keypoints)
         write_json(output_dir / "metadata" / out_name, fused_metadata)
 
-    print(f"[Fusion] Done. Output: {output_dir}")
+    print(f"\n[Fusion] Done. Output: {output_dir}")
 
 """## 9. Chuan bi Learnable backend
 

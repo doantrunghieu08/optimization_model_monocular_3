@@ -1,10 +1,35 @@
-import yaml
+import os
+import re
+from ruamel.yaml import YAML
 import json
 from pathlib import Path
 import sys
 import numpy as np
 
+# --- LOGIC PHÂN GIẢI BIẾN MÔI TRƯỜNG Ở ĐÂY ---
+env_pattern = re.compile(r'^\${([a-zA-Z0-9_]+)(?::-([^}]+))?}$')
 
+def set_env_from_filename(notebook_filename: str):
+    """
+    Hàm này lấy alpha, beta từ tên file notebook và nạp vào os.environ
+    để tệp pipeline.yml có thể đọc được.
+    """
+    pattern = r"_alpha(\d+[Ee]-?\d+)_beta(\d+[Ee]-?\d+)"
+    match = re.search(pattern, notebook_filename)
+    
+    if match:
+        alpha_val = float(match.group(1))
+        beta_val = float(match.group(2))
+        
+        # Nạp vào os.environ (cùng tên biến với file pipeline.yml)
+        os.environ["ALPHA"] = str(alpha_val)
+        os.environ["BETA"] = str(beta_val)
+        
+        print(f"[INFO] Đã nạp biến môi trường từ tên file:")
+        print(f"       ALPHA = {alpha_val}")
+        print(f"       BETA  = {beta_val}")
+    else:
+        print("[WARNING] Không tìm thấy alpha/beta trong tên file, sẽ dùng giá trị default trong tệp YML.")
 
 ALLOWED_STAGES = {
     "visualization",
@@ -18,6 +43,33 @@ INPUT_KEYS = (
     "camera2_video",
     "ground_truth_dir",
 )
+
+def env_var_constructor(loader, node):
+    value = loader.construct_scalar(node)
+    match = env_pattern.match(value)
+    if match:
+        env_var = match.group(1)
+        default_value = match.group(2)
+        result = os.environ.get(env_var, default_value)
+        
+        if result is None or result == 'null': return None
+        if isinstance(result, str):
+            result = result.strip('"').strip("'")
+            if result.lower() == 'true': return True
+            if result.lower() == 'false': return False
+            if result.isdigit(): return int(result)
+            try:
+                return float(result)
+            except ValueError:
+                pass
+        return result
+    return value
+
+# Khởi tạo đối tượng yaml mới
+custom_yaml = YAML(typ='safe')
+custom_yaml.resolver.add_implicit_resolver('!env_var', env_pattern, None)
+custom_yaml.constructor.add_constructor('!env_var', env_var_constructor)
+# ----------------------------------------------------
 
 def resolve_inputs(config):
     inputs = config.get("inputs")
@@ -43,7 +95,8 @@ def load_config(config_path):
         raise FileNotFoundError("Config file not found: {}".format(path))
 
     with path.open("r", encoding="utf-8") as f:
-        config = yaml.safe_load(f) or {}
+        # dùng custom_yaml thay cho yaml mặc định
+        config = custom_yaml.load(f) or {}
 
     validate_config(config)
     return config
