@@ -6,11 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
-from scipy.spatial import procrustes
 from keypoints_map import load_keypoints3d_map
-
-MODULES = ["posed", "fused", "learnable"]
-MODULES = ["posed", "fused", "learnable"]
 
 EVALUATION_OUTPUT_MODULE_NAMES = {
     "learnable": "fusion-learnable",
@@ -72,16 +68,18 @@ def _compute_pa_mpjpe(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray],
     norm_T = np.linalg.norm(T_c)
     
     if norm_P < 1e-6 or norm_T < 1e-6:
-        return 0.0, {k: 0.0 for k in keys}
+        P_aligned = np.broadcast_to(np.mean(T, axis=0), P.shape)
+    else:
+        P_c_unit = P_c / norm_P
+        T_c_unit = T_c / norm_T
 
-    P_c_unit = P_c / norm_P
-    T_c_unit = T_c / norm_T
+        U, s, Vt = np.linalg.svd(np.dot(T_c_unit.T, P_c_unit))
+        correction = np.eye(3)
+        correction[-1, -1] = -1.0 if np.linalg.det(np.dot(U, Vt)) < 0 else 1.0
+        R = np.dot(np.dot(U, correction), Vt)
 
-    U, s, Vt = np.linalg.svd(np.dot(T_c_unit.T, P_c_unit))
-    R = np.dot(U, Vt)
-    
-    scale = np.sum(s) * (norm_T / norm_P)
-    P_aligned = np.dot(P_c, R.T) * scale + np.mean(T, axis=0)
+        scale = np.sum(s * np.diag(correction)) * (norm_T / norm_P)
+        P_aligned = np.dot(P_c, R.T) * scale + np.mean(T, axis=0)
 
     errors = []
     errors_dict = {}
@@ -92,17 +90,17 @@ def _compute_pa_mpjpe(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray],
         
     return float(np.mean(errors)), errors_dict
 
-def _compute_pck_mm(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], keys: list[str]) -> tuple[float, dict[str, float]]:
-    # PCK-mm is mean Euclidean distance (absolute, no root align)
-    errors = []
-    errors_dict = {}
+def _compute_pck(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], keys: list[str], threshold_mm: float) -> tuple[float, dict[str, float]]:
+    pred_root = _resolve_root_joint(pred)
+    truth_root = _resolve_root_joint(truth)
+    scores = []
+    scores_dict = {}
     for k in keys:
-        p = pred[k]
-        t = truth[k]
-        err = float(np.linalg.norm(p - t) * 1000.0)
-        errors.append(err)
-        errors_dict[k] = err
-    return float(np.mean(errors)), errors_dict
+        error_mm = float(np.linalg.norm((pred[k] - pred_root) - (truth[k] - truth_root)) * 1000.0)
+        score = 100.0 if error_mm <= threshold_mm else 0.0
+        scores.append(score)
+        scores_dict[k] = score
+    return float(np.mean(scores)), scores_dict
 
 
 def _compute_mble(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], bones: list[list[str]]) -> tuple[float, dict]:
@@ -145,6 +143,15 @@ def _load_json(p: Path) -> dict:
         return json.load(f)
 
 
+def _validate_pose_sources(metadata: dict, expected: dict[str, str], metadata_path: Path) -> None:
+    actual = metadata.get("metadata", {}).get("source_pkl_stems")
+    if actual != expected:
+        raise ValueError(
+            f"Pose output source mismatch in {metadata_path}: expected {expected}, got {actual}. "
+            "Regenerate pose/fusion outputs for the configured inputs."
+        )
+
+
 def _load_frame_map(frame_dir: Path, frame_offset: int = 0) -> dict[int, Path]:
     frame_map = {}
     for path in frame_dir.glob("*.json"):
@@ -176,6 +183,8 @@ def _parse_new_gt(item: dict, canonical_names: set, map_data: dict) -> dict:
     joints = {}
     # Convert from millimeters to meters to match the prediction scale
     pose3d = np.array(item["pose3d"], dtype=float) / 1000.0
+    if pose3d.shape != (28, 3) or not np.isfinite(pose3d).all():
+        raise ValueError(f"Expected finite GT pose3d shape (28, 3), got {pose3d.shape}")
     
     # MPI-INF-3DHP 28-joint format indices (correct mapping):
     # [0]=spine3, [1]=spine4, [2]=spine2, [3]=spine, [4]=pelvis,
@@ -200,8 +209,7 @@ def _parse_new_gt(item: dict, canonical_names: set, map_data: dict) -> dict:
     }
     
     for name, idx in new_gt_indices.items():
-        if idx < len(pose3d):
-            joints[name] = pose3d[idx]
+        joints[name] = pose3d[idx]
             
     return joints
 
@@ -290,6 +298,9 @@ def run_evaluation(config: dict) -> None:
         "PA-MPJPE": bool(metrics_cfg["pa_mpjpe"]),
         "PCK": bool(metrics_cfg["pck"]),
     }
+    pck_threshold_mm = metrics_cfg.get("pck_threshold_mm", 150.0)
+    if not isinstance(pck_threshold_mm, (int, float)) or isinstance(pck_threshold_mm, bool) or pck_threshold_mm <= 0:
+        raise ValueError("evaluation.metrics.pck_threshold_mm must be a positive number")
     enabled_metrics = [name for name, enabled in metric_enabled.items() if enabled]
     mble_enabled = bool(metrics_cfg.get("mble", False))
     accel_enabled = bool(metrics_cfg.get("accel", False))
@@ -332,6 +343,7 @@ def run_evaluation(config: dict) -> None:
         
     cam1_gt_path = truth_dir / f"{cam1_gt_stem}.json"
     cam2_gt_path = truth_dir / f"{cam2_gt_stem}.json"
+    expected_source_stems = {"camera1": cam1_gt_stem, "camera2": cam2_gt_stem}
     
     gt_cam1_data = _load_segment_gt(cam1_gt_path)
     gt_cam2_data = _load_segment_gt(cam2_gt_path)
@@ -373,6 +385,7 @@ def run_evaluation(config: dict) -> None:
         if not metadata_path.exists():
             continue
         metadata = _load_json(metadata_path)
+        _validate_pose_sources(metadata, expected_source_stems, metadata_path)
         src_indices = metadata.get("metadata", {}).get("source_frame_indices", {})
         
         cam1_frame_id = src_indices.get("camera1")
@@ -445,11 +458,11 @@ def run_evaluation(config: dict) -> None:
 
                 if metric_enabled["PCK"]:
                     results["PCK"][cam][frame].setdefault(mod, {})
-                    mean_p1, dict_p1 = _compute_pck_mm(pred_joints, truth_joints, valid_priority1) if valid_priority1 else (0.0, {})
+                    mean_p1, dict_p1 = _compute_pck(pred_joints, truth_joints, valid_priority1, pck_threshold_mm) if valid_priority1 else (0.0, {})
                     results["PCK"][cam][frame][mod]["priority1_mm"] = mean_p1
                     results["PCK"][cam][frame][mod]["priority1_details"] = dict_p1
-                    
-                    mean_p2, dict_p2 = _compute_pck_mm(pred_joints, truth_joints, valid_priority2) if valid_priority2 else (0.0, {})
+
+                    mean_p2, dict_p2 = _compute_pck(pred_joints, truth_joints, valid_priority2, pck_threshold_mm) if valid_priority2 else (0.0, {})
                     results["PCK"][cam][frame][mod]["priority2_mm"] = mean_p2
                     results["PCK"][cam][frame][mod]["priority2_details"] = dict_p2
 
@@ -480,15 +493,16 @@ def run_evaluation(config: dict) -> None:
                         "details": joint_details,
                     }
 
-    header = ["Frame", "Evaluated_Camera", "Ground_Truth_Camera"]
-    for mod in module_names:
-        out_name = module_output_names[mod]
-        header.append(f"{out_name}_priority1_mm")
-        header.append(f"{out_name}_priority2_mm")
-        for joint in priority1_names:
-            header.append(f"{out_name}_{joint}_mm")
-
     for metric in enabled_metrics:
+        unit = "percent" if metric == "PCK" else "mm"
+        header = ["Frame", "Evaluated_Camera", "Ground_Truth_Camera"]
+        for mod in module_names:
+            out_name = module_output_names[mod]
+            header.append(f"{out_name}_priority1_{unit}")
+            header.append(f"{out_name}_priority2_{unit}")
+            for joint in priority1_names:
+                header.append(f"{out_name}_{joint}_{unit}")
+
         for cam in CAMERAS:
             filename = f"{metric}_{CAMERA_FILE_NAMES[cam]}.csv"
             out_file = out_dir / filename
@@ -507,14 +521,15 @@ def run_evaluation(config: dict) -> None:
                         v2 = results[metric][cam][frame][mod]["priority2_mm"]
                         row.append(f"{v1:.2f}")
                         row.append(f"{v2:.2f}")
-                        avg_sums[f"{out_name}_priority1_mm"] += v1
-                        avg_sums[f"{out_name}_priority2_mm"] += v2
+                        avg_sums[f"{out_name}_priority1_{unit}"] += v1
+                        avg_sums[f"{out_name}_priority2_{unit}"] += v2
                         
                         p1_details = results[metric][cam][frame][mod]["priority1_details"]
                         for joint in priority1_names:
                             err_j = p1_details.get(joint, 0.0)
                             row.append(f"{err_j:.2f}")
-                            avg_sums[f"{out_name}_{joint}_mm"] += err_j
+                            avg_sums[f"{out_name}_{joint}_{unit}"] += err_j
+                    writer.writerow(row)
 
                 n_frames = len(evaluated_frames)
                 if n_frames > 0:

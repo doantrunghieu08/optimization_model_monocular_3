@@ -155,6 +155,10 @@ def run_pose_export(config: dict) -> None:
         metadata_data = {
             "metadata": {
                 "camera_sync": sync_result,
+                "source_pkl_stems": {
+                    "camera1": cam1_file.stem,
+                    "camera2": cam2_file.stem,
+                },
                 "source_frame_indices": {
                     "camera1": int(cam1_tracking_frame_ids[cam1_start + i]) if cam1_tracking_frame_ids is not None else cam1_start + i,
                     "camera2": int(cam2_tracking_frame_ids[cam2_start + i]) if cam2_tracking_frame_ids is not None else cam2_start + i,

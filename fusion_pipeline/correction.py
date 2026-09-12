@@ -36,7 +36,7 @@ def apply_similarity(point, transform):
 
 def ransac_umeyama(cam1, cam2, names, threshold, max_combos, rng=None):
     if len(names) < 3:
-        return (1.0, np.eye(3), np.zeros(3)), list(names)
+        raise ValueError("At least 3 anchors are required for cross-camera similarity")
     src_all, dst_all = _to_arrays(cam1, cam2, names)
     n = len(names)
     c3 = n * (n - 1) * (n - 2) // 6

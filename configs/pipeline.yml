@@ -10,8 +10,8 @@ preprocess:
     max_frames: null # Số frame tối đa dùng cho ước lượng offset.
 
 inputs:
-  cam1_pkl: "input/Seq1/imageSequence/Segments/wham_output_video_0_seg_1/video_0_seg_1.pkl"
-  cam2_pkl: "input/Seq1/imageSequence/Segments/wham_output_video_2_seg_1/video_2_seg_1.pkl"
+  cam1_pkl: "input/Seq1/imageSequence/Segments/video_0_seg_1/video_0_seg_1.pkl"
+  cam2_pkl: "input/Seq1/imageSequence/Segments/video_2_seg_1/video_2_seg_1.pkl"
   camera1_video: "input/Seq1/imageSequence/video_0.avi"
   camera2_video: "input/Seq1/imageSequence/video_2.avi"
   ground_truth_dir: "input/Seq1/GT" # Thư mục ground-truth cho evaluation.
@@ -76,5 +76,6 @@ evaluation:
     pa_mpjpe: true # PA-MPJPE là metric mặc định đang bật.
     mpjpe: true
     pck: false
+    pck_threshold_mm: 150.0
     mble: true
     accel: true
