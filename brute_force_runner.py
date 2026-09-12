@@ -200,7 +200,7 @@ def parse_detailed_csv(csv_path: str, prefix: str) -> tuple[float, dict[str, flo
                 j_dict = {name: float(row[idx]) for name, idx in j_indices.items() if row[idx]}
                 return float(row[t_idx]), j_dict, frame_count
                 
-    return float('inf'), {}, frame_count
+    return float('inf'), {}
 
 def extract_belief(metadata_dir: Path) -> tuple[str, str]:
     if not metadata_dir.exists(): return "[]", "[]"
