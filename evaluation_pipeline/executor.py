@@ -133,11 +133,11 @@ def _compute_acceleration_error(
         pred_accel = pred_next[key] - 2.0 * pred_current[key] + pred_prev[key]
         truth_accel = truth_next[key] - 2.0 * truth_current[key] + truth_prev[key]
         details[key] = {
-            "pred_accel_mm_s2": float(np.linalg.norm(pred_accel) * 1000.0),
-            "truth_accel_mm_s2": float(np.linalg.norm(truth_accel) * 1000.0),
-            "error_mm_s2": float(np.linalg.norm(pred_accel - truth_accel) * 1000.0),
+            "pred_accel_mm_frame2": float(np.linalg.norm(pred_accel) * 1000.0),
+            "truth_accel_mm_frame2": float(np.linalg.norm(truth_accel) * 1000.0),
+            "error_mm_frame2": float(np.linalg.norm(pred_accel - truth_accel) * 1000.0),
         }
-    errors = [values["error_mm_s2"] for values in details.values()]
+    errors = [values["error_mm_frame2"] for values in details.values()]
     return (float(np.mean(errors)) if errors else float("nan")), details
 
 def _load_json(p: Path) -> dict:
@@ -476,7 +476,7 @@ def run_evaluation(config: dict) -> None:
                     ]
                     mean_accel, joint_details = _compute_acceleration_error(pred_triplet, truth_triplet, keys)
                     accel_results[cam].setdefault(frame, {})[mod] = {
-                        "mean_mm_s2": mean_accel,
+                        "mean_mm_frame2": mean_accel,
                         "details": joint_details,
                     }
 
@@ -548,7 +548,7 @@ def run_evaluation(config: dict) -> None:
     if accel_enabled:
         header = [
             "Frame", "Evaluated_Camera", "Ground_Truth_Camera", "Module", "Joint",
-            "Pred_Accel_mm_s2", "GT_Accel_mm_s2", "Accel_Error_mm_s2", "Frame_Accel_Error_mm_s2",
+            "Pred_Accel_mm_frame2", "GT_Accel_mm_frame2", "Accel_Error_mm_frame2", "Frame_Accel_Error_mm_frame2",
         ]
         for cam in CAMERAS:
             out_file = out_dir / f"Accel_{CAMERA_FILE_NAMES[cam]}.csv"
@@ -563,10 +563,10 @@ def run_evaluation(config: dict) -> None:
                         for joint, values in result["details"].items():
                             writer.writerow([
                                 frame, cam, gt_camera_keys[cam], module_output_names[mod], joint,
-                                f'{values["pred_accel_mm_s2"]:.2f}',
-                                f'{values["truth_accel_mm_s2"]:.2f}',
-                                f'{values["error_mm_s2"]:.2f}',
-                                f'{result["mean_mm_s2"]:.2f}',
+                                f'{values["pred_accel_mm_frame2"]:.2f}',
+                                f'{values["truth_accel_mm_frame2"]:.2f}',
+                                f'{values["error_mm_frame2"]:.2f}',
+                                f'{result["mean_mm_frame2"]:.2f}',
                             ])
 
     if "learnable_extra" in module_names and len(evaluated_frames) > 0:
