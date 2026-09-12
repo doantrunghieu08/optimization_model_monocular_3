@@ -194,11 +194,11 @@ def parse_detailed_csv(csv_path: str, prefix: str) -> tuple[float, dict[str, flo
             elif h.startswith(f"{prefix}_") and h.endswith("_mm") and "priority" not in h:
                 j_indices[h[len(f"{prefix}_") : -len("_mm")]] = i
         
-        if t_idx == -1: return float('inf'), {}, frame_count
+        if t_idx == -1: return float('inf'), {}
         for row in reader[1:]:
             if row and row[0] == "AVERAGE":
                 j_dict = {name: float(row[idx]) for name, idx in j_indices.items() if row[idx]}
-                return float(row[t_idx]), j_dict, frame_count
+                return float(row[t_idx]), j_dict
                 
     return float('inf'), {}
 
