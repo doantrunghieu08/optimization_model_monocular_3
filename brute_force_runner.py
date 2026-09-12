@@ -179,23 +179,30 @@ def parse_average_csv(csv_path: str, target_column: str) -> float:
             if row and row[0] == "AVERAGE": return float(row[target_idx])
     return float('inf')
 
-def parse_detailed_csv(csv_path: str, prefix: str) -> tuple[float, dict[str, float]]:
+def parse_detailed_csv(csv_path: str, prefix: str) -> tuple[float, dict[str, float], int]:
     path = Path(csv_path)
-    if not path.exists(): return float('inf'), {}
+    if not path.exists(): return float('inf'), {}, 0
     with open(path, 'r', encoding='utf-8') as f:
-        reader = csv.reader(f)
-        header = next(reader)
+        reader = list(csv.reader(f))
+        if len(reader) < 2: return float('inf'), {}, 0
+        
+        header = reader[0]
+        # Đếm số lượng frame (loại bỏ dòng header và dòng AVERAGE)
+        frame_count = sum(1 for row in reader[1:] if row and row[0] != "AVERAGE")
+        
         t_idx, j_indices = -1, {}
         for i, h in enumerate(header):
             if h == f"{prefix}_priority1_mm": t_idx = i
             elif h.startswith(f"{prefix}_") and h.endswith("_mm") and "priority" not in h:
                 j_indices[h[len(f"{prefix}_") : -len("_mm")]] = i
-        if t_idx == -1: return float('inf'), {}
-        for row in reader:
+        
+        if t_idx == -1: return float('inf'), {}, frame_count
+        for row in reader[1:]:
             if row and row[0] == "AVERAGE":
                 j_dict = {name: float(row[idx]) for name, idx in j_indices.items() if row[idx]}
-                return float(row[t_idx]), j_dict
-    return float('inf'), {}
+                return float(row[t_idx]), j_dict, frame_count
+                
+    return float('inf'), {}, frame_count
 
 def extract_belief(metadata_dir: Path) -> tuple[str, str]:
     if not metadata_dir.exists(): return "[]", "[]"
@@ -234,7 +241,7 @@ def _get_header_indices(header: list) -> dict:
     idx = {}
     keys = [
         'alpha', 'beta', 
-        'Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 
+        'Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 'Frames', # <--- THÊM 'Frames'
         'MPJPE', 'PA-MPJPE', 'LE MPJPE Master', 'LE PA-MPJPE Master', 
         '# Occlus1', 'scope of belief',
         'belief Master', 'belief Slave', 
@@ -267,6 +274,7 @@ def _parse_history_row(row: list, idx: dict) -> tuple:
     key = (row[idx['Segment']], row[idx['Cam Master']], row[idx['Cam Slave']])
     res = {
         "alpha": get_val('alpha', "N/A"), "beta": get_val('beta', "N/A"),
+        "frames": get_val('Frames', "N/A"), # <--- DÒNG THÊM MỚI
         "mpjpe": sf('MPJPE'), "pa_mpjpe": sf('PA-MPJPE'), 
         "le_mpjpe_master": get_val('LE MPJPE Master', "N/A"),
         "le_pa_mpjpe_master": get_val('LE PA-MPJPE Master', "N/A"),
@@ -297,7 +305,7 @@ def load_existing_spreadsheet_results(sheet_name: str) -> dict:
     return existing
 
 def _build_report_rows(all_results: dict, joint_keys: list) -> list:
-    header = ['alpha', 'beta', 'Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 'MPJPE', 'PA-MPJPE', 
+    header = ['alpha', 'beta', 'Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 'Frames', 'MPJPE', 'PA-MPJPE', 
               'LE MPJPE Master', 'LE PA-MPJPE Master', 
               '# Occlus1', 'scope of belief',
               'belief Master', 'belief Slave', 'Old MPJPE', 
@@ -313,6 +321,7 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
             row = [
                 res.get('alpha', 'N/A'), res.get('beta', 'N/A'),
                 res.get('set', 'Unknown_Set'), seg_name, rank, res['master'], res.get('supplement', 'N/A'),
+                res.get('frames', 'N/A'), # <--- DÒNG THÊM MỚI (xuất ra cột Frames)
                 fmt(res.get('mpjpe', float('inf'))), fmt(res.get('pa_mpjpe', float('inf'))),
                 res.get('le_mpjpe_master', 'N/A'), res.get('le_pa_mpjpe_master', 'N/A'),
                 res.get('# Occlus1', 'N/A'),
@@ -416,7 +425,7 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
     eval_dir = Path(config["paths"]["evaluation_output_dir"])
     t_pref = "fusion-learnable" if config.get("learnable", {}).get("enabled", True) else "fused"
     
-    mpjpe, m_jts = parse_detailed_csv(eval_dir / "MPJPE_cam1.csv", t_pref)
+    mpjpe, m_jts, num_frames = parse_detailed_csv(eval_dir / "MPJPE_cam1.csv", t_pref)
     pa_mpjpe, pa_jts = parse_detailed_csv(eval_dir / "PA-MPJPE_cam1.csv", t_pref)
     old_m, _ = parse_detailed_csv(eval_dir / "MPJPE_cam1.csv", "posed")
     old_pa, _ = parse_detailed_csv(eval_dir / "PA-MPJPE_cam1.csv", "posed")
@@ -449,6 +458,7 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
     return {
         "alpha": alpha_val, "beta": beta_val,
         "set": current_set, "master": camA_id, "supplement": camB_id, "mpjpe": mpjpe, 
+        "frames": num_frames, # <--- DÒNG THÊM MỚI
         "pa_mpjpe": pa_mpjpe, 
         "le_mpjpe_master": le_mpjpe, "le_pa_mpjpe_master": le_pa_mpjpe,
         "# Occlus1" : str(num_occlus1),
