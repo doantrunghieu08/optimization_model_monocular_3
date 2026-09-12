@@ -216,6 +216,7 @@ def run_phase3_pipeline(
     used_global_belief="True",
     local_method="optical_aware_belief",
     use_kinematic_constraints="True",
+    loss_type="huber",
 ):
     cam1 = {k: as_xyz(v) for k, v in data_in["camera1"].items()}
     cam2 = {k: as_xyz(v) for k, v in data_in["camera2"].items()}
@@ -253,7 +254,7 @@ def run_phase3_pipeline(
         alpha=belief_alpha,
         beta=belief_beta,
         used_global_belief=used_global_belief,
-        local_method=local_method
+        local_method=local_method,
     )
     m_set = detected["M"]
     k1_set = detected["K1"]
@@ -306,7 +307,8 @@ def run_phase3_pipeline(
             prev_data=prev_optimized_data,
             temporal_lambda=temporal_lambda,
             max_iter=max_iter,
-            use_kinematic_constraints=use_kinematic_constraints
+            use_kinematic_constraints=use_kinematic_constraints,
+            loss_type=loss_type
         )
         after_stats = calculate_stats(optimized_data["camera1"], optimized_data["camera2"], names, a_new, conf1=H1_all, conf2=H2_all, vis1=vis1, vis2=vis2, f_weights=all_weights)
 
@@ -378,6 +380,7 @@ def run_fusion(config: dict) -> None:
 
     ransac_cfg = fusion_cfg["ransac"]
     opt_cfg = fusion_cfg["optimization"]
+    loss_type = opt_cfg["loss_type"]
 
     prev_result = None
     occlusion1 = 0
@@ -423,6 +426,7 @@ def run_fusion(config: dict) -> None:
                 used_global_belief=belief_cfg["global"],
                 local_method = local_method_cfg,
                 use_kinematic_constraints=opt_cfg["use_kinematic_constraints"],
+                loss_type=loss_type
             )
             # 1. Lấy dữ liệu an toàn
             joint_conf = result.get("joint_confidence", {})
