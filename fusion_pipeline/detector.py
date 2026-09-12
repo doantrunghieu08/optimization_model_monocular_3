@@ -1,6 +1,3 @@
-from pathlib import Path
-import pickle
-
 import numpy as np
 from fusion_pipeline.config import TORSO_PART_IDS
 from fusion_pipeline.config import ROTATION_PARENT_JOINTS
@@ -50,26 +47,17 @@ def get_orientation_flag(joints, epsilon=ORIENTATION_EPSILON):
     return flags
 
 
-def load_torso_faces(seg_path, faces):
-    if not seg_path:
-        raise ValueError("Missing required fusion occlusion input: paths.segmentation")
-    seg_path = Path(seg_path)
-    if not seg_path.exists():
-        raise FileNotFoundError(f"Segmentation mask file not found: {seg_path}")
-    with seg_path.open("rb") as f:
-        seg = pickle.load(f, encoding="latin1")
-    if not isinstance(seg, dict) or "smpl_index" not in seg:
-        raise ValueError(f"Invalid SMPL segmentation file: {seg_path}")
-    vertex_parts = np.asarray(seg["smpl_index"])
+def load_torso_faces(vertex_parts, faces):
+    vertex_parts = np.asarray(vertex_parts)
     faces = np.asarray(faces, dtype=np.int64)
     if vertex_parts.shape != (6890,) or faces.ndim != 2 or faces.shape[1] != 3:
-        raise ValueError("Invalid SMPL segmentation or faces for occlusion ray-casting")
+        raise ValueError("Invalid SMPL vertex parts or faces for occlusion ray-casting")
     if faces.size and (faces.min() < 0 or faces.max() >= len(vertex_parts)):
-        raise ValueError("SMPL face index is outside the segmentation vertex range")
+        raise ValueError("SMPL face index is outside the vertex-part range")
     torso_mask = np.isin(vertex_parts, list(TORSO_PART_IDS))
     torso_faces = faces[np.all(torso_mask[faces], axis=1)]
     if not len(torso_faces):
-        raise ValueError("No torso faces found in SMPL segmentation")
+        raise ValueError("No torso faces found in SMPL skinning parts")
     print(f"[Fusion] Torso ray-casting mesh: {len(torso_faces)} triangles")
     return torso_faces
 

@@ -171,6 +171,7 @@ def run_pose_export(config: dict) -> None:
         camera1=cam1_vertices,
         camera2=cam2_vertices,
         faces=np.asarray(model.faces, dtype=np.int32),
+        vertex_parts=model.lbs_weights.argmax(dim=1).cpu().numpy().astype(np.int32),
     )
 
     print(f"[Pose] Done. Output: {output_dir}")

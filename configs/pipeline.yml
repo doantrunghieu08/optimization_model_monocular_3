@@ -18,7 +18,6 @@ inputs:
 
 paths:
   smpl_model: "models/SMPL_NEUTRAL.pkl"
-  segmentation: "models/smpl_partSegmentation_mapping.pkl"
   keypoints3d_map: "configs/keypoints3D_map.yml"
   keypoints2d_map: "configs/keypoints2D_map.yml"
   j_regressor_3d: "models/J_regressor_body25_extended.npy"

@@ -136,7 +136,6 @@ def validate_config(config):
         "keypoints3d_map",
         "keypoints2d_map",
         "j_regressor_3d",
-        "segmentation",
         "preprocess_output_dir",
         "pose_output_dir",
         "fused_output_dir",

@@ -71,7 +71,7 @@ def _clean_output(output_dir: Path, pattern: str = "*.json", create_split_dirs: 
 
 def _load_pose_meshes(paths: dict, occlusion_enabled: bool):
     if not occlusion_enabled:
-        return False, None, None, None, 0
+        return False, None, None, None, None, 0
 
     mesh_path = Path(paths["pose_output_dir"]) / "camera_meshes.npz"
     if not mesh_path.exists():
@@ -80,13 +80,16 @@ def _load_pose_meshes(paths: dict, occlusion_enabled: bool):
         verts_cam1 = np.asarray(meshes["camera1"])
         verts_cam2 = np.asarray(meshes["camera2"])
         faces = np.asarray(meshes["faces"], dtype=np.int64)
+        vertex_parts = np.asarray(meshes["vertex_parts"], dtype=np.int32)
     if verts_cam1.ndim != 3 or verts_cam2.ndim != 3 or verts_cam1.shape[1:] != (6890, 3) or verts_cam2.shape[1:] != (6890, 3):
         raise ValueError(f"Invalid pose mesh cache: {mesh_path}")
     if len(verts_cam1) != len(verts_cam2):
         raise ValueError(f"Camera mesh frame counts do not match in {mesh_path}")
+    if vertex_parts.shape != (6890,):
+        raise ValueError(f"Invalid SMPL vertex parts in {mesh_path}")
     frame_count = len(verts_cam1)
     print(f"[Fusion] Camera-space mesh cache: {frame_count} synced frames")
-    return True, verts_cam1, verts_cam2, faces, frame_count
+    return True, verts_cam1, verts_cam2, faces, vertex_parts, frame_count
 
 
 def _load_pose_frame(path: Path, metadata_dir: Path):
@@ -296,8 +299,8 @@ def run_fusion(config: dict) -> None:
     occlusion_cfg = fusion_cfg["occlusion"]
     belief_cfg = fusion_cfg["belief"]
     occlusion_enabled = occlusion_cfg["enabled"]
-    mesh_loaded, verts_cam1, verts_cam2, faces, mesh_frame_count = _load_pose_meshes(paths, occlusion_enabled)
-    torso_faces = load_torso_faces(paths["segmentation"], faces) if mesh_loaded else None
+    mesh_loaded, verts_cam1, verts_cam2, faces, vertex_parts, mesh_frame_count = _load_pose_meshes(paths, occlusion_enabled)
+    torso_faces = load_torso_faces(vertex_parts, faces) if mesh_loaded else None
     confidence2d_profiles = _load_2d_profiles(config)
 
     keypoints_dir = input_dir / "keypoints3d"
