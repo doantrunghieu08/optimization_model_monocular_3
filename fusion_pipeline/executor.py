@@ -293,6 +293,7 @@ def run_phase3_pipeline(
         cam1_corr, cam2_corr = apply_rotation_mismatch_corrections(
             cam1_corr, cam2_corr, cam1, cam2, m_set, k1_set, k2_set,
             H1_all, H2_all, t12, t21,)
+        before_stats = calculate_stats(cam1_corr, cam2_corr, names, a_new, conf1=H1_all, conf2=H2_all, vis1=vis1, vis2=vis2, f_weights=all_weights)
         optimized_data, _ = optimize_f_points(
             {"camera1": cam1_corr, "camera2": cam2_corr},
             a_new,
