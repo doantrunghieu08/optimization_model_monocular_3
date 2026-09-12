@@ -273,41 +273,42 @@ def run_phase3_pipeline(
         max_combos=ransac_max_combos,
     )
 
-    cam1_corr, cam2_corr = apply_confidence_corrections(cam1, cam2, k1_set, k2_set, t12, t21)
-    cam1_corr, cam2_corr = apply_rotation_mismatch_corrections(
-        cam1_corr,
-        cam2_corr,
-        cam1,
-        cam2,
-        m_set,
-        k1_set,
-        k2_set,
-        H1_all,
-        H2_all,
-        t12,
-        t21,
-    )
-
     a_new = sorted(set(a_list) | k1_set | k2_set)
     f_list = [n for n in names if n not in set(a_new)]
     before_stats = calculate_stats(cam1_corr, cam2_corr, names, a_new, conf1=H1_all, conf2=H2_all, vis1=vis1, vis2=vis2, f_weights=all_weights)
     use_kinematic_constraints = str(use_kinematic_constraints).lower() == "true"
-    optimized_data, _ = optimize_f_points(
-        {"camera1": cam1_corr, "camera2": cam2_corr},
-        a_new,
-        f_list,
-        conf1=H1_all,
-        conf2=H2_all,
-        vis1=vis1,
-        vis2=vis2,
-        regularization=regularization,
-        regularization_lambda=regularization_lambda,
-        prev_data=prev_optimized_data,
-        temporal_lambda=temporal_lambda,
-        max_iter=max_iter,
-        use_kinematic_constraints=use_kinematic_constraints
-    )
-    after_stats = calculate_stats(optimized_data["camera1"], optimized_data["camera2"], names, a_new, conf1=H1_all, conf2=H2_all, vis1=vis1, vis2=vis2, f_weights=all_weights)
+
+    if os.environ.get("ALIGNED_AVERAGING", "false").lower() == "true" and len(a_list) >= 3:
+        # Chuyển đổi và tính trung bình theo ma trận t21
+        cam1_corr = get_averaged_pose(cam1, cam2, t21, names)
+        cam2_corr = cam2.copy() 
+        
+        optimized_data = {"camera1": cam1_corr, "camera2": cam2_corr}
+        
+        # Cập nhật thống kê MPJPE/Huber cho dữ liệu trực tiếp
+        before_stats = calculate_stats(cam1, cam2, names, a_new, conf1=H1_all, conf2=H2_all, vis1=vis1, vis2=vis2, f_weights=all_weights)
+        after_stats = calculate_stats(optimized_data["camera1"], optimized_data["camera2"], names, a_new, conf1=H1_all, conf2=H2_all, vis1=vis1, vis2=vis2, f_weights=all_weights)
+    else:
+        cam1_corr, cam2_corr = apply_confidence_corrections(cam1, cam2, k1_set, k2_set, t12, t21)
+        cam1_corr, cam2_corr = apply_rotation_mismatch_corrections(
+            cam1_corr, cam2_corr, cam1, cam2, m_set, k1_set, k2_set,
+            H1_all, H2_all, t12, t21,)
+        optimized_data, _ = optimize_f_points(
+            {"camera1": cam1_corr, "camera2": cam2_corr},
+            a_new,
+            f_list,
+            conf1=H1_all,
+            conf2=H2_all,
+            vis1=vis1,
+            vis2=vis2,
+            regularization=regularization,
+            regularization_lambda=regularization_lambda,
+            prev_data=prev_optimized_data,
+            temporal_lambda=temporal_lambda,
+            max_iter=max_iter,
+            use_kinematic_constraints=use_kinematic_constraints
+        )
+        after_stats = calculate_stats(optimized_data["camera1"], optimized_data["camera2"], names, a_new, conf1=H1_all, conf2=H2_all, vis1=vis1, vis2=vis2, f_weights=all_weights)
 
     flags1_after = get_orientation_flag(optimized_data["camera1"])
     flags2_after = get_orientation_flag(optimized_data["camera2"])
