@@ -120,6 +120,20 @@ def parse_detailed_csv(csv_path: str, prefix: str) -> tuple[float, dict[str, flo
                 return float(row[t_idx]), j_dict
     return float('inf'), {}
 
+def parse_frame_metric_csv(csv_path: str, module: str, target_column: str) -> float:
+    path = Path(csv_path)
+    if not path.exists(): return float('inf')
+    frame_values = {}
+    with open(path, 'r', encoding='utf-8') as f:
+        for row in csv.DictReader(f):
+            if row.get("Module") != module or not row.get(target_column):
+                continue
+            try:
+                frame_values[row["Frame"]] = float(row[target_column])
+            except (KeyError, ValueError):
+                continue
+    return sum(frame_values.values()) / len(frame_values) if frame_values else float('inf')
+
 def extract_local_belief(metadata_dir: Path) -> tuple[str, str]:
     if not metadata_dir.exists(): return "[]", "[]"
     c1_acc, c2_acc, count = {}, {}, 0
@@ -157,8 +171,8 @@ def _get_header_indices(header: list) -> dict:
     idx = {}
     keys = [
         'Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 
-        'MPJPE', 'PA-MPJPE', 'LE MPJPE Master', 'LE PA-MPJPE Master', 
-        'local_belief Master', 'local_belief Slave', 
+        'MPJPE', 'PA-MPJPE', 'MBLE', 'Accel', 'LE MPJPE Master', 'LE PA-MPJPE Master',
+        'belief Master', 'belief Slave',
         'Old MPJPE', 'Old PA-MPJPE', '% Δ_MPJPE', '% Δ_PA-MPJPE', 
         'OS Version', 'Username', 'Timestamp'
     ]
@@ -169,6 +183,8 @@ def _get_header_indices(header: list) -> dict:
             idx[k] = header.index('% d_MPJPE%')
         elif k == '% Δ_PA-MPJPE' and 'd_PA-MPJPE' in header:
             idx[k] = header.index('d_PA-MPJPE')
+        elif k in ('belief Master', 'belief Slave') and f'local_{k}' in header:
+            idx[k] = header.index(f'local_{k}')
         else:
             idx[k] = -1
     idx['joints'] = {h: i for i, h in enumerate(header) if h.startswith(("MPJPE_", "PA-MPJPE_"))}
@@ -185,11 +201,12 @@ def _parse_history_row(row: list, idx: dict) -> tuple:
     
     key = (row[idx['Segment']], row[idx['Cam Master']], row[idx['Cam Slave']])
     res = {
-        "mpjpe": sf('MPJPE'), "pa_mpjpe": sf('PA-MPJPE'), 
+        "mpjpe": sf('MPJPE'), "pa_mpjpe": sf('PA-MPJPE'),
+        "mble": sf('MBLE'), "accel": sf('Accel'),
         "le_mpjpe_master": get_val('LE MPJPE Master', "N/A"),
         "le_pa_mpjpe_master": get_val('LE PA-MPJPE Master', "N/A"),
-        "local_belief_master": get_val('local_belief Master', "[]"),
-        "local_belief_slave": get_val('local_belief Slave', "[]"),
+        "belief_master": get_val('belief Master', "[]"),
+        "belief_slave": get_val('belief Slave', "[]"),
         "old_mpjpe": sf('Old MPJPE'), "old_pa_mpjpe": sf('Old PA-MPJPE'),
         "% delta_mpjpe": sf('% Δ_MPJPE') if sf('% Δ_MPJPE') != float('inf') else 0.0,
         "% delta_pa_mpjpe": sf('% Δ_PA-MPJPE') if sf('% Δ_PA-MPJPE') != float('inf') else 0.0,
@@ -203,16 +220,16 @@ def load_existing_spreadsheet_results(sheet_name: str) -> dict:
     header, rows = _get_sheet_data(sheet_name)
     if not header: return existing
     idx = _get_header_indices(header)
-    if idx['Segment'] == -1: return existing
+    if idx['Segment'] == -1 or idx['MBLE'] == -1 or idx['Accel'] == -1: return existing
     for row in rows:
         key, res = _parse_history_row(row, idx)
         if key and key[0] != "N/A": existing[key] = res
     return existing
 
 def _build_report_rows(all_results: dict, joint_keys: list) -> list:
-    header = ['Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 'MPJPE', 'PA-MPJPE', 
+    header = ['Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 'MPJPE', 'PA-MPJPE', 'MBLE', 'Accel',
               'LE MPJPE Master', 'LE PA-MPJPE Master', 
-              'local_belief Master', 'local_belief Slave', 'Old MPJPE', 
+              'belief Master', 'belief Slave', 'Old MPJPE',
               'Old PA-MPJPE', '% Δ_MPJPE', '% Δ_PA-MPJPE', 
               'OS Version', 'Username', 'Timestamp'] + joint_keys
     rows = [header]
@@ -224,8 +241,9 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
             row = [
                 res.get('set', 'Unknown_Set'), seg_name, rank, res['master'], res.get('supplement', 'N/A'),
                 fmt(res.get('mpjpe', float('inf'))), fmt(res.get('pa_mpjpe', float('inf'))),
+                fmt(res.get('mble', float('inf'))), fmt(res.get('accel', float('inf'))),
                 res.get('le_mpjpe_master', 'N/A'), res.get('le_pa_mpjpe_master', 'N/A'),
-                res.get('local_belief_master', "[]"), res.get('local_belief_slave', "[]"),
+                res.get('belief_master', "[]"), res.get('belief_slave', "[]"),
                 fmt(res.get('old_mpjpe', float('inf'))), fmt(res.get('old_pa_mpjpe', float('inf'))), 
                 fmt(res.get('% delta_mpjpe', 0.0)), fmt(res.get('% delta_pa_mpjpe', 0.0)), 
                 res.get('os_version', 'N/A'), res.get('username', 'N/A'), res.get('timestamp', 'N/A')
@@ -311,6 +329,8 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
     
     mpjpe, m_jts = parse_detailed_csv(eval_dir / "MPJPE_cam1.csv", t_pref)
     pa_mpjpe, pa_jts = parse_detailed_csv(eval_dir / "PA-MPJPE_cam1.csv", t_pref)
+    mble = parse_frame_metric_csv(eval_dir / "MBLE_cam1.csv", t_pref, "Frame_MBLE_mm")
+    accel = parse_frame_metric_csv(eval_dir / "Accel_cam1.csv", t_pref, "Frame_Accel_Error_mm_s2")
     old_m, _ = parse_detailed_csv(eval_dir / "MPJPE_cam1.csv", "posed")
     old_pa, _ = parse_detailed_csv(eval_dir / "PA-MPJPE_cam1.csv", "posed")
     
@@ -333,10 +353,10 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
 
     return {
         "set": current_set, "master": camA_id, "supplement": camB_id, "mpjpe": mpjpe, 
-        "pa_mpjpe": pa_mpjpe, 
+        "pa_mpjpe": pa_mpjpe, "mble": mble, "accel": accel,
         "le_mpjpe_master": le_mpjpe, "le_pa_mpjpe_master": le_pa_mpjpe,
-        "local_belief_master": b1,
-        "local_belief_slave": b2, "old_mpjpe": old_m, "old_pa_mpjpe": old_pa,
+        "belief_master": b1,
+        "belief_slave": b2, "old_mpjpe": old_m, "old_pa_mpjpe": old_pa,
         "% delta_mpjpe": pd_m, "% delta_pa_mpjpe": pd_pa, "joints": joint_metrics,
         "os_version": os_v, "username": usr, "timestamp": ts
     }
@@ -357,12 +377,15 @@ def _evaluate_camera_pair(camA, camB, base_cfg, gt_dir, workspace, seg_name: str
         d_pa_mpjpe = res.get('% delta_pa_mpjpe', 0.0)
         le_mpjpe = res.get('le_mpjpe_master', 0.0)
         le_pa_mpjpe = res.get('le_pa_mpjpe_master', 0.0)
+        mble = res.get('mble', float('inf'))
+        accel = res.get('accel', float('inf'))
 
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         print(f"[{current_time}] Kết quả {camA['id']}-{camB['id']}: "
               f"MPJPE={res['mpjpe']:.2f} (Δ {d_mpjpe:+.2f}%), "
-              f"PA-MPJPE={res['pa_mpjpe']:.2f} (Δ {d_pa_mpjpe:+.2f}%)",
+              f"PA-MPJPE={res['pa_mpjpe']:.2f} (Δ {d_pa_mpjpe:+.2f}%), "
+              f"MBLE={mble:.2f}, Accel={accel:.2f}",
               f"LE MPJPE={le_mpjpe} (LE PA-MPJPE {le_pa_mpjpe}), "
              )
         return res
