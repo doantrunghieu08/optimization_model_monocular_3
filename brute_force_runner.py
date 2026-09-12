@@ -187,8 +187,6 @@ def parse_detailed_csv(csv_path: str, prefix: str) -> tuple[float, dict[str, flo
         if len(reader) < 2: return float('inf'), {}, 0
         
         header = reader[0]
-        # Đếm số lượng frame (loại bỏ dòng header và dòng AVERAGE)
-        frame_count = sum(1 for row in reader[1:] if row and row[0] != "AVERAGE")
         
         t_idx, j_indices = -1, {}
         for i, h in enumerate(header):
