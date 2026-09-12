@@ -54,9 +54,13 @@ def _get_custom_to_body25(map_data):
         # "Map 19 key tương thích vào BODY25... Không gán palm-center vào wrist."
         if kp["name"] in ("left_hand", "right_hand"):
             continue
-        body25_name = kp.get("body25_alias")
-        if body25_name:
-            custom_to_body25[kp["name"]] = body25_name
+        regressor_index = kp["regressor_index"]
+        body25_name = kp.get("body25_alias") or BODY25_NAMES[regressor_index]
+        if body25_name not in BODY25_INDEX:
+            raise ValueError(f"Invalid BODY25 alias for {kp['name']}: {body25_name}")
+        custom_to_body25[kp["name"]] = body25_name
+    if len(custom_to_body25) != 19:
+        raise ValueError(f"Expected 19 BODY25 target mappings, got {len(custom_to_body25)}")
     return custom_to_body25
 
 def _frame_index(path: Path) -> int:
