@@ -83,3 +83,5 @@ evaluation:
     pa_mpjpe: true # PA-MPJPE là metric mặc định đang bật.
     mpjpe: true
     pck: false
+    mble: true
+    accel: true
