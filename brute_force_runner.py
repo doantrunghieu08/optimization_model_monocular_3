@@ -114,7 +114,7 @@ def _build_format_requests(sheet_id: int, total_rows: int, total_cols: int) -> l
         }})
     return reqs
 
-def decorate(worksheet, total_rows: int, total_cols: int, rows_data: list = None, max_width: int = 50, char_threshold: int = 50):
+def decorate(worksheet, total_rows: int, total_cols: int, rows_data: list = None, max_width: int = 15, char_threshold: int = 50):
     try:
         worksheet.freeze(rows=1)
         requests = _build_format_requests(worksheet.id, total_rows, total_cols)
