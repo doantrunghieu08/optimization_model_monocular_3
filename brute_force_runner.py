@@ -114,58 +114,70 @@ def _build_format_requests(sheet_id: int, total_rows: int, total_cols: int) -> l
         }})
     return reqs
 
-def decorate(worksheet, total_rows: int, total_cols: int, rows_data: list = None, max_width: int = 15, char_threshold: int = 50):
+def _calculate_pixel_width(header_text: str, col_data: list, max_char_limit: int) -> int:
+    header_len = len(str(header_text))
+    # Tìm chuỗi dài nhất trong các ô dữ liệu (mặc định là 0 nếu cột trống)
+    max_data_len = max([len(str(cell)) for cell in col_data] + [0])
+    
+    # Lấy min giữa header và dữ liệu
+    target_len = min(header_len, max_data_len)
+    
+    # Chặn trần ở max_char_limit (25) và đảm bảo đáy tối thiểu là 5 ký tự
+    target_len = min(target_len, max_char_limit)
+    target_len = max(target_len, 5) 
+    
+    # Chuyển đổi sang pixels (khoảng 8px/ký tự + 12px padding)
+    return (target_len * 8) + 12
+
+def _build_resize_requests(sheet_id: int, total_cols: int, rows_data: list, max_char_limit: int) -> list:
+    requests = []
+    # Fallback: Nếu không có dữ liệu, dùng autoResize cho toàn bộ
+    if not rows_data or len(rows_data) == 0:
+        return [{
+            "autoResizeDimensions": {
+                "dimensions": {
+                    "sheetId": sheet_id, "dimension": "COLUMNS",
+                    "startIndex": 0, "endIndex": total_cols
+                }
+            }
+        }]
+
+    # Nếu có dữ liệu, tạo request cố định kích thước cho từng cột
+    for c in range(total_cols):
+        header_text = rows_data[0][c] if c < len(rows_data[0]) else ""
+        col_data = [row[c] for row in rows_data[1:] if c < len(row)]
+        
+        pixel_width = _calculate_pixel_width(header_text, col_data, max_char_limit)
+        requests.append({
+            "updateDimensionProperties": {
+                "range": {
+                    "sheetId": sheet_id, "dimension": "COLUMNS",
+                    "startIndex": c, "endIndex": c + 1
+                },
+                "properties": {"pixelSize": pixel_width},
+                "fields": "pixelSize"
+            }
+        })
+    return requests
+
+def decorate(worksheet, total_rows: int, total_cols: int, rows_data: list = None, max_char_limit: int = 25):
     try:
         worksheet.freeze(rows=1)
+        
+        # 1. Lấy các format requests chung (giả sử hàm này bạn đã có)
         requests = _build_format_requests(worksheet.id, total_rows, total_cols)
-        # Nếu có truyền dữ liệu vào để tính toán độ rộng
-        if rows_data:
-            for c in range(total_cols):
-                # Tìm ô có chuỗi dài nhất trong cột 'c'
-                max_len = max([len(str(row[c])) for row in rows_data if c < len(row)] + [0])
-                
-                if max_len > char_threshold:
-                    # NẾU QUÁ DÀI: Cố định độ rộng cột (max_width)
-                    requests.append({
-                        "updateDimensionProperties": {
-                            "range": {
-                                "sheetId": worksheet.id,
-                                "dimension": "COLUMNS",
-                                "startIndex": c,
-                                "endIndex": c + 1
-                            },
-                            "properties": {"pixelSize": max_width},
-                            "fields": "pixelSize"
-                        }
-                    })
-                else:
-                    # NẾU BÌNH THƯỜNG: Cho phép auto-fit
-                    requests.append({
-                        "autoResizeDimensions": {
-                            "dimensions": {
-                                "sheetId": worksheet.id,
-                                "dimension": "COLUMNS",
-                                "startIndex": c,
-                                "endIndex": c + 1
-                            }
-                        }
-                    })
-        else:
-            # Fallback nếu gọi hàm mà không truyền data: auto-fit toàn bộ
-            requests.append({
-                "autoResizeDimensions": {
-                    "dimensions": {
-                        "sheetId": worksheet.id,
-                        "dimension": "COLUMNS",
-                        "startIndex": 0,
-                        "endIndex": total_cols
-                    }
-                }
-            })
+        
+        # 2. Lấy các requests resize cột do mình tự định nghĩa
+        resize_requests = _build_resize_requests(
+            worksheet.id, total_cols, rows_data, max_char_limit
+        )
+        
+        # 3. Gộp tất cả lại và bắn API
+        requests.extend(resize_requests)
         worksheet.spreadsheet.batch_update({"requests": requests})
+        
     except Exception as e:
         print(f"Lỗi khi trang trí Google Sheets: {e}")
-
 def parse_average_csv(csv_path: str, target_column: str) -> float:
     path = Path(csv_path)
     if not path.exists(): return float('inf')
