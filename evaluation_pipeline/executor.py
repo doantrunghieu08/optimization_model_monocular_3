@@ -147,8 +147,16 @@ def _validate_pose_sources(metadata: dict, expected: dict[str, str], metadata_pa
     actual = metadata.get("metadata", {}).get("source_pkl_stems")
     if actual != expected:
         raise ValueError(
-            f"Pose output source mismatch in {metadata_path}: expected {expected}, got {actual}. "
+            f"Output source mismatch in {metadata_path}: expected {expected}, got {actual}. "
             "Regenerate pose/fusion outputs for the configured inputs."
+        )
+
+
+def _validate_fusion_config(metadata: dict, expected: dict, metadata_path: Path) -> None:
+    actual = metadata.get("metadata", {}).get("fusion_config")
+    if actual != expected:
+        raise ValueError(
+            f"Fusion config mismatch in {metadata_path}. Regenerate fusion-dependent outputs."
         )
 
 
@@ -316,7 +324,9 @@ def run_evaluation(config: dict) -> None:
     else:
         out_dir.mkdir(parents=True, exist_ok=True)
 
-    module_names = ["posed", "fused"]
+    module_names = ["posed"]
+    if config.get("fusion", {}).get("enabled", False):
+        module_names.append("fused")
     if config.get("learnable", {}).get("enabled", False):
         module_names.append("learnable")
     if config.get("learnable_extra", {}).get("enabled", False):
@@ -324,8 +334,9 @@ def run_evaluation(config: dict) -> None:
 
     module_dirs = {
         "posed": Path(paths["pose_output_dir"]) / "keypoints3d",
-        "fused": Path(paths["fused_output_dir"]) / "keypoints3d",
     }
+    if "fused" in module_names:
+        module_dirs["fused"] = Path(paths["fused_output_dir"]) / "keypoints3d"
     if "learnable" in module_names:
         module_dirs["learnable"] = Path(paths["learnable_output_dir"]) / "keypoints3d"
     if "learnable_extra" in module_names:
@@ -360,17 +371,21 @@ def run_evaluation(config: dict) -> None:
         module_frame_maps[name] = _load_frame_map(mdir)
         module_frame_sets[name] = set(module_frame_maps[name])
 
-    common_frames = None
-    for frames_set in module_frame_sets.values():
-        if common_frames is None:
-            common_frames = frames_set.copy()
-        else:
-            common_frames &= frames_set
+    posed_frames = module_frame_sets["posed"]
+    if not posed_frames:
+        raise ValueError("No pose frames found for evaluation.")
+    for name, frames_set in module_frame_sets.items():
+        if frames_set != posed_frames:
+            _warn_frame_mismatch(name, posed_frames, frames_set)
+            raise ValueError(f"Frame set for {name} does not exactly match pose output.")
 
-    if not common_frames:
-        raise ValueError("No overlapping frames between module outputs.")
-
-    frames = sorted(common_frames)
+    frames = sorted(posed_frames)
+    metadata_specs = {
+        "posed": (Path(paths["pose_output_dir"]) / "metadata", "pose_data_"),
+        "fused": (Path(paths["fused_output_dir"]) / "metadata", "fused_data_"),
+        "learnable": (Path(paths["learnable_output_dir"]) / "metadata", "learnable_frame_"),
+        "learnable_extra": (Path(paths["learnable_extra_output_dir"]) / "metadata", "learnable_extra_frame_"),
+    }
 
     # metrics: metric -> cam -> frame -> module -> priority -> value
     results = {metric: {"camera1": {}, "camera2": {}} for metric in enabled_metrics}
@@ -378,14 +393,21 @@ def run_evaluation(config: dict) -> None:
     sequences = {cam: {} for cam in CAMERAS}
     source_frame_ids = {cam: {} for cam in CAMERAS}
     evaluated_frames = []
-
+    # First pass: determine which frames have valid metadata + GT
+    frame_gt_ids = {}  # frame -> (cam1_frame_id, cam2_frame_id)
     for frame in frames:
-        # Resolve actual frame_id from metadata
-        metadata_path = Path(paths["pose_output_dir"]) / "metadata" / f"pose_data_{frame}.json"
-        if not metadata_path.exists():
-            continue
-        metadata = _load_json(metadata_path)
-        _validate_pose_sources(metadata, expected_source_stems, metadata_path)
+        metadata_by_module = {}
+        for module_name in module_names:
+            metadata_dir, prefix = metadata_specs[module_name]
+            metadata_path = metadata_dir / f"{prefix}{frame}.json"
+            if not metadata_path.exists():
+                raise FileNotFoundError(f"Missing metadata for {module_name} frame {frame}: {metadata_path}")
+            metadata_by_module[module_name] = _load_json(metadata_path)
+            _validate_pose_sources(metadata_by_module[module_name], expected_source_stems, metadata_path)
+            if module_name in ("fused", "learnable"):
+                _validate_fusion_config(metadata_by_module[module_name], config["fusion"], metadata_path)
+
+        metadata = metadata_by_module["posed"]
         src_indices = metadata.get("metadata", {}).get("source_frame_indices", {})
         
         cam1_frame_id = src_indices.get("camera1")
@@ -393,8 +415,20 @@ def run_evaluation(config: dict) -> None:
         
         if cam1_frame_id not in gt_cam1_data or cam2_frame_id not in gt_cam2_data:
             continue
-            
+
         evaluated_frames.append(frame)
+        frame_gt_ids[frame] = (cam1_frame_id, cam2_frame_id)
+
+    if not evaluated_frames:
+        raise ValueError(
+            f"Evaluation completed with 0 valid frames out of {len(frames)} common frames. "
+            f"All {len(frames)} frames were skipped due to missing metadata or GT mismatch. "
+            "Check that pose outputs match the configured ground truth."
+        )
+
+    # Second pass: compute metrics for all valid frames
+    for frame in evaluated_frames:
+        cam1_frame_id, cam2_frame_id = frame_gt_ids[frame]
 
         for cam in CAMERAS:
             gt_frame_id = cam1_frame_id if cam == "camera1" else cam2_frame_id
@@ -465,6 +499,7 @@ def run_evaluation(config: dict) -> None:
                     mean_p2, dict_p2 = _compute_pck(pred_joints, truth_joints, valid_priority2, pck_threshold_mm) if valid_priority2 else (0.0, {})
                     results["PCK"][cam][frame][mod]["priority2_mm"] = mean_p2
                     results["PCK"][cam][frame][mod]["priority2_details"] = dict_p2
+
 
     module_output_names = {
         mod: EVALUATION_OUTPUT_MODULE_NAMES.get(mod, mod)

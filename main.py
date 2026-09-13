@@ -1,7 +1,6 @@
 import argparse
 import sys
 from pathlib import Path
-import yaml
 import subprocess
 import shutil
 
@@ -9,7 +8,7 @@ import shutil
 from pipeline import run_pipeline
 
 # Import utility functions for configuration
-from config_loader import absolutize_config_paths, print_path_summary
+from config_loader import absolutize_config_paths, load_config, print_path_summary
 
 def main():
     parser = argparse.ArgumentParser(description="Monocular Optimization Pipeline")
@@ -24,8 +23,7 @@ def main():
         sys.exit(1)
 
     print(f"Loading config from {config_path}")
-    with open(config_path, "r", encoding="utf-8") as f:
-        REFERENCE_CONFIG = yaml.safe_load(f)
+    REFERENCE_CONFIG = load_config(config_path)
 
     # Resolve paths relative to WORKSPACE_DIR
     CONFIG = absolutize_config_paths(REFERENCE_CONFIG, WORKSPACE_DIR)
@@ -35,7 +33,7 @@ def main():
     print(f"[Config] runtime.stage = {stage}")
 
     learnable_checkpoint = WORKSPACE_DIR / "models" / "best_ckpt.pth.tar"
-    CONFIG.setdefault("learnable", {})["checkpoint"] = str(learnable_checkpoint)
+    CONFIG.setdefault("learnable", {}).setdefault("checkpoint", str(learnable_checkpoint))
     CONFIG.setdefault("paths", {})["preprocess_output_dir"] = CONFIG["paths"].get("preprocess_output_dir", str(WORKSPACE_DIR / "output" / "preprocess_results"))
     CONFIG.setdefault("paths", {})["learnable_extra_output_dir"] = CONFIG["paths"].get("learnable_extra_output_dir", str(WORKSPACE_DIR / "output" / "learnable_extra_results"))
     CONFIG.setdefault("learnable_extra", {})["enabled"] = bool(CONFIG.get("learnable_extra", {}).get("enabled", False))
@@ -52,15 +50,21 @@ def main():
             output_video = visualize_output / f"project_{cam}_viewable.mp4"
             if input_video.exists():
                 print(f"Converting {input_video.name} for web viewable format...")
-                subprocess.run([
-                    "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-                    "-i", str(input_video),
-                    "-vcodec", "libx264",
-                    "-pix_fmt", "yuv420p",
-                    "-an",
-                    str(output_video)
-                ])
-                print(f"Created {output_video.name}")
+                try:
+                    subprocess.run([
+                        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                        "-i", str(input_video),
+                        "-vcodec", "libx264",
+                        "-pix_fmt", "yuv420p",
+                        "-an",
+                        str(output_video)
+                    ], check=True)
+                    if output_video.exists():
+                        print(f"Created {output_video.name}")
+                    else:
+                        print(f"WARNING: ffmpeg completed but output not found: {output_video.name}")
+                except subprocess.CalledProcessError as e:
+                    print(f"ERROR: ffmpeg failed for {input_video.name} (exit code {e.returncode})")
 
     print("\n--- Packaging Evaluation Results ---")
     evaluation_dir = Path(CONFIG["paths"]["evaluation_output_dir"])

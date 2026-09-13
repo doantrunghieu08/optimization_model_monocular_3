@@ -10,9 +10,11 @@ def _evaluation_input_dirs(config):
     paths = config.get("paths", {})
     module_dirs = [
         Path(paths["pose_output_dir"]) / "keypoints3d",
-        Path(paths["fused_output_dir"]) / "keypoints3d",
-        Path(paths["learnable_output_dir"]) / "keypoints3d",
     ]
+    if config.get("fusion", {}).get("enabled", False):
+        module_dirs.append(Path(paths["fused_output_dir"]) / "keypoints3d")
+    if config.get("learnable", {}).get("enabled", False):
+        module_dirs.append(Path(paths["learnable_output_dir"]) / "keypoints3d")
     learnable_extra_cfg = config.get("learnable_extra", {})
     if learnable_extra_cfg.get("enabled", False):
         module_dirs.append(Path(paths["learnable_extra_output_dir"]) / "keypoints3d")

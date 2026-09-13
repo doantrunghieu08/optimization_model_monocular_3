@@ -3,7 +3,13 @@ from pathlib import Path
 
 import numpy as np
 
-from evaluation_pipeline.executor import _compute_pa_mpjpe, _compute_pck, _parse_new_gt, _validate_pose_sources
+from evaluation_pipeline.executor import (
+    _compute_pa_mpjpe,
+    _compute_pck,
+    _parse_new_gt,
+    _validate_fusion_config,
+    _validate_pose_sources,
+)
 
 
 class ProcrustesMetricTest(unittest.TestCase):
@@ -69,6 +75,14 @@ class ProcrustesMetricTest(unittest.TestCase):
         _validate_pose_sources(metadata, expected, Path("pose_data_1.json"))
         with self.assertRaisesRegex(ValueError, "source mismatch"):
             _validate_pose_sources({}, expected, Path("pose_data_1.json"))
+
+    def test_fusion_config_must_match_evaluation_config(self):
+        expected = {"enabled": True, "belief": {"alpha": 0.001, "beta": 0.8}}
+        metadata = {"metadata": {"fusion_config": expected}}
+
+        _validate_fusion_config(metadata, expected, Path("fused_data_1.json"))
+        with self.assertRaisesRegex(ValueError, "Fusion config mismatch"):
+            _validate_fusion_config(metadata, {**expected, "max_fallback_ratio": 0.0}, Path("fused_data_1.json"))
 
 
 if __name__ == "__main__":

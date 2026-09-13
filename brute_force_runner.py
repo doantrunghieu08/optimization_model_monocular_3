@@ -15,12 +15,18 @@ from config_loader import load_config
 
 VIDEO_FOLDER = "imageSequence"
 
+_COLAB_AVAILABLE = False
 try:
     from google.colab import auth
     from google.auth import default
     import gspread
+    _COLAB_AVAILABLE = True
 except ImportError:
-    print("Cảnh báo: Không tìm thấy thư viện google colab/gspread.")
+    auth = None
+    default = None
+    gspread = None
+    print("Cảnh báo: Không tìm thấy thư viện google colab/gspread. "
+          "Các tính năng Google Sheets sẽ không khả dụng.")
 
 from config_loader import load_config, absolutize_config_paths
 from pipeline import run_pipeline
@@ -29,6 +35,12 @@ GC_CLIENT = None
 
 def get_gspread_client():
     global GC_CLIENT
+    if not _COLAB_AVAILABLE:
+        raise RuntimeError(
+            "brute_force_runner requires google.colab, google.auth, and gspread. "
+            "These are only available in a Google Colab environment. "
+            "Install gspread and google-auth manually, or run this script inside Colab."
+        )
     if GC_CLIENT is None:
         auth.authenticate_user()
         creds, _ = default()

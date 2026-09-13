@@ -4,7 +4,7 @@ from ruamel.yaml import YAML
 import json
 from pathlib import Path
 import sys
-import numpy as np
+from compat import patch_numpy_and_inspect
 
 # --- LOGIC PHÂN GIẢI BIẾN MÔI TRƯỜNG Ở ĐÂY ---
 env_pattern = re.compile(r'^\${([a-zA-Z0-9_]+)(?::-([^}]+))?}$')
@@ -154,9 +154,14 @@ def validate_config(config):
             raise ValueError("Missing config input: inputs.{}".format(key))
 
     fusion_cfg = config.get("fusion", {})
-    for key in ("enabled", "belief", "occlusion", "ransac", "optimization"):
+    for key in ("enabled", "belief", "occlusion", "ransac", "correction", "optimization"):
         if key not in fusion_cfg:
             raise ValueError("Missing config section: fusion.{}".format(key))
+    if not isinstance(fusion_cfg["enabled"], bool):
+        raise ValueError("fusion.enabled must be a boolean")
+    max_fallback_ratio = fusion_cfg.get("max_fallback_ratio", 0.0)
+    if not isinstance(max_fallback_ratio, (int, float)) or isinstance(max_fallback_ratio, bool) or not 0 <= max_fallback_ratio <= 1:
+        raise ValueError("fusion.max_fallback_ratio must be a number between 0 and 1")
 
     if "enabled" not in evaluation_cfg:
         raise ValueError("Missing config section: evaluation.enabled")
@@ -168,6 +173,8 @@ def validate_config(config):
         raise ValueError("Missing config section: learnable.enabled")
     if "checkpoint" not in learnable_cfg or not learnable_cfg["checkpoint"]:
         raise ValueError("Missing config learnable parameter: learnable.checkpoint")
+    if learnable_cfg["enabled"] and not fusion_cfg["enabled"]:
+        raise ValueError("learnable.enabled=true requires fusion.enabled=true")
 
     learnable_extra_cfg = config.get("learnable_extra")
     if not isinstance(learnable_extra_cfg, dict):
@@ -188,23 +195,47 @@ def validate_config(config):
     for key in ("alpha", "beta"):
         if key not in belief_cfg or belief_cfg[key] is None:
             raise ValueError("Missing config fusion belief parameter: fusion.belief.{}".format(key))
+    alpha, beta = belief_cfg["alpha"], belief_cfg["beta"]
+    if not isinstance(alpha, (int, float)) or isinstance(alpha, bool) or alpha < 0:
+        raise ValueError("fusion.belief.alpha must be a non-negative number")
+    if not isinstance(beta, (int, float)) or isinstance(beta, bool) or not 0 < beta <= 1:
+        raise ValueError("fusion.belief.beta must be a number greater than 0 and at most 1")
 
     occlusion_cfg = fusion_cfg["occlusion"]
     for key in ("enabled", "tau"):
         if key not in occlusion_cfg or occlusion_cfg[key] is None:
             raise ValueError("Missing config fusion occlusion parameter: fusion.occlusion.{}".format(key))
+    if not isinstance(occlusion_cfg["enabled"], bool):
+        raise ValueError("fusion.occlusion.enabled must be a boolean")
     if not isinstance(occlusion_cfg["tau"], (int, float)) or occlusion_cfg["tau"] < 0:
         raise ValueError("fusion.occlusion.tau must be a non-negative number")
+
+    correction_cfg = fusion_cfg["correction"]
+    for key in ("orientation_enabled", "reject_new_mismatches"):
+        if not isinstance(correction_cfg.get(key), bool):
+            raise ValueError(f"fusion.correction.{key} must be a boolean")
 
     ransac_cfg = fusion_cfg["ransac"]
     for key in ("threshold", "max_combos"):
         if key not in ransac_cfg or ransac_cfg[key] is None:
             raise ValueError("Missing config fusion ransac parameter: fusion.ransac.{}".format(key))
+    if not isinstance(ransac_cfg["threshold"], (int, float)) or ransac_cfg["threshold"] <= 0:
+        raise ValueError("fusion.ransac.threshold must be a positive number")
+    if not isinstance(ransac_cfg["max_combos"], int) or isinstance(ransac_cfg["max_combos"], bool) or ransac_cfg["max_combos"] <= 0:
+        raise ValueError("fusion.ransac.max_combos must be a positive integer")
 
     opt_cfg = fusion_cfg["optimization"]
-    for key in ("regularization", "regularization_lambda", "temporal_lambda", "max_iter"):
+    for key in ("enabled", "regularization", "regularization_lambda", "temporal_lambda", "max_iter"):
         if key not in opt_cfg or opt_cfg[key] is None:
             raise ValueError("Missing config fusion optimization parameter: fusion.optimization.{}".format(key))
+    for key in ("enabled", "regularization"):
+        if not isinstance(opt_cfg[key], bool):
+            raise ValueError(f"fusion.optimization.{key} must be a boolean")
+    for key in ("regularization_lambda", "temporal_lambda"):
+        if not isinstance(opt_cfg[key], (int, float)) or isinstance(opt_cfg[key], bool) or opt_cfg[key] < 0:
+            raise ValueError(f"fusion.optimization.{key} must be a non-negative number")
+    if not isinstance(opt_cfg["max_iter"], int) or isinstance(opt_cfg["max_iter"], bool) or opt_cfg["max_iter"] <= 0:
+        raise ValueError("fusion.optimization.max_iter must be a positive integer")
 
     for key in ("pa_mpjpe", "mpjpe", "pck"):
         if key not in metrics_cfg or metrics_cfg[key] is None:
@@ -213,27 +244,6 @@ def validate_config(config):
 """## 5. chuẩn hóa config để chạy ổn định
 
 """
-
-def patch_numpy_and_inspect():
-    import inspect
-    if not hasattr(np, 'float'):
-        np.float = float
-    if not hasattr(np, 'int'):
-        np.int = int
-    if not hasattr(np, 'bool'):
-        np.bool = bool
-    if not hasattr(np, 'object'):
-        np.object = object
-    if not hasattr(np, 'typeDict'):
-        np.typeDict = np.sctypeDict
-    if not hasattr(np, 'complex'):
-        np.complex = complex
-    if not hasattr(np, 'unicode'):
-        np.unicode = str
-    if not hasattr(np, 'str'):
-        np.str = str
-    if not hasattr(inspect, 'getargspec'):
-        inspect.getargspec = inspect.getfullargspec
 
 def configure_stdout_encoding():
     if hasattr(sys.stdout, 'reconfigure'):
@@ -249,7 +259,7 @@ def absolutize_config_paths(config: dict, workspace_dir: Path) -> dict:
     for section_name in ("inputs", "paths"):
         section = config.get(section_name, {})
         for key, value in list(section.items()):
-            if not isinstance(value, str) or not value or value.startswith("/"):
+            if not isinstance(value, str) or not value or Path(value).is_absolute():
                 continue
             if value.startswith("optimization_model_monocular/"):
                 section[key] = str(workspace_dir.parent / value)
@@ -260,7 +270,7 @@ def absolutize_config_paths(config: dict, workspace_dir: Path) -> dict:
     search_dir = vis_cfg.get("video_search_dir", ".")
     if search_dir == ".":
         vis_cfg["video_search_dir"] = str(workspace_dir)
-    elif isinstance(search_dir, str) and not search_dir.startswith("/"):
+    elif isinstance(search_dir, str) and not Path(search_dir).is_absolute():
         if search_dir.startswith("optimization_model_monocular/"):
             vis_cfg["video_search_dir"] = str(workspace_dir.parent / search_dir)
         else:

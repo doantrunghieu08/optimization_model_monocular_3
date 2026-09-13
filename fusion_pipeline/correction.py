@@ -12,11 +12,20 @@ def _to_arrays(cam1, cam2, names):
 
 
 def estimate_umeyama(src, dst):
+    src = np.asarray(src, dtype=float)
+    dst = np.asarray(dst, dtype=float)
+    if src.shape != dst.shape or src.ndim != 2 or src.shape[0] < 3 or src.shape[1] != 3:
+        raise ValueError("Similarity estimation requires matching (N, 3) arrays with N >= 3")
+    if not np.isfinite(src).all() or not np.isfinite(dst).all():
+        raise ValueError("Similarity estimation requires finite points")
+
     n, m = src.shape
     mu_s = src.mean(0)
     mu_d = dst.mean(0)
     src_c = src - mu_s
     dst_c = dst - mu_d
+    if np.linalg.matrix_rank(src_c) < 2 or np.linalg.matrix_rank(dst_c) < 2:
+        raise ValueError("Similarity estimation requires at least 3 non-collinear points")
     sigma = np.mean(np.sum(src_c ** 2, axis=1))
     h = (dst_c.T @ src_c) / n
     u, d, vt = np.linalg.svd(h)
@@ -48,15 +57,15 @@ def ransac_umeyama(cam1, cam2, names, threshold, max_combos, rng=None):
         tri = list(tri)
         try:
             tf = estimate_umeyama(src_all[tri], dst_all[tri])
-        except np.linalg.LinAlgError:
+        except (ValueError, np.linalg.LinAlgError):
             continue
         pred = np.array([apply_similarity(src_all[i], tf) for i in range(n)])
         err = np.linalg.norm(pred - dst_all, axis=1)
         inliers = np.where(err < threshold)[0].tolist()
         if len(inliers) > len(best_inliers):
             best_inliers = inliers
-    if not best_inliers:
-        best_inliers = list(range(n))
+    if len(best_inliers) < 3:
+        raise ValueError("RANSAC could not find at least 3 inliers for cross-camera similarity")
     inlier_names = [names[i] for i in best_inliers]
     tf_refined = estimate_umeyama(src_all[best_inliers], dst_all[best_inliers])
     return tf_refined, inlier_names

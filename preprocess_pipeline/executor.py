@@ -1,5 +1,4 @@
 import os
-import shlex
 import subprocess
 import shutil
 from glob import glob
@@ -20,17 +19,17 @@ from preprocess_pipeline.calib import resolve_selected_offset_from_camera_profil
 EXTENSIONS = [".mp4", ".MP4", ".avi", ".AVI"]
 
 
-def _run_cmd(cmd: str) -> None:
-    subprocess.run(cmd, shell=True, check=True)
+def _run_cmd(cmd: list[str]) -> None:
+    subprocess.run(cmd, check=True)
 
 
 def _get_video_fps(video_path: str, ffprobe: str = "ffprobe") -> float:
-    quoted_path = f'"{video_path}"'
-    cmd = (
-        f'{ffprobe} -v error -select_streams v:0 -show_entries stream=r_frame_rate '
-        f'-of default=noprint_wrappers=1:nokey=1 {quoted_path}'
-    )
-    raw = subprocess.check_output(cmd, shell=True, text=True).strip()
+    cmd = [
+        ffprobe, "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=r_frame_rate",
+        "-of", "default=noprint_wrappers=1:nokey=1", video_path,
+    ]
+    raw = subprocess.check_output(cmd, text=True).strip()
     if "/" in raw:
         num, den = raw.split("/", 1)
         fps = float(num) / float(den)
@@ -97,13 +96,13 @@ def extract_images(
             )
             continue
 
-        output_pattern = f'"{join(outpath, "images_frame_%d.jpg")}"'
-        cmd = (
-            f'{ffmpeg} -i "{videoname}" -vf "fps={fps_str}" '
-            f'-q:v 1 {output_pattern}'
-        )
+        cmd = [ffmpeg]
         if not debug:
-            cmd += " -loglevel error"
+            cmd.extend(["-loglevel", "error"])
+        cmd.extend([
+            "-i", videoname, "-vf", f"fps={fps_str}", "-q:v", "1",
+            join(outpath, "images_frame_%d.jpg"),
+        ])
 
         print(
             f"[Preprocess] Extract start | input={videoname} | output={outpath} | fps={fps_str}"

@@ -60,6 +60,18 @@ def _frame_index(path: Path) -> int:
     return int(match.group())
 
 
+def _load_source_frame_map(paths: dict, camera_name: str) -> dict[int, int]:
+    source_frames = {}
+    metadata_dir = Path(paths["pose_output_dir"]) / "metadata"
+    for metadata_path in metadata_dir.glob("pose_data_*.json"):
+        with metadata_path.open("r", encoding="utf-8") as f:
+            metadata = json.load(f)
+        source_idx = metadata.get("metadata", {}).get("source_frame_indices", {}).get(camera_name)
+        if source_idx is not None:
+            source_frames[_frame_index(metadata_path)] = int(source_idx)
+    return source_frames
+
+
 def _clean_visualization_output(output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     for old_video in output_dir.glob("compare_*.mp4"):
@@ -364,25 +376,27 @@ def _build_priority_metric_maps(paths: dict, metric_name: str = "PA-MPJPE", prio
     return out
 
 
-def _project_module_specs(paths: dict, camera_name: str) -> list[dict]:
-    fused_dir = Path(paths["fused_output_dir"])
+def _project_module_specs(paths: dict, camera_name: str, config: dict) -> list[dict]:
     specs = [
         {
             "name": "pose",
             "title": "Pose 3D->2D",
             "frames": _load_camera_keypoints_by_frame(Path(paths["pose_output_dir"]) / "keypoints3d", "pose_data_*.json", camera_name),
         },
-        {
+    ]
+    if config.get("fusion", {}).get("enabled", False):
+        fused_dir = Path(paths["fused_output_dir"])
+        specs.append({
             "name": "fusion",
             "title": "Fusion 3D->2D",
             "frames": _load_camera_keypoints_by_frame(fused_dir / "keypoints3d", "fused_data_*.json", camera_name),
-        },
-        {
+        })
+    if config.get("learnable", {}).get("enabled", False):
+        specs.append({
             "name": "learnable",
             "title": "fusion-learnable 3D->2D",
             "frames": _load_camera_keypoints_by_frame(Path(paths["learnable_output_dir"]) / "keypoints3d", "learnable_frame_*.json", camera_name),
-        },
-    ]
+        })
     return specs
 
 
@@ -395,8 +409,19 @@ def _create_project2d_animation_for_specs(camera_name: str, config: dict, paths:
     if not image_map:
         image_map = {_frame_index(p): p for p in sorted(image_dir.glob("*.jpg"), key=_frame_index)}
 
+    source_frame_map = _load_source_frame_map(paths, camera_name)
+
     frame_sets = [set(spec["frames"]) for spec in module_specs]
-    common_ids = sorted(set.intersection(*frame_sets, set(image_map)))
+    # Use source_frame_map to remap frame ids to source image indices
+    if source_frame_map:
+        remapped_image_keys = {
+            fid for fid in set.intersection(*frame_sets)
+            if fid in source_frame_map and source_frame_map[fid] + 1 in image_map
+        }
+        common_ids = sorted(remapped_image_keys)
+    else:
+        # Fallback: no metadata available, use direct frame id matching
+        common_ids = sorted(set.intersection(*frame_sets, set(image_map)))
     common_ids = [i for i in common_ids if i >= 1]
     max_frames = config.get("visualization", {}).get("max_frames")
     if max_frames is not None:
@@ -434,7 +459,9 @@ def _create_project2d_animation_for_specs(camera_name: str, config: dict, paths:
 
     def update(idx):
         frame_id = common_ids[idx]
-        base = cv2.imread(str(image_map[frame_id]))
+        # H-04 fix: use source_frame_map for correct image lookup
+        src_frame = source_frame_map[frame_id] + 1 if frame_id in source_frame_map else frame_id
+        base = cv2.imread(str(image_map[src_frame]))
         for ax, spec in zip(axes, module_specs):
             title = spec["title"]
             data_map = spec["frames"]
@@ -464,7 +491,7 @@ def create_project2d_animation(camera_name: str, config: dict, paths: dict, outp
         paths=paths,
         output_video=output_video,
         target_fps=target_fps,
-        module_specs=_project_module_specs(paths, camera_name),
+        module_specs=_project_module_specs(paths, camera_name, config),
         dpi=dpi,
     )
 
@@ -475,6 +502,7 @@ def create_comparison_animation(
     learnable_poses,
     frame_ids,
     config: dict,
+    paths: dict,
     video_map: dict[str, str],
     frame_count: int,
     output_video: Path,
@@ -486,6 +514,8 @@ def create_comparison_animation(
     image_map = {_frame_index(p): p for p in sorted(image_dir.glob("images_frame_*.jpg"), key=_frame_index)}
     if not image_map:
         image_map = {_frame_index(p): p for p in sorted(image_dir.glob("*.jpg"), key=_frame_index)}
+
+    source_frame_map = _load_source_frame_map(paths, camera_name)
 
     video_path = video_map.get(camera_name)
     cap = cv2.VideoCapture(video_path) if (not image_map and video_path and os.path.exists(video_path)) else None
@@ -512,13 +542,15 @@ def create_comparison_animation(
 
         frame_rgb = None
         if image_map:
-            image_path = image_map.get(frame_id)
+            # H-04 fix: use source_frame_map for correct image lookup
+            src_frame = source_frame_map[frame_id] + 1 if frame_id in source_frame_map else frame_id
+            image_path = image_map.get(src_frame)
             if image_path and image_path.exists():
                 frame_bgr = cv2.imread(str(image_path))
                 if frame_bgr is not None:
                     frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         if frame_rgb is None:
-            frame_rgb = _read_video_frame(cap, frame_idx)
+            frame_rgb = _read_video_frame(cap, source_frame_map.get(frame_id, frame_idx))
         if frame_rgb is not None:
             ax_vid.imshow(frame_rgb)
             ax_vid.set_title(f"Video {camera_name} - Frame {frame_id}")
@@ -563,58 +595,79 @@ def run_visualization(config: dict) -> None:
         return
 
     fused_dir = Path(paths["fused_output_dir"])
-    learnable_dir = Path(paths["learnable_output_dir"])
     output_dir = Path(paths["visualization_output_dir"])
+
+    learnable_enabled = config.get("learnable", {}).get("enabled", False)
+    fusion_enabled = config.get("fusion", {}).get("enabled", False)
 
     if runtime_cfg["clean_output"]:
         _clean_visualization_output(output_dir)
     else:
         output_dir.mkdir(parents=True, exist_ok=True)
 
-    print("[Visualization] Fusion vs Video vs Learnable")
+    print("[Visualization] Generating animations...")
 
-    fusion_poses = load_fusion_poses(fused_dir)
-    learnable_poses = load_learnable_from_dir(learnable_dir)
+    fusion_poses = []
+    learnable_poses = []
+    frame_count = 0
 
-    frame_count = min(len(fusion_poses), len(learnable_poses))
+    if fusion_enabled:
+        fusion_poses = load_fusion_poses(fused_dir)
+    if learnable_enabled:
+        learnable_dir = Path(paths["learnable_output_dir"])
+        learnable_poses = load_learnable_from_dir(learnable_dir)
+
+    # Comparison animation requires both fusion and learnable
+    if fusion_enabled and learnable_enabled and fusion_poses and learnable_poses:
+        frame_count = min(len(fusion_poses), len(learnable_poses))
+    elif fusion_poses:
+        frame_count = len(fusion_poses)
+    elif learnable_poses:
+        frame_count = len(learnable_poses)
 
     if frame_count == 0:
-        raise ValueError("No frames to visualize. Check fused_jsons and learnable_results.")
+        print("[Visualization] No fusion/learnable frames found. Skipping comparison animation.")
+    else:
+        max_frames = vis_cfg.get("max_frames")
+        if max_frames is not None:
+            frame_count = min(frame_count, int(max_frames))
 
-    max_frames = vis_cfg["max_frames"]
-    if max_frames is not None:
-        frame_count = min(frame_count, int(max_frames))
+        fusion_poses = fusion_poses[:frame_count]
+        learnable_poses = learnable_poses[:frame_count]
+        frame_ids = [frame.get("frame_id", idx + 1) for idx, frame in enumerate(fusion_poses or learnable_poses)]
 
-    fusion_poses = fusion_poses[:frame_count]
-    learnable_poses = learnable_poses[:frame_count]
-    frame_ids = [frame.get("frame_id", idx + 1) for idx, frame in enumerate(fusion_poses)]
+        target_fps = int(vis_cfg["target_fps"])
+        dpi = int(vis_cfg["dpi"])
 
-    target_fps = int(vis_cfg["target_fps"])
-    dpi = int(vis_cfg["dpi"])
+        print(f"[Visualization] Fusion frames: {len(fusion_poses)}")
+        print(f"[Visualization] Learnable frames: {len(learnable_poses)}")
+        print(f"[Visualization] Rendering frames: {frame_count}")
+
     cameras = vis_cfg["cameras"]
     video_map = get_video_map(config)
+    target_fps = int(vis_cfg["target_fps"])
+    dpi = int(vis_cfg["dpi"])
 
-    print(f"[Visualization] Fusion frames: {len(fusion_poses)}")
-    print(f"[Visualization] Learnable frames: {len(learnable_poses)}")
-    print(f"[Visualization] Rendering frames: {frame_count}")
-    print(f"[Visualization] FPS: {target_fps}")
-    print(f"[Visualization] Output dir: {output_dir}")
-
-    for camera_name in cameras:
-        print(f"[Visualization] Processing {camera_name}")
-        output_video = output_dir / f"compare_{camera_name}_fuse_vid_learn.mp4"
-        create_comparison_animation(
-            camera_name=camera_name,
-            fusion_poses=fusion_poses,
-            learnable_poses=learnable_poses,
-            frame_ids=frame_ids,
-            config=config,
-            video_map=video_map,
-            frame_count=frame_count,
-            output_video=output_video,
-            target_fps=target_fps,
-            dpi=dpi,
-        )
+    # Comparison animation only when both fusion and learnable are available
+    if fusion_enabled and learnable_enabled and frame_count > 0:
+        for camera_name in cameras:
+            print(f"[Visualization] Processing comparison for {camera_name}")
+            output_video = output_dir / f"compare_{camera_name}_fuse_vid_learn.mp4"
+            create_comparison_animation(
+                camera_name=camera_name,
+                fusion_poses=fusion_poses,
+                learnable_poses=learnable_poses,
+                frame_ids=frame_ids,
+                config=config,
+                paths=paths,
+                video_map=video_map,
+                frame_count=frame_count,
+                output_video=output_video,
+                target_fps=target_fps,
+                dpi=dpi,
+            )
+    else:
+        print("[Visualization] Skipping comparison animation (requires both fusion and learnable enabled).")
 
     for camera_name in cameras:
         output_video = output_dir / f"project_{camera_name}_pose_fusion_learnable.mp4"

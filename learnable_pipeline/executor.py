@@ -9,14 +9,11 @@ import re
 import shutil
 import sys
 from typing import Any
-import joblib
 import numpy as np
 import torch
 import yaml
-import pdb
 from config_loader import resolve_inputs
 from keypoints_map import load_keypoints3d_map
-from learnable_pipeline.post_opt import post_optimize_smpl_sequence
 from json_io import write_json
 from compat import load_joblib_compat
 
@@ -99,13 +96,21 @@ def load_fused_results(input_dir: Path) -> list[dict]:
 
 def load_stage_results(input_dir: Path, file_prefix: str, stage_label: str) -> list[dict]:
     keypoints_dir = input_dir / "keypoints3d"
+    metadata_dir = input_dir / "metadata"
     if not keypoints_dir.exists():
         raise FileNotFoundError(f"{stage_label} keypoints directory not found: {keypoints_dir}")
+    if not metadata_dir.exists():
+        raise FileNotFoundError(f"{stage_label} metadata directory not found: {metadata_dir}")
     file_paths = sorted(keypoints_dir.glob(f"{file_prefix}*.json"), key=_frame_index)
     results = []
     for path in file_paths:
         with path.open("r", encoding="utf-8") as f:
             frame_data = json.load(f)
+        metadata_path = metadata_dir / path.name
+        if not metadata_path.exists():
+            raise FileNotFoundError(f"{stage_label} metadata not found: {metadata_path}")
+        with metadata_path.open("r", encoding="utf-8") as f:
+            frame_data.update(json.load(f))
         frame_data["frame_id"] = _frame_index(path)
         results.append(frame_data)
     print(f"[{stage_label}] Loaded {len(results)} frames from {input_dir} using prefix {file_prefix!r}")
@@ -154,23 +159,42 @@ def _extract_person_payload(wham_data):
                 return value
     return None
 
-def _truncate_person(person: dict, frame_count: int) -> dict:
+def _slice_person(person: dict, start: int, frame_count: int) -> dict:
+    total_frames = len(person["pose"])
+    if start < 0 or start + frame_count > total_frames:
+        raise ValueError(
+            f"WHAM frame slice [{start}:{start + frame_count}] exceeds {total_frames} frames"
+        )
     out = {}
     for key, value in person.items():
-        if isinstance(value, np.ndarray) and value.ndim > 0 and value.shape[0] > frame_count:
-            out[key] = value[:frame_count].copy()
+        if isinstance(value, np.ndarray) and value.ndim > 0 and value.shape[0] == total_frames:
+            out[key] = value[start:start + frame_count].copy()
         else:
             out[key] = value
     return out
 
-def load_wham_data(cam1_pkl: Path, cam2_pkl: Path, frame_count: int) -> dict:
+def load_wham_data(cam1_pkl: Path, cam2_pkl: Path, frame_count: int, starts: dict[str, int] | None = None) -> dict:
     person_1 = _extract_person_payload(load_joblib_compat(cam1_pkl))
     person_2 = _extract_person_payload(load_joblib_compat(cam2_pkl))
     if person_1 is None or person_2 is None:
         raise ValueError("Cannot extract person payload from WHAM PKL files")
+    starts = starts or {}
     return {
-        "camera1": _truncate_person(person_1, frame_count),
-        "camera2": _truncate_person(person_2, frame_count),
+        "camera1": _slice_person(person_1, int(starts.get("camera1", 0)), frame_count),
+        "camera2": _slice_person(person_2, int(starts.get("camera2", 0)), frame_count),
+    }
+
+
+def _load_wham_starts(pose_output_dir: Path, first_frame_id: int) -> dict[str, int]:
+    metadata_path = pose_output_dir / "metadata" / f"pose_data_{first_frame_id}.json"
+    with metadata_path.open("r", encoding="utf-8") as f:
+        sync = json.load(f).get("metadata", {}).get("camera_sync", {})
+    if "left_start" not in sync or "right_start" not in sync:
+        raise ValueError(f"Missing camera_sync starts in {metadata_path}")
+    frame_offset = first_frame_id - 1
+    return {
+        "camera1": int(sync["left_start"]) + frame_offset,
+        "camera2": int(sync["right_start"]) + frame_offset,
     }
 
 def betas_per_frame(person_data: dict, frame_count: int) -> np.ndarray:
@@ -264,11 +288,9 @@ def load_netbody25(learnable_cfg: dict, device: torch.device):
         explicit_regressor = learnable_cfg.get("j_regressor_body25")
         if explicit_regressor:
             explicit_regressor_path = Path(explicit_regressor)
+            if not explicit_regressor_path.is_absolute():
+                explicit_regressor_path = repo_src.resolve().parent.parent / explicit_regressor_path
             regressor_path.parent.mkdir(parents=True, exist_ok=True)
-            #pdb.set_trace()
-            if 'google.colab' in sys.modules:
-                explicit_regressor_path = Path('/content/optimization_model_monocular_3/') / explicit_regressor_path
-                regressor_path = Path('/content/optimization_model_monocular_3/') / regressor_path
             shutil.copy2(explicit_regressor_path, regressor_path)
 
     smpl_dir = smpl_family_dir / "smpl"
@@ -366,8 +388,7 @@ def _compute_body25_world_np(net, pose_np: np.ndarray, trans_np: np.ndarray, bet
 def infer_learnable_temporal_from_fusion(
     net, normalize_kp, raw_person: dict, fusion_frames: list[dict[str, np.ndarray]],
     custom_to_body25: dict[str, str], device: torch.device, batch_size: int = 128,
-    compute_mid_hip: bool = True, first_frame_mode: str = "align_to_target",
-    fallback_to_copy_if_worse: bool = False,
+    compute_mid_hip: bool = True, fallback_to_copy_if_worse: bool = True,
 ) -> dict[str, np.ndarray | dict]:
     frame_count = min(len(raw_person["pose"]), len(fusion_frames))
     pose_init_np = np.asarray(raw_person["pose"][:frame_count, :72], dtype=np.float32)
@@ -379,66 +400,40 @@ def infer_learnable_temporal_from_fusion(
 
     pred_pose = pose_init_np.copy()
     pred_trans = trans_init_np.copy()
-    pred_joints25_world = np.zeros((frame_count, 25, 3), dtype=np.float32)
-    init_joints25_used = np.zeros((frame_count, 25, 3), dtype=np.float32)
+    target_indices = [BODY25_INDEX[name] for name in set(custom_to_body25.values())]
 
     with torch.no_grad():
-        pose0_t = torch.as_tensor(pose_init_np[0:1], dtype=torch.float32, device=device)
-        trans0_t = torch.as_tensor(trans_init_np[0:1], dtype=torch.float32, device=device)
-        betas0_t = torch.as_tensor(betas_np[0:1], dtype=torch.float32, device=device)
-        target0_t = torch.as_tensor(target_body25_np[0:1], dtype=torch.float32, device=device)
-
-        root0, body0, _ = net.split_pose_from_smplh(pose0_t)
-        smpl0 = net.human_model.layer["neutral"](betas=betas0_t[:, :10], global_orient=root0, body_pose=body0)
-        joints0_local = torch.einsum("bvc,jv->bjc", smpl0.vertices, net.openpose_regressor)
-        if first_frame_mode == "align_to_target":
-            trans0_pred_t = _align_trans_to_target_midhip(joints0_local, target0_t)
-        else:
-            trans0_pred_t = trans0_t
-
-        pred_trans[0:1] = trans0_pred_t.detach().cpu().numpy()
-        pred_joints25_world[0:1] = (joints0_local + trans0_pred_t[:, None, :]).detach().cpu().numpy()
-        init_joints25_used[0:1] = wham_init_body25[0:1]
-
-        iter_pose_t = pose0_t.clone()
-        iter_pose_t[:, :3] = root0.reshape(1, -1)[:, :3]
-        iter_pose_t[:, 3:66] = body0.reshape(1, -1)[:, :63]
-        iter_trans_t = trans0_pred_t.clone()
-
-        for frame_idx in tqdm(range(1, frame_count), desc="Inferring Temporal Frames"):
+        for frame_idx in tqdm(range(frame_count), desc="Inferring Learnable Frames"):
+            start_pose_t = torch.as_tensor(pose_init_np[frame_idx : frame_idx + 1], dtype=torch.float32, device=device)
+            start_trans_t = torch.as_tensor(trans_init_np[frame_idx : frame_idx + 1], dtype=torch.float32, device=device)
             betas_t = torch.as_tensor(betas_np[frame_idx : frame_idx + 1], dtype=torch.float32, device=device)
             target_t = torch.as_tensor(target_body25_np[frame_idx : frame_idx + 1], dtype=torch.float32, device=device)
 
-            start_root_orient, start_body_pose, _ = net.split_pose_from_smplh(iter_pose_t)
-            start_body25_t = _compute_init_body25_world(net, iter_pose_t, iter_trans_t, betas_t)
-            init_joints25_used[frame_idx : frame_idx + 1] = start_body25_t.detach().cpu().numpy()
+            start_root_orient, start_body_pose, _ = net.split_pose_from_smplh(start_pose_t)
+            start_body25_t = torch.as_tensor(wham_init_body25[frame_idx : frame_idx + 1], device=device)
 
             init_norm, R, T = normalize_kp(start_body25_t, None, net.kp_index, R=None, T=None)
             target_norm, _, _ = normalize_kp(target_t, None, net.kp_index, R=R, T=T)
             input_joints = torch.stack([init_norm, target_norm], dim=1).permute(0, 3, 1, 2)
 
-            pred_smpl, pred_joints_local, _pred_rotmat, pred_body_pose, pred_root_orient = net.predict(
+            _pred_smpl, pred_joints_local, _pred_rotmat, pred_body_pose, pred_root_orient = net.predict(
                 input_joints, start_root_orient, start_body_pose, betas_t[:, :10]
             )
             trans_pred_t = _align_trans_to_target_midhip(pred_joints_local, target_t)
             pred_joints_world_t = pred_joints_local + trans_pred_t[:, None, :]
 
             if fallback_to_copy_if_worse:
-                copy_error = torch.mean(torch.linalg.norm(start_body25_t - target_t, dim=-1))
-                pred_error = torch.mean(torch.linalg.norm(pred_joints_world_t - target_t, dim=-1))
+                copy_error = torch.mean(torch.linalg.norm(start_body25_t[:, target_indices] - target_t[:, target_indices], dim=-1))
+                pred_error = torch.mean(torch.linalg.norm(pred_joints_world_t[:, target_indices] - target_t[:, target_indices], dim=-1))
                 if copy_error < pred_error:
                     pred_root_orient = start_root_orient
                     pred_body_pose = start_body_pose
-                    trans_pred_t = iter_trans_t
+                    trans_pred_t = start_trans_t
                     pred_joints_world_t = start_body25_t
 
-            pose_pred_t = _compose_pose_like_template(iter_pose_t, pred_root_orient, pred_body_pose)
+            pose_pred_t = _compose_pose_like_template(start_pose_t, pred_root_orient, pred_body_pose)
             pred_pose[frame_idx : frame_idx + 1] = pose_pred_t.detach().cpu().numpy()
             pred_trans[frame_idx : frame_idx + 1] = trans_pred_t.detach().cpu().numpy()
-            pred_joints25_world[frame_idx : frame_idx + 1] = pred_joints_world_t.detach().cpu().numpy()
-
-            iter_pose_t = pose_pred_t.detach().clone()
-            iter_trans_t = trans_pred_t.detach().clone()
 
     return {
         "pose_init": pose_init_np,
@@ -513,7 +508,7 @@ def _run_learnable_smplify_stage(
     # this notebook keeps the vendored Learnable backend in LEARNABLE_VENDOR_ROOT/src.
     repo_root = LEARNABLE_VENDOR_ROOT
 
-    project_root = repo_root.parent # Trỏ về /content/optimization_model_monocular_3
+    project_root = repo_root.parent
     
     learnable_cfg.setdefault("repo_src", str(repo_root / "src"))
     learnable_cfg.setdefault("net_config", str(repo_root / "src" / "config" / "net.yaml"))
@@ -527,7 +522,10 @@ def _run_learnable_smplify_stage(
             learnable_cfg["checkpoint"] = fallback_checkpoint
         else:
             raise ValueError("Missing config parameter: learnable.checkpoint")
-    learnable_cfg["checkpoint"] = str(project_root / "models" / "best_ckpt.pth.tar")
+    checkpoint_path = Path(learnable_cfg["checkpoint"])
+    if not checkpoint_path.is_absolute():
+        checkpoint_path = project_root / checkpoint_path
+    learnable_cfg["checkpoint"] = str(checkpoint_path)
     if runtime_cfg["clean_output"]:
         _clean_learnable_output(output_dir, output_file_prefix)
     else:
@@ -545,16 +543,20 @@ def _run_learnable_smplify_stage(
     frame_count = len(judgement_results)
     frame_ids = [int(frame.get("frame_id", idx + 1)) for idx, frame in enumerate(judgement_results)]
 
-    wham_data = load_wham_data(cam1_pkl, cam2_pkl, frame_count)
+    wham_starts = _load_wham_starts(Path(paths["pose_output_dir"]), frame_ids[0])
+    wham_data = load_wham_data(cam1_pkl, cam2_pkl, frame_count, starts=wham_starts)
     net, normalize_kp = load_netbody25(learnable_cfg, device)
 
     map_data = load_keypoints3d_map(config["paths"]["keypoints3d_map"])
     custom_to_body25 = _get_custom_to_body25(map_data)
     target_names = [kp["name"] for kp in map_data["keypoints"]]
+    j_reg = np.load(j_regressor_3d_path)
+    if j_reg.shape[1] != 6890:
+        raise ValueError(f"Expected (_, 6890) for SMPL vertices, got {j_reg.shape}")
+    j_reg_t = torch.as_tensor(j_reg, dtype=torch.float32, device=device)
 
     batch_size = int(learnable_cfg.get("batch_size", 128))
 
-    camera_results: dict[str, dict] = {}
     keypoints_output = [{"camera1": {}, "camera2": {}} for _ in range(frame_count)]
     metadata_output = [copy.deepcopy(frame) for frame in judgement_results]
 
@@ -572,25 +574,9 @@ def _run_learnable_smplify_stage(
             batch_size=batch_size,
         )
 
-        # 2. Post-optimize
-        best_pose, best_trans, initial_loss, final_loss = post_optimize_smpl_sequence(
-            pose_init=result["pose_pred"],
-            trans_init=result["trans_pred"],
-            betas_np=result["betas"],
-            fusion_frames=fusion_frames,
-            net=net,
-            j_regressor_3d_path=j_regressor_3d_path,
-            map_data=map_data,
-            device=device,
-        )
-
-        result["pose_pred"] = best_pose
-        result["trans_pred"] = best_trans
-        result["initial_loss"] = initial_loss
-        result["final_loss"] = final_loss
-        camera_results[camera_name] = result
-
-        # Produce 21 keypoints computed from best_pose/best_trans.
+        # Produce 21 keypoints computed from the guarded network prediction.
+        best_pose = result["pose_pred"]
+        best_trans = result["trans_pred"]
         smpl_layer = net.human_model.layer["neutral"]
         with torch.no_grad():
             for frame_idx in range(frame_count):
@@ -604,8 +590,6 @@ def _run_learnable_smplify_stage(
                     global_orient=root_orient,
                     body_pose=body_pose
                 )
-                j_reg = np.load(j_regressor_3d_path)
-                j_reg_t = torch.tensor(j_reg, dtype=torch.float32, device=device)
                 joints_all = torch.einsum("jv, bvc -> bjc", j_reg_t, smpl_out.vertices)
 
                 joints_world = (joints_all + trans_t.unsqueeze(1))[0].cpu().numpy()
@@ -619,7 +603,7 @@ def _run_learnable_smplify_stage(
                 metadata_output[frame_idx].setdefault(_stage_metadata_key(stage_label), {})[camera_name] = _metadata_for_frame(result, frame_idx)
 
     metadata = {
-        "method": "learnable_smplify_netbody25_plus_adam",
+        "method": "learnable_smplify_netbody25",
         "source": input_file_prefix.rstrip("_"),
         "frame_count": frame_count,
         "output_joint_format": "canonical_21",

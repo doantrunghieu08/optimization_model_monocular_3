@@ -32,6 +32,7 @@ paths:
 
 fusion:
   enabled: true
+  max_fallback_ratio: 0.0 # Fail nếu có bất kỳ frame nào không fusion được.
   belief:
     alpha: ${ALPHA:-0.001} # alpha: hệ số phạt theo khoảng cách 3D của joint, càng lớn thì joint xa camera càng bị giảm tin cậy mạnh hơn.
     beta: ${BETA:-0.8} # beta: hệ số trộn tin cậy của láng giềng xương trong harmonic mean, càng lớn thì belief càng chịu ảnh hưởng bởi skeleton lân cận.
@@ -46,7 +47,12 @@ fusion:
     max_combos: 500 # Số tổ hợp mẫu tối đa khi không thể liệt kê toàn bộ triplet.
 
   # Cấu hình tối ưu hóa cho nhóm điểm F trong fusion.
+  correction:
+    orientation_enabled: false # Disabled after the 20-pair ablation showed regression.
+    reject_new_mismatches: true
+
   optimization:
+    enabled: false # F optimizer is disabled after the 20-pair regression ablation.
     regularization: true
     regularization_lambda: 1.0 # Hệ số phạt của proximity regularization.
     temporal_lambda: 2.0 # Hệ số phạt theo thời gian so với frame trước.
