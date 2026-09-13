@@ -1,6 +1,7 @@
 # Báo cáo Cải tiến & Nâng cấp Hệ thống Optimization Model Monocular (v3.0)
 
 ## Tổng quan
+
 Tài liệu này tổng hợp toàn bộ các điểm cải tiến cốt lõi, nâng cấp kiến trúc và tối ưu thuật toán của phiên bản **Optimization Model Monocular v3.0** so với phiên bản gốc trước đó (monolithic notebook / v1-v2). Phiên bản này chuyển đổi hệ thống từ các kịch bản chạy đơn lẻ (standalone scripts) sang một **Framework Modular chuyên nghiệp**, có khả năng mở rộng, kiểm thử tự động và đánh giá đa chiều.
 
 ---
@@ -75,12 +76,12 @@ Ngoài các chỉ số truyền thống, phiên bản này bổ sung thêm các 
 
 ## Bảng So sánh Tóm tắt
 
-| Tính năng | Phiên bản Gốc (v1-v2 / Monolith) | Phiên bản Mới (v3.0 Refactored) |
-| :--- | :--- | :--- |
-| **Cấu trúc Mã nguồn** | Script/Notebook đơn khối, khó bảo trì | Tách module hóa chuẩn mực, dễ mở rộng |
-| **Bắt Occlusion** | Đơn giản hoặc chưa có | **Ray-Casting trên Torso Mesh 3D** |
-| **Nhánh Learnable** | Chỉ hỗ trợ 1 luồng cố định | **Hỗ trợ Đa nhánh (`learnable` & `learnable_extra`)** |
-| **Chỉ số Đánh giá** | MPJPE, PA-MPJPE | **Bổ sung MBLE (Bone Error) & Accel (Jitter)** |
-| **Quét Đa Camera** | Chạy thủ công từng cặp | **Vét cạn tự động 56+ cặp & Xuất HTML Report** |
-| **Kiểm tra Cấu hình** | Không có | **Validation tập trung (`config_loader.py`)** |
-| **Xuất Video** | Phụ thuộc script ngoài | **Tự động mã hóa ffmpeg & nén Zip kết quả** |
+| Tính năng                     | Phiên bản Gốc (v1-v2 / Monolith)         | Phiên bản Mới (v3.0 Refactored)                                  |
+| :------------------------------ | :------------------------------------------ | :------------------------------------------------------------------ |
+| **Cấu trúc Mã nguồn** | Script/Notebook đơn khối, khó bảo trì | Tách module hóa chuẩn mực, dễ mở rộng                        |
+| **Bắt Occlusion**        | Đơn giản hoặc chưa có                 | **Ray-Casting trên Torso Mesh 3D**                           |
+| **Nhánh Learnable**      | Chỉ hỗ trợ 1 luồng cố định           | **Hỗ trợ Đa nhánh (`learnable` & `learnable_extra`)** |
+| **Chỉ số Đánh giá**  | MPJPE, PA-MPJPE                             | **Bổ sung MBLE (Bone Error) & Accel (Jitter)**          |
+| **Quét Đa Camera**      | Chạy thủ công từng cặp                 | **Vét cạn tự động 56+ cặp & Xuất HTML Report**         |
+| **Kiểm tra Cấu hình**  | Không có                                  | **Validation tập trung (`config_loader.py`)**              |
+| **Xuất Video**           | Phụ thuộc script ngoài                   | **Tự động mã hóa ffmpeg & nén Zip kết quả**           |

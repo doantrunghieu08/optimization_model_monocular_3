@@ -172,16 +172,21 @@ def extract_local_belief(metadata_dir: Path) -> tuple[str, str, int, int]:
     b2_list = [round(c2_acc[k] / count, 2) for k in sorted(c2_acc.keys(), key=sort_key)]
     return str(b1_list), str(b2_list), occluded_master, occluded_slave
 
-def _get_sheet_data(sheet_name: str) -> tuple[list, list]:
+def _get_sheet_data(sheet_name: str) -> tuple[list, list, str | None, bool]:
     try:
         gc = get_gspread_client()
         sh = gc.open(sheet_name)
-        latest_worksheet = sh.worksheets()[-1] 
+        worksheets = sh.worksheets()
+        if not worksheets:
+            return [], [], None, False
+        latest_worksheet = worksheets[-1] 
         data = latest_worksheet.get_all_values()
-        if not data or len(data) < 2: return [], []
-        return data[0], data[1:]
+        ws_title = latest_worksheet.title
+        if not data or len(data) < 2: return [], [], ws_title, False
+        has_end_marker = any(row and row[0] == "End" for row in data[1:])
+        return data[0], data[1:], ws_title, has_end_marker
     except Exception: 
-        return [], []
+        return [], [], None, False
 
 def _get_header_indices(header: list) -> dict:
     idx = {}
@@ -248,10 +253,10 @@ def _parse_history_row(row: list, idx: dict) -> tuple:
     }
     return key, res
 
-def load_existing_spreadsheet_results(sheet_name: str) -> dict:
+def load_existing_spreadsheet_results(sheet_name: str) -> tuple[dict, str | None, bool]:
     existing = {}
-    header, rows = _get_sheet_data(sheet_name)
-    if not header: return existing
+    header, rows, ws_title, has_end_marker = _get_sheet_data(sheet_name)
+    if not header: return existing, ws_title, has_end_marker
     idx = _get_header_indices(header)
     required = (
         'Segment', 'Alpha', 'Beta', 'MBLE', 'Accel Error (mm/frame^2)',
@@ -260,11 +265,11 @@ def load_existing_spreadsheet_results(sheet_name: str) -> dict:
         'Old Accel Error (mm/frame^2)',
         'Occluded Joint-Frames Master', 'Occluded Joint-Frames Slave',
     )
-    if any(idx[column] == -1 for column in required): return existing
+    if any(idx[column] == -1 for column in required): return existing, ws_title, has_end_marker
     for row in rows:
         key, res = _parse_history_row(row, idx)
         if key and key[0] != "N/A": existing[key] = res
-    return existing
+    return existing, ws_title, has_end_marker
 
 def _build_report_rows(all_results: dict, joint_keys: list) -> list:
     header = ['Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 'Alpha', 'Beta',
@@ -533,9 +538,13 @@ def _process_segment(seg, existing, base_cfg, ws_dir, sh_name, ws_title, all_res
 
         if (seg_name, cA["id"], cB["id"]) in existing:
             res = existing[(seg_name, cA["id"], cB["id"])]
-            res.update({"set": res.get("set", extract_set_name(cA["pkl"])), "master": cA["id"], "supplement": cB["id"]})
-            results.append(res)
-            continue
+            if res.get("mpjpe", float('inf')) != float('inf'):
+                print(f"[Bỏ qua] Cặp {cA['id']}-{cB['id']} của {seg_name} đã chạy xong trước đó (MPJPE={res.get('mpjpe')}). Giữ kết quả cũ.")
+                res.update({"set": res.get("set", extract_set_name(cA["pkl"])), "master": cA["id"], "supplement": cB["id"]})
+                results.append(res)
+                continue
+            else:
+                print(f"[Thử lại] Cặp {cA['id']}-{cB['id']} từng bị lỗi ở lần chạy trước. Đang tiến hành chạy lại...")
         
         res = _evaluate_camera_pair(cA, cB, base_cfg, str(ws_dir / seg["ground_truth_dir"]), ws_dir, seg_name)
         results.append(res)
@@ -571,9 +580,24 @@ def run_brute_force():
     default_sh_name = f"{runner_name}_brute_force_pipeline"
     sh_name = get_spreadsheet_name_input(default_name=default_sh_name, timeout=10)
     
-    ws_title = f"Run_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
-    existing = load_existing_spreadsheet_results(sh_name)
+    existing, existing_ws_title, has_end_marker = load_existing_spreadsheet_results(sh_name)
+    if existing_ws_title and not has_end_marker:
+        ws_title = existing_ws_title
+        print(f"[+] Worksheet (cell/tab) gần nhất '{ws_title}' chưa hoàn thành (chưa có dấu END). Sẽ tiếp tục ghi bổ sung vào worksheet này.")
+    else:
+        new_ws_title = f"Run_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
+        if existing_ws_title and has_end_marker:
+            print(f"[+] Worksheet (cell/tab) gần nhất '{existing_ws_title}' đã hoàn tất (có dấu END). Tạo worksheet mới: '{new_ws_title}'.")
+            existing = {}
+        else:
+            print(f"[+] Khởi tạo worksheet (cell/tab) mới: '{new_ws_title}' trong file Google Sheets '{sh_name}'.")
+        ws_title = new_ws_title
+
     all_res = {}
+    for (s_name, master, supplement), res in existing.items():
+        if s_name not in all_res:
+            all_res[s_name] = []
+        all_res[s_name].append(res)
 
     total_pairs = sum(
         len(seg.get("cameras", [])) * (len(seg.get("cameras", [])) - 1)
