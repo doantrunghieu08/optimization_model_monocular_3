@@ -265,9 +265,12 @@ def run_evaluation(config: dict) -> None:
     paths = config["paths"]
     inputs = resolve_inputs(config)
     map_data = load_keypoints3d_map(paths["keypoints3d_map"])
-    canonical_names = set([k["name"] for k in map_data["keypoints"]])
+    
+    joint_names = [k["name"] for k in map_data["keypoints"]]
+    canonical_names = set(joint_names)
     priority1_names = map_data.get("priority1", [])
     priority2_names = map_data.get("priority2", [])
+    skeleton = map_data.get("skeleton", [])
 
     truth_dir = Path(inputs["ground_truth_dir"])
     out_dir = Path(paths["evaluation_output_dir"])
@@ -287,8 +290,12 @@ def run_evaluation(config: dict) -> None:
         "PCK": bool(metrics_cfg["pck"]),
     }
     enabled_metrics = [name for name, enabled in metric_enabled.items() if enabled]
+    mble_enabled = bool(metrics_cfg.get("mble", False))
+    accel_enabled = bool(metrics_cfg.get("accel", False))
     if not enabled_metrics:
         raise ValueError("At least one evaluation metric must be enabled")
+    if mble_enabled and not skeleton:
+        raise ValueError("MBLE requires skeleton entries in the 3D keypoint map")
 
     if config.get("runtime", {}).get("clean_output", True):
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -354,6 +361,9 @@ def run_evaluation(config: dict) -> None:
 
     # metrics: metric -> cam -> frame -> module -> priority -> value
     results = {metric: {"camera1": {}, "camera2": {}} for metric in enabled_metrics}
+    mble_results = {cam: {} for cam in CAMERAS}
+    sequences = {cam: {} for cam in CAMERAS}
+    source_frame_ids = {cam: {} for cam in CAMERAS}
     evaluated_frames = []
 
     for frame in frames:
@@ -377,6 +387,10 @@ def run_evaluation(config: dict) -> None:
             truth_item = gt_cam_data[cam][gt_frame_id]
             truth_joints = _parse_new_gt(truth_item, canonical_names, map_data)
 
+            if accel_enabled:
+                source_frame_ids[cam][frame] = gt_frame_id
+                sequences[cam][frame] = {"truth": truth_joints}
+
             for metric in results:
                 if frame not in results[metric][cam]:
                     results[metric][cam][frame] = {}
@@ -388,6 +402,15 @@ def run_evaluation(config: dict) -> None:
                     raise ValueError(f"Missing {cam} in {mod_path}")
 
                 pred_joints = {k: np.array(v, dtype=float) for k, v in mod_data[cam].items()}
+
+                if mble_enabled:
+                    mean_mble, bone_details = _compute_mble(pred_joints, truth_joints, skeleton)
+                    mble_results[cam].setdefault(frame, {})[mod] = {
+                        "mean_mm": mean_mble,
+                        "details": bone_details,
+                    }
+                if accel_enabled:
+                    sequences[cam][frame][mod] = pred_joints
                 
                 # Filter priority names to only include keys present in both pred and truth
                 available_keys = set(pred_joints.keys()) & set(truth_joints.keys())
@@ -434,6 +457,28 @@ def run_evaluation(config: dict) -> None:
         for mod in module_names
     }
 
+    accel_results = {cam: {} for cam in CAMERAS}
+    if accel_enabled:
+        for cam in CAMERAS:
+            for previous_frame, frame, next_frame in zip(evaluated_frames, evaluated_frames[1:], evaluated_frames[2:]):
+                if source_frame_ids[cam][frame] - source_frame_ids[cam][previous_frame] != 1:
+                    continue
+                if source_frame_ids[cam][next_frame] - source_frame_ids[cam][frame] != 1:
+                    continue
+
+                truth_triplet = tuple(sequences[cam][f]["truth"] for f in (previous_frame, frame, next_frame))
+                for mod in module_names:
+                    pred_triplet = tuple(sequences[cam][f][mod] for f in (previous_frame, frame, next_frame))
+                    keys = [
+                        key for key in joint_names
+                        if all(key in joints for joints in (*pred_triplet, *truth_triplet))
+                    ]
+                    mean_accel, joint_details = _compute_acceleration_error(pred_triplet, truth_triplet, keys)
+                    accel_results[cam].setdefault(frame, {})[mod] = {
+                        "mean_mm_s2": mean_accel,
+                        "details": joint_details,
+                    }
+
     header = ["Frame", "Evaluated_Camera", "Ground_Truth_Camera"]
     for mod in module_names:
         out_name = module_output_names[mod]
@@ -477,6 +522,52 @@ def run_evaluation(config: dict) -> None:
                         avg_row.append(f"{(avg_sums[h]/n_frames):.2f}")
                     writer.writerow(avg_row)
 
+    if mble_enabled:
+        header = [
+            "Frame", "Evaluated_Camera", "Ground_Truth_Camera", "Module", "Bone",
+            "Pred_Length_mm", "GT_Length_mm", "Bone_Error_mm", "Frame_MBLE_mm",
+        ]
+        for cam in CAMERAS:
+            out_file = out_dir / f"MBLE_{CAMERA_FILE_NAMES[cam]}.csv"
+            with out_file.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(header)
+                for frame in evaluated_frames:
+                    for mod in module_names:
+                        result = mble_results[cam][frame][mod]
+                        for bone, values in result["details"].items():
+                            writer.writerow([
+                                frame, cam, gt_camera_keys[cam], module_output_names[mod], bone,
+                                f'{values["pred_length_mm"]:.2f}',
+                                f'{values["truth_length_mm"]:.2f}',
+                                f'{values["error_mm"]:.2f}',
+                                f'{result["mean_mm"]:.2f}',
+                            ])
+
+    if accel_enabled:
+        header = [
+            "Frame", "Evaluated_Camera", "Ground_Truth_Camera", "Module", "Joint",
+            "Pred_Accel_mm_s2", "GT_Accel_mm_s2", "Accel_Error_mm_s2", "Frame_Accel_Error_mm_s2",
+        ]
+        for cam in CAMERAS:
+            out_file = out_dir / f"Accel_{CAMERA_FILE_NAMES[cam]}.csv"
+            with out_file.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(header)
+                for frame in evaluated_frames:
+                    for mod in module_names:
+                        result = accel_results[cam].get(frame, {}).get(mod)
+                        if result is None:
+                            continue
+                        for joint, values in result["details"].items():
+                            writer.writerow([
+                                frame, cam, gt_camera_keys[cam], module_output_names[mod], joint,
+                                f'{values["pred_accel_mm_s2"]:.2f}',
+                                f'{values["truth_accel_mm_s2"]:.2f}',
+                                f'{values["error_mm_s2"]:.2f}',
+                                f'{result["mean_mm_s2"]:.2f}',
+                            ])
+    
     if "learnable_extra" in module_names and len(evaluated_frames) > 0:
         learnable_extra_summary = {}
         target_metrics = ["MPJPE", "PA-MPJPE"]
