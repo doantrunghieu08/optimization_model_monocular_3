@@ -456,6 +456,10 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
     scope_of_belief = "local" if str(config.get("fusion", {}).get("belief", {}).get("global", "N/A")) == "False" else "global"
     num_occlus1 = os.environ.get('Occlusion1', "N/A")
     num_frames = os.environ.get("FUSION_FRAME_COUNT", "0")
+    overriden = str(config.get("fusion", {}).get("optimization", {}).get("override", "N/A"))
+    if overriden != "false" or overriden != "False" or overriden != "FALSE": 
+        if overriden == "aligned_average":
+            loss_type_val = overriden #gán lại phương pháp fusion
 
     return {
         "alpha": alpha_val, "beta": beta_val,
@@ -623,6 +627,7 @@ def run_brute_force():
     print("Kinematic constraints trong config: ", base_cfg['fusion']['optimization']['use_kinematic_constraints'])
     print("Local method for calculation trong config: ", base_cfg['fusion']['belief']['local_method'])
     print("Loss type for Fusion trong config:", base_cfg['fusion']['optimization']['loss_type'])
+    print("Có tắt optimization không? Nếu có thì dùng gì?: ", base_cfg['fusion']['optimization']['overriden'])
     
     _, runner_name, _, _ = get_system_metadata()
     default_sh_name = f"{runner_name}_brute_force_pipeline"
