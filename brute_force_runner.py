@@ -178,6 +178,21 @@ def decorate(worksheet, total_rows: int, total_cols: int, rows_data: list = None
         
     except Exception as e:
         print(f"Lỗi khi trang trí Google Sheets: {e}")
+
+def parse_frame_metric_csv(csv_path: str, module: str, target_column: str) -> float:
+    path = Path(csv_path)
+    if not path.exists(): return float('inf')
+    frame_values = {}
+    with open(path, 'r', encoding='utf-8') as f:
+        for row in csv.DictReader(f):
+            if row.get("Module") != module or not row.get(target_column):
+                continue
+            try:
+                frame_values[row["Frame"]] = float(row[target_column])
+            except (KeyError, ValueError):
+                continue
+    return sum(frame_values.values()) / len(frame_values) if frame_values else float('inf')
+
 def parse_average_csv(csv_path: str, target_column: str) -> float:
     path = Path(csv_path)
     if not path.exists(): return float('inf')
@@ -252,7 +267,7 @@ def _get_header_indices(header: list) -> dict:
     keys = [
         'alpha', 'beta', 
         'Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 'Frames', # <--- THÊM 'Frames'
-        'MPJPE', 'PA-MPJPE', 'LE MPJPE Master', 'LE PA-MPJPE Master', 
+        'MPJPE', 'PA-MPJPE', 'MBLE', 'Accel', 'LE MPJPE Master', 'LE PA-MPJPE Master', 
         '# Occlus1', 'scope of belief',
         'belief Master', 'belief Slave', 
         'Old MPJPE', 'Old PA-MPJPE', '% Δ_MPJPE', '% Δ_PA-MPJPE', 
@@ -286,6 +301,7 @@ def _parse_history_row(row: list, idx: dict) -> tuple:
         "alpha": get_val('alpha', "N/A"), "beta": get_val('beta', "N/A"),
         "frames": get_val('Frames', "N/A"), # <--- DÒNG THÊM MỚI
         "mpjpe": sf('MPJPE'), "pa_mpjpe": sf('PA-MPJPE'), 
+        "mble": sf('MBLE'), "accel": sf('Accel'),
         "le_mpjpe_master": get_val('LE MPJPE Master', "N/A"),
         "le_pa_mpjpe_master": get_val('LE PA-MPJPE Master', "N/A"),
         "belief_master": get_val('belief Master', "[]"),
@@ -310,6 +326,7 @@ def load_existing_spreadsheet_results(sheet_name: str) -> dict:
     if not header: return existing
     idx = _get_header_indices(header)
     if idx['Segment'] == -1: return existing
+    if idx['Segment'] == -1 or idx['MBLE'] == -1 or idx['Accel'] == -1: return existing
     for row in rows:
         key, res = _parse_history_row(row, idx)
         if key and key[0] != "N/A": existing[key] = res
@@ -317,6 +334,7 @@ def load_existing_spreadsheet_results(sheet_name: str) -> dict:
 
 def _build_report_rows(all_results: dict, joint_keys: list) -> list:
     header = ['alpha', 'beta', 'Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 'Frames', 'MPJPE', 'PA-MPJPE', 
+              'MBLE', 'Accel',
               'LE MPJPE Master', 'LE PA-MPJPE Master', 
               '# Occlus1', 'scope of belief',
               'belief Master', 'belief Slave', 'Old MPJPE', 
@@ -334,6 +352,7 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
                 res.get('set', 'Unknown_Set'), seg_name, rank, res['master'], res.get('supplement', 'N/A'),
                 res.get('frames', 'N/A'), # <--- DÒNG THÊM MỚI (xuất ra cột Frames)
                 fmt(res.get('mpjpe', float('inf'))), fmt(res.get('pa_mpjpe', float('inf'))),
+                fmt(res.get('mble', float('inf'))), fmt(res.get('accel', float('inf'))),
                 res.get('le_mpjpe_master', 'N/A'), res.get('le_pa_mpjpe_master', 'N/A'),
                 res.get('# Occlus1', 'N/A'),
                 res.get('scope of belief', 'N/A'),
@@ -439,6 +458,8 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
     
     mpjpe, m_jts = parse_detailed_csv(eval_dir / "MPJPE_cam1.csv", t_pref)
     pa_mpjpe, pa_jts = parse_detailed_csv(eval_dir / "PA-MPJPE_cam1.csv", t_pref)
+    mble = parse_frame_metric_csv(eval_dir / "MBLE_cam1.csv", t_pref, "Frame_MBLE_mm")
+    accel = parse_frame_metric_csv(eval_dir / "Accel_cam1.csv", t_pref, "Frame_Accel_Error_mm_s2")
     old_m, _ = parse_detailed_csv(eval_dir / "MPJPE_cam1.csv", "posed")
     old_pa, _ = parse_detailed_csv(eval_dir / "PA-MPJPE_cam1.csv", "posed")
     
@@ -478,6 +499,7 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
         "set": current_set, "master": camA_id, "supplement": camB_id, "mpjpe": mpjpe, 
         "frames": num_frames, # <--- DÒNG THÊM MỚI
         "pa_mpjpe": pa_mpjpe, 
+        "mble": mble, "accel": accel,
         "le_mpjpe_master": le_mpjpe, "le_pa_mpjpe_master": le_pa_mpjpe,
         "# Occlus1" : str(num_occlus1),
         "scope of belief" : str(scope_of_belief),
@@ -515,12 +537,15 @@ def _evaluate_camera_pair(camA, camB, base_cfg, gt_dir, workspace, seg_name: str
         d_pa_mpjpe = res.get('% delta_pa_mpjpe', 0.0)
         le_mpjpe = res.get('le_mpjpe_master', 0.0)
         le_pa_mpjpe = res.get('le_pa_mpjpe_master', 0.0)
+        mble = res.get('mble', float('inf'))
+        accel = res.get('accel', float('inf'))
 
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         print(f"[{current_time}] Kết quả {camA['id']}-{camB['id']}: "
               f"MPJPE={res['mpjpe']:.2f} (Δ {d_mpjpe:+.2f}%), "
               f"PA-MPJPE={res['pa_mpjpe']:.2f} (Δ {d_pa_mpjpe:+.2f}%)",
+              f"MBLE={mble:.2f}, Accel={accel:.2f}",
               f"LE MPJPE={le_mpjpe} (LE PA-MPJPE {le_pa_mpjpe}), "
              )
         return res
