@@ -105,6 +105,41 @@ def _compute_pck_mm(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], k
         errors_dict[k] = err
     return float(np.mean(errors)), errors_dict
 
+def _compute_mble(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], bones: list[list[str]]) -> tuple[float, dict]:
+    details = {}
+    for start, end in bones:
+        if start not in pred or end not in pred or start not in truth or end not in truth:
+            continue
+        pred_length = float(np.linalg.norm(pred[start] - pred[end]) * 1000.0)
+        truth_length = float(np.linalg.norm(truth[start] - truth[end]) * 1000.0)
+        details[f"{start}-{end}"] = {
+            "pred_length_mm": pred_length,
+            "truth_length_mm": truth_length,
+            "error_mm": abs(pred_length - truth_length),
+        }
+    errors = [values["error_mm"] for values in details.values()]
+    return (float(np.mean(errors)) if errors else float("nan")), details
+
+
+def _compute_acceleration_error(
+    pred_triplet: tuple[dict, dict, dict],
+    truth_triplet: tuple[dict, dict, dict],
+    keys: list[str],
+) -> tuple[float, dict]:
+    pred_prev, pred_current, pred_next = pred_triplet
+    truth_prev, truth_current, truth_next = truth_triplet
+    details = {}
+    for key in keys:
+        pred_accel = pred_next[key] - 2.0 * pred_current[key] + pred_prev[key]
+        truth_accel = truth_next[key] - 2.0 * truth_current[key] + truth_prev[key]
+        details[key] = {
+            "pred_accel_mm_s2": float(np.linalg.norm(pred_accel) * 1000.0),
+            "truth_accel_mm_s2": float(np.linalg.norm(truth_accel) * 1000.0),
+            "error_mm_s2": float(np.linalg.norm(pred_accel - truth_accel) * 1000.0),
+        }
+    errors = [values["error_mm_s2"] for values in details.values()]
+    return (float(np.mean(errors)) if errors else float("nan")), details
+
 def _load_json(p: Path) -> dict:
     with p.open("r", encoding="utf-8") as f:
         return json.load(f)
