@@ -50,7 +50,7 @@ fusion:
 
   # Cấu hình tối ưu hóa cho nhóm điểm F trong fusion.
   optimization:
-    disable: ${DISABLE_OPTIMIZATION:-"aligned_average"} #mặc định tắt việc giải bài toán tối ưu phi lồi: cực tiểu tập F mâu thuẫn giữa các góc nhìn
+    overriden: ${OVERRIDEN:-"aligned_average"} #mặc định tắt việc giải bài toán tối ưu phi lồi: cực tiểu tập F mâu thuẫn giữa các góc nhìn
     use_kinematic_constraints: ${KINEMATIC_CONSTRAINTS:-true} #true: ám chỉ việc sử dụng Ràng buộc Động học (Kinematic Constraints)
     loss_type: ${LOSS_TYPE:-huber} #loss_type có hai giá trị: huber hoặc mse 
     temporal_loss: ${TEMPORAL_LOSS:-true} #true: ám chỉ sử dụng hàm temporal loss để cải thiện kết quả
