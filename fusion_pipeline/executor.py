@@ -161,6 +161,7 @@ def run_phase3_pipeline(
     global_belief=True,
     local_method="naive_distance_belief",
     use_kinematic_constraints=True,
+    loss_type="huber",
 ):
     cam1 = {k: as_xyz(v) for k, v in data_in["camera1"].items()}
     cam2 = {k: as_xyz(v) for k, v in data_in["camera2"].items()}
@@ -234,7 +235,7 @@ def run_phase3_pipeline(
 
     a_new = sorted(set(a_list) | k1_set | k2_set)
     f_list = [n for n in names if n not in set(a_new)]
-    before_stats = calculate_stats(cam1_corr, cam2_corr, f_list, a_new, conf1=H1_all, conf2=H2_all, vis1=vis1, vis2=vis2, f_weights=all_weights)
+    before_stats = calculate_stats(cam1_corr, cam2_corr, f_list, a_new, conf1=H1_all, conf2=H2_all, vis1=vis1, vis2=vis2, f_weights=all_weights, loss_type=loss_type)
     if optimization_enabled:
         optimized_data, _ = optimize_f_points(
             {"camera1": cam1_corr, "camera2": cam2_corr},
@@ -250,6 +251,7 @@ def run_phase3_pipeline(
             temporal_lambda=temporal_lambda,
             max_iter=max_iter,
             use_kinematic_constraints=use_kinematic_constraints,
+            loss_type=loss_type,
         )
     else:
         optimized_data = {"camera1": dict(cam1_corr), "camera2": dict(cam2_corr)}
@@ -261,7 +263,7 @@ def run_phase3_pipeline(
         optimized_data["camera2"][name] = cam2[name]
     if rejected_mismatches:
         m_after = _orientation_mismatches(optimized_data["camera1"], optimized_data["camera2"], names)
-    after_stats = calculate_stats(optimized_data["camera1"], optimized_data["camera2"], f_list, a_new, conf1=H1_all, conf2=H2_all, vis1=vis1, vis2=vis2, f_weights=all_weights)
+    after_stats = calculate_stats(optimized_data["camera1"], optimized_data["camera2"], f_list, a_new, conf1=H1_all, conf2=H2_all, vis1=vis1, vis2=vis2, f_weights=all_weights, loss_type=loss_type)
 
     return {
         "M": sorted(m_set),
@@ -374,6 +376,7 @@ def run_fusion(config: dict) -> None:
                 orientation_correction_enabled=correction_cfg.get("orientation_enabled", False),
                 optimization_enabled=opt_cfg.get("enabled", False),
                 use_kinematic_constraints=opt_cfg["use_kinematic_constraints"],
+                loss_type=opt_cfg["loss_type"],
                 reject_new_mismatches=correction_cfg.get("reject_new_mismatches", True),
             )
             occluded_cam1 = sorted(name for name, visible in result.get("vis1", {}).items() if not visible)

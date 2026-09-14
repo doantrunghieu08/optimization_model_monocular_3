@@ -229,12 +229,14 @@ def validate_config(config):
         raise ValueError("fusion.ransac.max_combos must be a positive integer")
 
     opt_cfg = fusion_cfg["optimization"]
-    for key in ("enabled", "use_kinematic_constraints", "regularization", "regularization_lambda", "temporal_lambda", "max_iter"):
+    for key in ("enabled", "use_kinematic_constraints", "loss_type", "regularization", "regularization_lambda", "temporal_lambda", "max_iter"):
         if key not in opt_cfg or opt_cfg[key] is None:
             raise ValueError("Missing config fusion optimization parameter: fusion.optimization.{}".format(key))
     for key in ("enabled", "use_kinematic_constraints", "regularization"):
         if not isinstance(opt_cfg[key], bool):
             raise ValueError(f"fusion.optimization.{key} must be a boolean")
+    if opt_cfg["loss_type"] not in ("huber", "mse"):
+        raise ValueError("fusion.optimization.loss_type must be huber or mse")
     for key in ("regularization_lambda", "temporal_lambda"):
         if not isinstance(opt_cfg[key], (int, float)) or isinstance(opt_cfg[key], bool) or opt_cfg[key] < 0:
             raise ValueError(f"fusion.optimization.{key} must be a non-negative number")

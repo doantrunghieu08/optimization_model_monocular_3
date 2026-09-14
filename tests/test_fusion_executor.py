@@ -14,7 +14,7 @@ from fusion_pipeline.executor import (
     run_phase3_pipeline,
     run_fusion,
 )
-from fusion_pipeline.optimization import optimize_f_points
+from fusion_pipeline.optimization import calculate_stats, optimize_f_points
 
 
 def _config(root: Path, max_fallback_ratio=0.0):
@@ -41,6 +41,7 @@ def _config(root: Path, max_fallback_ratio=0.0):
             "optimization": {
                 "enabled": False,
                 "use_kinematic_constraints": True,
+                "loss_type": "huber",
                 "regularization": True,
                 "regularization_lambda": 1.0,
                 "temporal_lambda": 2.0,
@@ -195,6 +196,15 @@ class FusionExecutorTest(unittest.TestCase):
         self.assertEqual(minimize.call_args.kwargs["constraints"], [])
         optimize_f_points(**kwargs, use_kinematic_constraints=True)
         self.assertGreater(len(minimize.call_args.kwargs["constraints"]), 0)
+
+    def test_loss_ablation_switches_huber_and_mse(self):
+        cam1 = {"anchor": [0, 0, 0], "joint": [0, 0, 0]}
+        cam2 = {"anchor": [0, 0, 0], "joint": [2, 0, 0]}
+
+        huber = calculate_stats(cam1, cam2, ["joint"], ["anchor"], loss_type="huber")[-1]
+        mse = calculate_stats(cam1, cam2, ["joint"], ["anchor"], loss_type="mse")[-1]
+
+        self.assertGreater(mse, huber)
 
     @patch("fusion_pipeline.executor._load_2d_profiles", return_value={"camera1": None, "camera2": None})
     def test_rejected_fallback_run_writes_no_partial_output(self, _profiles):

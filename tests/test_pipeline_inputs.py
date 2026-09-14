@@ -57,12 +57,14 @@ class EvaluationInputsTest(unittest.TestCase):
             "GLOBAL": "False",
             "LOCAL_METHOD": "optical_aware_belief",
             "KINEMATIC_CONSTRAINTS": "False",
+            "LOSS_TYPE": "mse",
         }, clear=True):
             config = load_config("configs/pipeline.yml")
 
         self.assertFalse(config["fusion"]["belief"]["global"])
         self.assertEqual(config["fusion"]["belief"]["local_method"], "optical_aware_belief")
         self.assertFalse(config["fusion"]["optimization"]["use_kinematic_constraints"])
+        self.assertEqual(config["fusion"]["optimization"]["loss_type"], "mse")
 
     def test_enabled_fusion_output_is_required(self):
         config = {
