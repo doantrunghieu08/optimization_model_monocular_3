@@ -36,6 +36,8 @@ fusion:
   belief:
     alpha: ${ALPHA:-0.001} # alpha: hệ số phạt theo khoảng cách 3D của joint, càng lớn thì joint xa camera càng bị giảm tin cậy mạnh hơn.
     beta: ${BETA:-0.8} # beta: hệ số trộn tin cậy của láng giềng xương trong harmonic mean, càng lớn thì belief càng chịu ảnh hưởng bởi skeleton lân cận.
+    global: ${GLOBAL:-true} # true: hòa belief của joint với các joint xương lân cận.
+    local_method: ${LOCAL_METHOD:-"naive_distance_belief"} # naive_distance_belief hoặc optical_aware_belief.
 
   occlusion:
     enabled: true # Ray-casting trên mesh torso trong hệ tọa độ camera.
@@ -53,6 +55,7 @@ fusion:
 
   optimization:
     enabled: false # F optimizer is disabled after the 20-pair regression ablation.
+    use_kinematic_constraints: ${KINEMATIC_CONSTRAINTS:-true}
     regularization: true
     regularization_lambda: 1.0 # Hệ số phạt của proximity regularization.
     temporal_lambda: 2.0 # Hệ số phạt theo thời gian so với frame trước.

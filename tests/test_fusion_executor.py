@@ -2,14 +2,19 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
+import numpy as np
+
+from fusion_pipeline.detector import compute_harmonic_precision
 from fusion_pipeline.executor import (
     _frame_confidence_from_profile,
     _load_pose_frame,
     run_phase3_pipeline,
     run_fusion,
 )
+from fusion_pipeline.optimization import optimize_f_points
 
 
 def _config(root: Path, max_fallback_ratio=0.0):
@@ -24,12 +29,18 @@ def _config(root: Path, max_fallback_ratio=0.0):
         "fusion": {
             "enabled": True,
             "max_fallback_ratio": max_fallback_ratio,
-            "belief": {"alpha": 0.001, "beta": 0.8},
+            "belief": {
+                "alpha": 0.001,
+                "beta": 0.8,
+                "global": True,
+                "local_method": "naive_distance_belief",
+            },
             "occlusion": {"enabled": False, "tau": 0.01},
             "ransac": {"threshold": 0.05, "max_combos": 10},
             "correction": {"orientation_enabled": False, "reject_new_mismatches": True},
             "optimization": {
                 "enabled": False,
+                "use_kinematic_constraints": True,
                 "regularization": True,
                 "regularization_lambda": 1.0,
                 "temporal_lambda": 2.0,
@@ -148,6 +159,42 @@ class FusionExecutorTest(unittest.TestCase):
             metadata = json.loads((root / "fused" / "metadata" / "fused_data_2.json").read_text(encoding="utf-8"))
             self.assertEqual(metadata["metadata"]["source_pkl_stems"]["camera1"], "cam1")
             self.assertEqual(metadata["metadata"]["fusion_config"]["belief"]["beta"], 0.8)
+
+    def test_belief_ablation_switches_method_and_scope(self):
+        names = ["left_shoulder", "left_elbow"]
+        camera = {"left_shoulder": [0.0, 0.0, 1.5], "left_elbow": [0.0, 0.0, 3.0]}
+        visible = dict.fromkeys(names, True)
+
+        _, naive_local, _ = compute_harmonic_precision(
+            camera, camera, names, visible, visible, alpha=0.1, beta=0.8,
+            global_belief=False, local_method="naive_distance_belief",
+        )
+        _, optical_local, _ = compute_harmonic_precision(
+            camera, camera, names, visible, visible, alpha=0.1, beta=0.8,
+            global_belief=False, local_method="optical_aware_belief",
+        )
+        _, naive_global, _ = compute_harmonic_precision(
+            camera, camera, names, visible, visible, alpha=0.1, beta=0.8,
+            global_belief=True, local_method="naive_distance_belief",
+        )
+
+        self.assertAlmostEqual(optical_local["left_shoulder"], 1.0)
+        self.assertNotEqual(naive_local, optical_local)
+        self.assertNotEqual(naive_local, naive_global)
+
+    @patch("fusion_pipeline.optimization.minimize")
+    def test_kinematic_ablation_controls_slsqp_constraints(self, minimize):
+        minimize.return_value = SimpleNamespace(success=True, x=np.array([0, 0, 2, 0, 0, 2], dtype=float), message="")
+        data = {
+            "camera1": {"left_shoulder": [0, 0, 1], "left_elbow": [0, 0, 2]},
+            "camera2": {"left_shoulder": [0, 0, 1], "left_elbow": [0, 0, 2]},
+        }
+        kwargs = dict(data=data, anchors=["left_shoulder"], f_list=["left_elbow"], max_iter=1)
+
+        optimize_f_points(**kwargs, use_kinematic_constraints=False)
+        self.assertEqual(minimize.call_args.kwargs["constraints"], [])
+        optimize_f_points(**kwargs, use_kinematic_constraints=True)
+        self.assertGreater(len(minimize.call_args.kwargs["constraints"]), 0)
 
     @patch("fusion_pipeline.executor._load_2d_profiles", return_value={"camera1": None, "camera2": None})
     def test_rejected_fallback_run_writes_no_partial_output(self, _profiles):

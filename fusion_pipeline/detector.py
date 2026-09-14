@@ -111,6 +111,31 @@ def compute_visibility_from_mesh_vertices(joints, verts, torso_faces, occlusion_
     return visibility
 
 
+def calc_naive_distance_belief(cam, vis, joint_names, alpha):
+    return {
+        name: 0.0 if name not in cam else (1.0 if vis.get(name, True) else 0.0) / (1.0 + alpha * np.linalg.norm(as_xyz(cam[name])) ** 2)
+        for name in joint_names
+    }
+
+
+def calc_optical_aware_belief(cam, vis, joint_names, alpha, l_min=1.5, l_max=8.0, sigma_near=0.2, sigma_far=0.5):
+    belief = {}
+    for name in joint_names:
+        if name not in cam or not vis.get(name, True):
+            belief[name] = 0.0
+            continue
+        distance = float(np.linalg.norm(as_xyz(cam[name])))
+        if distance < l_min:
+            value = np.exp(-((distance - l_min) ** 2) / (2.0 * sigma_near ** 2))
+        elif distance <= l_max:
+            value = 1.0 / (1.0 + alpha * (distance - l_min) ** 2)
+        else:
+            at_max = 1.0 / (1.0 + alpha * (l_max - l_min) ** 2)
+            value = at_max * np.exp(-((distance - l_max) ** 2) / (2.0 * sigma_far ** 2))
+        belief[name] = float(value)
+    return belief
+
+
 def compute_harmonic_precision(
     cam1,
     cam2,
@@ -120,24 +145,23 @@ def compute_harmonic_precision(
     alpha,
     beta,
     epsilon=HARMONIC_EPSILON,
+    global_belief=True,
+    local_method="naive_distance_belief",
 ):
     neighbors = {}
     for child, parent in RIGID_BONES_RATIO.keys():
         neighbors.setdefault(child, []).append(parent)
         neighbors.setdefault(parent, []).append(child)
-    #Dự phòng sửa hàm này: https://docs.google.com/document/d/1yWfUcBP3AAykBXCK-aihj92ZplWtqjaSpFuPn-7N-eg/edit?usp=sharing
-    def calc_P(cam, vis):
-        P = {}
-        for name in joint_names:
-            if name not in cam:
-                P[name] = 0.0
-                continue
-            C = 1.0 if vis.get(name, True) else 0.0
-            L = float(np.linalg.norm(as_xyz(cam[name])))
-            P[name] = C / (1.0 + alpha * (L ** 2))
-        return P
+    methods = {
+        "naive_distance_belief": calc_naive_distance_belief,
+        "optical_aware_belief": calc_optical_aware_belief,
+    }
+    if local_method not in methods:
+        raise ValueError(f"Unknown local belief method: {local_method}")
 
     def calc_H(P):
+        if not global_belief:
+            return P.copy()
         H = {}
         for name in joint_names:
             p = P[name]
@@ -146,7 +170,8 @@ def compute_harmonic_precision(
             H[name] = (2.0 * b * p) / (b + p + epsilon)
         return H
 
-    P1, P2 = calc_P(cam1, vis1), calc_P(cam2, vis2)
+    P1 = methods[local_method](cam1, vis1, joint_names, alpha)
+    P2 = methods[local_method](cam2, vis2, joint_names, alpha)
     H1, H2 = calc_H(P1), calc_H(P2)
     weights = {name: (H1[name] + H2[name]) / 2.0 for name in joint_names}
     return weights, H1, H2
@@ -194,6 +219,8 @@ def detect_cross_view_errors(
     beta,
     confidence2d1=None,
     confidence2d2=None,
+    global_belief=True,
+    local_method="naive_distance_belief",
 ):
     flags1 = get_orientation_flag(cam1)
     flags2 = get_orientation_flag(cam2)
@@ -204,7 +231,10 @@ def detect_cross_view_errors(
         or (flags1.get(n, 0) == -1 and flags2.get(n, 0) == 1)
     }
 
-    _, H1_old, H2_old = compute_harmonic_precision(cam1, cam2, names, vis1, vis2, alpha=alpha, beta=beta)
+    _, H1_old, H2_old = compute_harmonic_precision(
+        cam1, cam2, names, vis1, vis2, alpha=alpha, beta=beta,
+        global_belief=global_belief, local_method=local_method,
+    )
     H1_all = _blend_detector_confidences(names, H1_old, confidence2d1)
     H2_all = _blend_detector_confidences(names, H2_old, confidence2d2)
     all_weights = {name: (H1_all[name] + H2_all[name]) / 2.0 for name in names}

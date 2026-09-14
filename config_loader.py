@@ -192,7 +192,7 @@ def validate_config(config):
             raise ValueError("Missing config visualization parameter: visualization.{}".format(key))
 
     belief_cfg = fusion_cfg["belief"]
-    for key in ("alpha", "beta"):
+    for key in ("alpha", "beta", "global", "local_method"):
         if key not in belief_cfg or belief_cfg[key] is None:
             raise ValueError("Missing config fusion belief parameter: fusion.belief.{}".format(key))
     alpha, beta = belief_cfg["alpha"], belief_cfg["beta"]
@@ -200,6 +200,10 @@ def validate_config(config):
         raise ValueError("fusion.belief.alpha must be a non-negative number")
     if not isinstance(beta, (int, float)) or isinstance(beta, bool) or not 0 < beta <= 1:
         raise ValueError("fusion.belief.beta must be a number greater than 0 and at most 1")
+    if not isinstance(belief_cfg["global"], bool):
+        raise ValueError("fusion.belief.global must be a boolean")
+    if belief_cfg["local_method"] not in ("naive_distance_belief", "optical_aware_belief"):
+        raise ValueError("fusion.belief.local_method must be naive_distance_belief or optical_aware_belief")
 
     occlusion_cfg = fusion_cfg["occlusion"]
     for key in ("enabled", "tau"):
@@ -225,10 +229,10 @@ def validate_config(config):
         raise ValueError("fusion.ransac.max_combos must be a positive integer")
 
     opt_cfg = fusion_cfg["optimization"]
-    for key in ("enabled", "regularization", "regularization_lambda", "temporal_lambda", "max_iter"):
+    for key in ("enabled", "use_kinematic_constraints", "regularization", "regularization_lambda", "temporal_lambda", "max_iter"):
         if key not in opt_cfg or opt_cfg[key] is None:
             raise ValueError("Missing config fusion optimization parameter: fusion.optimization.{}".format(key))
-    for key in ("enabled", "regularization"):
+    for key in ("enabled", "use_kinematic_constraints", "regularization"):
         if not isinstance(opt_cfg[key], bool):
             raise ValueError(f"fusion.optimization.{key} must be a boolean")
     for key in ("regularization_lambda", "temporal_lambda"):

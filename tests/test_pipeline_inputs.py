@@ -1,6 +1,8 @@
 import copy
+import os
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from config_loader import load_config, validate_config
 from pipeline import _evaluation_input_dirs
@@ -49,6 +51,18 @@ class EvaluationInputsTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "optimization.enabled must be a boolean"):
             validate_config(config)
+
+    def test_ablation_environment_is_loaded(self):
+        with patch.dict(os.environ, {
+            "GLOBAL": "False",
+            "LOCAL_METHOD": "optical_aware_belief",
+            "KINEMATIC_CONSTRAINTS": "False",
+        }, clear=True):
+            config = load_config("configs/pipeline.yml")
+
+        self.assertFalse(config["fusion"]["belief"]["global"])
+        self.assertEqual(config["fusion"]["belief"]["local_method"], "optical_aware_belief")
+        self.assertFalse(config["fusion"]["optimization"]["use_kinematic_constraints"])
 
     def test_enabled_fusion_output_is_required(self):
         config = {

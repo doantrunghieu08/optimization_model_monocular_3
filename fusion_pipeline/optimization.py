@@ -52,7 +52,7 @@ def compute_dynamic_scale(cam_dict, f_list, ratios):
     return (sum_len / sum_ratio) if sum_ratio > 0 else HEIGHT
 
 
-def optimize_f_points(data, anchors, f_list, conf1=None, conf2=None, vis1=None, vis2=None, occluded_factor=DEFAULT_OCCLUDED_FACTOR, regularization=False, regularization_lambda=1.0, prev_data=None, temporal_lambda=1.0, max_iter=1000):
+def optimize_f_points(data, anchors, f_list, conf1=None, conf2=None, vis1=None, vis2=None, occluded_factor=DEFAULT_OCCLUDED_FACTOR, regularization=False, regularization_lambda=1.0, prev_data=None, temporal_lambda=1.0, max_iter=1000, use_kinematic_constraints=True):
     cam1 = {k: as_xyz(v) for k, v in data["camera1"].items()}
     cam2 = {k: as_xyz(v) for k, v in data["camera2"].items()}
     f_weights = {}
@@ -154,6 +154,9 @@ def optimize_f_points(data, anchors, f_list, conf1=None, conf2=None, vis1=None, 
 
         constraints.append({"type": "ineq", "fun": constr_lower2})
         constraints.append({"type": "ineq", "fun": constr_upper2})
+
+    if not use_kinematic_constraints:
+        constraints = []
 
     x0 = []
     for name in f_list:

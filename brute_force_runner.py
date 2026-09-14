@@ -192,6 +192,7 @@ def _get_header_indices(header: list) -> dict:
     idx = {}
     keys = [
         'Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 'Alpha', 'Beta',
+        'Global Belief', 'Local Method', 'Kinematic Constraints',
         'MPJPE', 'PA-MPJPE', 'MBLE',
         'Fusion MBLE', 'LE MBLE', 'Old MBLE',
         'Accel Error (mm/frame^2)', 'GT Accel Error (mm/frame^2)',
@@ -231,6 +232,9 @@ def _parse_history_row(row: list, idx: dict) -> tuple:
     key = (row[idx['Segment']], row[idx['Cam Master']], row[idx['Cam Slave']])
     res = {
         "alpha": sf('Alpha'), "beta": sf('Beta'),
+        "global_belief": get_val('Global Belief'),
+        "local_method": get_val('Local Method'),
+        "kinematic_constraints": get_val('Kinematic Constraints'),
         "mpjpe": sf('MPJPE'), "pa_mpjpe": sf('PA-MPJPE'),
         "mble": sf('MBLE'), "accel": sf('Accel Error (mm/frame^2)'),
         "fusion_mble": sf('Fusion MBLE'), "le_mble": sf('LE MBLE'),
@@ -259,7 +263,8 @@ def load_existing_spreadsheet_results(sheet_name: str) -> tuple[dict, str | None
     if not header: return existing, ws_title, has_end_marker
     idx = _get_header_indices(header)
     required = (
-        'Segment', 'Alpha', 'Beta', 'MBLE', 'Accel Error (mm/frame^2)',
+        'Segment', 'Alpha', 'Beta', 'Global Belief', 'Local Method',
+        'Kinematic Constraints', 'MBLE', 'Accel Error (mm/frame^2)',
         'Fusion MBLE', 'LE MBLE', 'Old MBLE', 'GT Accel Error (mm/frame^2)',
         'Fusion Accel Error (mm/frame^2)', 'LE Accel Error (mm/frame^2)',
         'Old Accel Error (mm/frame^2)',
@@ -273,6 +278,7 @@ def load_existing_spreadsheet_results(sheet_name: str) -> tuple[dict, str | None
 
 def _build_report_rows(all_results: dict, joint_keys: list) -> list:
     header = ['Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 'Alpha', 'Beta',
+              'Global Belief', 'Local Method', 'Kinematic Constraints',
               'MPJPE', 'PA-MPJPE', 'MBLE', 'Accel Error (mm/frame^2)',
               'Fusion MBLE', 'LE MBLE', 'Old MBLE',
               'GT Accel Error (mm/frame^2)', 'Fusion Accel Error (mm/frame^2)',
@@ -291,6 +297,8 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
             row = [
                 res.get('set', 'Unknown_Set'), seg_name, rank, res['master'], res.get('supplement', 'N/A'),
                 res.get('alpha', 'N/A'), res.get('beta', 'N/A'),
+                res.get('global_belief', 'N/A'), res.get('local_method', 'N/A'),
+                res.get('kinematic_constraints', 'N/A'),
                 fmt(res.get('mpjpe', float('inf'))), fmt(res.get('pa_mpjpe', float('inf'))),
                 fmt(res.get('mble', float('inf'))), fmt(res.get('accel', float('inf'))),
                 fmt(res.get('fusion_mble', float('inf'))), fmt(res.get('le_mble', float('inf'))),
@@ -426,6 +434,8 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
     return {
         "set": current_set, "master": camA_id, "supplement": camB_id,
         "alpha": belief_cfg["alpha"], "beta": belief_cfg["beta"], "mpjpe": mpjpe,
+        "global_belief": belief_cfg["global"], "local_method": belief_cfg["local_method"],
+        "kinematic_constraints": config["fusion"]["optimization"]["use_kinematic_constraints"],
         "pa_mpjpe": pa_mpjpe, "mble": mble, "accel": accel,
         "fusion_mble": fusion_mble, "le_mble": le_mble, "old_mble": old_mble,
         "gt_accel_error": gt_accel_error, "fusion_accel_error": fusion_accel_error,
@@ -575,6 +585,9 @@ def run_brute_force():
     # Kiểm tra xem file config đã nhận đúng giá trị chưa
     print("Alpha trong config:", base_cfg['fusion']['belief']['alpha'])
     print("Beta trong config:", base_cfg['fusion']['belief']['beta'])
+    print("Global belief trong config:", base_cfg['fusion']['belief']['global'])
+    print("Local method trong config:", base_cfg['fusion']['belief']['local_method'])
+    print("Kinematic constraints trong config:", base_cfg['fusion']['optimization']['use_kinematic_constraints'])
     
     _, runner_name, _ = get_system_metadata()
     default_sh_name = f"{runner_name}_brute_force_pipeline"

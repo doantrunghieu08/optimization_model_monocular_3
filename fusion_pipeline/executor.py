@@ -158,6 +158,9 @@ def run_phase3_pipeline(
     orientation_correction_enabled=False,
     optimization_enabled=False,
     reject_new_mismatches=True,
+    global_belief=True,
+    local_method="naive_distance_belief",
+    use_kinematic_constraints=True,
 ):
     cam1 = {k: as_xyz(v) for k, v in data_in["camera1"].items()}
     cam2 = {k: as_xyz(v) for k, v in data_in["camera2"].items()}
@@ -194,6 +197,8 @@ def run_phase3_pipeline(
         confidence2d2=confidence2d_by_cam.get("camera2"),
         alpha=belief_alpha,
         beta=belief_beta,
+        global_belief=global_belief,
+        local_method=local_method,
     )
     m_set = detected["M"]
     k1_set = detected["K1"]
@@ -244,6 +249,7 @@ def run_phase3_pipeline(
             prev_data=prev_optimized_data,
             temporal_lambda=temporal_lambda,
             max_iter=max_iter,
+            use_kinematic_constraints=use_kinematic_constraints,
         )
     else:
         optimized_data = {"camera1": dict(cam1_corr), "camera2": dict(cam2_corr)}
@@ -363,8 +369,11 @@ def run_fusion(config: dict) -> None:
                 confidence2d_by_cam=confidence2d_by_cam,
                 belief_alpha=belief_cfg["alpha"],
                 belief_beta=belief_cfg["beta"],
+                global_belief=belief_cfg["global"],
+                local_method=belief_cfg["local_method"],
                 orientation_correction_enabled=correction_cfg.get("orientation_enabled", False),
                 optimization_enabled=opt_cfg.get("enabled", False),
+                use_kinematic_constraints=opt_cfg["use_kinematic_constraints"],
                 reject_new_mismatches=correction_cfg.get("reject_new_mismatches", True),
             )
             occluded_cam1 = sorted(name for name, visible in result.get("vis1", {}).items() if not visible)
