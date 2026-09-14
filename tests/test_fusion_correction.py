@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from fusion_pipeline.correction import estimate_umeyama, ransac_umeyama
+from fusion_pipeline.correction import apply_confidence_corrections, estimate_umeyama, ransac_umeyama
 
 
 class FusionCorrectionTest(unittest.TestCase):
@@ -26,6 +26,18 @@ class FusionCorrectionTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "non-collinear"):
             estimate_umeyama(points, points)
+
+    def test_confidence_correction_rejects_large_jump(self):
+        cam1 = {"near": [0.0, 0.0, 0.0], "far": [0.0, 0.0, 0.0]}
+        cam2 = {"near": [0.04, 0.0, 0.0], "far": [1.0, 0.0, 0.0]}
+        identity = (1.0, np.eye(3), np.zeros(3))
+
+        _, corrected = apply_confidence_corrections(
+            cam1, cam2, {"near", "far"}, set(), identity, identity, max_displacement=0.05,
+        )
+
+        np.testing.assert_array_equal(corrected["near"], cam1["near"])
+        np.testing.assert_array_equal(corrected["far"], cam2["far"])
 
 
 if __name__ == "__main__":

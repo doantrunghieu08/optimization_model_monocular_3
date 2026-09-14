@@ -82,13 +82,17 @@ def estimate_bidirectional_similarity(cam1, cam2, candidate_names, threshold, ma
     return t12, t21, anchor_names
 
 
-def apply_confidence_corrections(cam1, cam2, k1_set, k2_set, t12, t21):
+def apply_confidence_corrections(cam1, cam2, k1_set, k2_set, t12, t21, max_displacement):
     cam1_corr = dict(cam1)
     cam2_corr = dict(cam2)
     for name in k1_set:
-        cam2_corr[name] = apply_similarity(cam1[name], t12)
+        candidate = apply_similarity(cam1[name], t12)
+        if np.linalg.norm(candidate - as_xyz(cam2[name])) <= max_displacement:
+            cam2_corr[name] = candidate
     for name in k2_set:
-        cam1_corr[name] = apply_similarity(cam2[name], t21)
+        candidate = apply_similarity(cam2[name], t21)
+        if np.linalg.norm(candidate - as_xyz(cam1[name])) <= max_displacement:
+            cam1_corr[name] = candidate
     return cam1_corr, cam2_corr
 
 

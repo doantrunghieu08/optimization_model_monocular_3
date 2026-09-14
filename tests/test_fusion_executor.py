@@ -183,6 +183,23 @@ class FusionExecutorTest(unittest.TestCase):
         self.assertNotEqual(naive_local, optical_local)
         self.assertNotEqual(naive_local, naive_global)
 
+    def test_global_belief_does_not_spread_occlusion_to_visible_neighbor(self):
+        names = ["left_shoulder", "left_elbow"]
+        camera = {name: [0.0, 0.0, 2.0] for name in names}
+        visibility = {"left_shoulder": True, "left_elbow": False}
+
+        _, local, _ = compute_harmonic_precision(
+            camera, camera, names, visibility, visibility, alpha=0.1, beta=0.8,
+            global_belief=False, local_method="naive_distance_belief",
+        )
+        _, global_, _ = compute_harmonic_precision(
+            camera, camera, names, visibility, visibility, alpha=0.1, beta=0.8,
+            global_belief=True, local_method="naive_distance_belief",
+        )
+
+        self.assertAlmostEqual(global_["left_shoulder"], local["left_shoulder"], delta=1e-6)
+        self.assertEqual(global_["left_elbow"], 0.0)
+
     @patch("fusion_pipeline.optimization.minimize")
     def test_kinematic_ablation_controls_slsqp_constraints(self, minimize):
         minimize.return_value = SimpleNamespace(success=True, x=np.array([0, 0, 2, 0, 0, 2], dtype=float), message="")

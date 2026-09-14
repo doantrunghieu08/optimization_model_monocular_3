@@ -217,7 +217,9 @@ def run_phase3_pipeline(
         max_combos=ransac_max_combos,
     )
 
-    cam1_corr, cam2_corr = apply_confidence_corrections(cam1, cam2, k1_set, k2_set, t12, t21)
+    cam1_corr, cam2_corr = apply_confidence_corrections(
+        cam1, cam2, k1_set, k2_set, t12, t21, max_displacement=ransac_threshold,
+    )
     if orientation_correction_enabled:
         cam1_corr, cam2_corr = apply_rotation_mismatch_corrections(
             cam1_corr,
