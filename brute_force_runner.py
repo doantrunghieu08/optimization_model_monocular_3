@@ -193,6 +193,7 @@ def _get_header_indices(header: list) -> dict:
     keys = [
         'Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 'Alpha', 'Beta',
         'Global Belief', 'Local Method', 'Kinematic Constraints', 'Loss Type',
+        'Optimization Enabled', 'Orientation Correction', 'Learnable', 'Learnable Extra',
         'MPJPE', 'PA-MPJPE', 'MBLE',
         'Fusion MBLE', 'LE MBLE', 'Old MBLE',
         'Accel Error (mm/frame^2)', 'GT Accel Error (mm/frame^2)',
@@ -236,6 +237,10 @@ def _parse_history_row(row: list, idx: dict) -> tuple:
         "local_method": get_val('Local Method'),
         "kinematic_constraints": get_val('Kinematic Constraints'),
         "loss_type": get_val('Loss Type'),
+        "optimization_enabled": get_val('Optimization Enabled'),
+        "orientation_correction": get_val('Orientation Correction'),
+        "learnable_enabled": get_val('Learnable'),
+        "learnable_extra_enabled": get_val('Learnable Extra'),
         "mpjpe": sf('MPJPE'), "pa_mpjpe": sf('PA-MPJPE'),
         "mble": sf('MBLE'), "accel": sf('Accel Error (mm/frame^2)'),
         "fusion_mble": sf('Fusion MBLE'), "le_mble": sf('LE MBLE'),
@@ -266,12 +271,13 @@ def load_existing_spreadsheet_results(sheet_name: str) -> tuple[dict, str | None
     required = (
         'Segment', 'Alpha', 'Beta', 'Global Belief', 'Local Method',
         'Kinematic Constraints', 'Loss Type', 'MBLE', 'Accel Error (mm/frame^2)',
+        'Optimization Enabled', 'Orientation Correction', 'Learnable', 'Learnable Extra',
         'Fusion MBLE', 'LE MBLE', 'Old MBLE', 'GT Accel Error (mm/frame^2)',
         'Fusion Accel Error (mm/frame^2)', 'LE Accel Error (mm/frame^2)',
         'Old Accel Error (mm/frame^2)',
         'Occluded Joint-Frames Master', 'Occluded Joint-Frames Slave',
     )
-    if any(idx[column] == -1 for column in required): return existing, ws_title, has_end_marker
+    if any(idx[column] == -1 for column in required): return existing, None, has_end_marker
     for row in rows:
         key, res = _parse_history_row(row, idx)
         if key and key[0] != "N/A": existing[key] = res
@@ -280,6 +286,7 @@ def load_existing_spreadsheet_results(sheet_name: str) -> tuple[dict, str | None
 def _build_report_rows(all_results: dict, joint_keys: list) -> list:
     header = ['Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 'Alpha', 'Beta',
               'Global Belief', 'Local Method', 'Kinematic Constraints', 'Loss Type',
+              'Optimization Enabled', 'Orientation Correction', 'Learnable', 'Learnable Extra',
               'MPJPE', 'PA-MPJPE', 'MBLE', 'Accel Error (mm/frame^2)',
               'Fusion MBLE', 'LE MBLE', 'Old MBLE',
               'GT Accel Error (mm/frame^2)', 'Fusion Accel Error (mm/frame^2)',
@@ -301,6 +308,10 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
                 res.get('global_belief', 'N/A'), res.get('local_method', 'N/A'),
                 res.get('kinematic_constraints', 'N/A'),
                 res.get('loss_type', 'N/A'),
+                res.get('optimization_enabled', 'N/A'),
+                res.get('orientation_correction', 'N/A'),
+                res.get('learnable_enabled', 'N/A'),
+                res.get('learnable_extra_enabled', 'N/A'),
                 fmt(res.get('mpjpe', float('inf'))), fmt(res.get('pa_mpjpe', float('inf'))),
                 fmt(res.get('mble', float('inf'))), fmt(res.get('accel', float('inf'))),
                 fmt(res.get('fusion_mble', float('inf'))), fmt(res.get('le_mble', float('inf'))),
@@ -439,6 +450,10 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
         "global_belief": belief_cfg["global"], "local_method": belief_cfg["local_method"],
         "kinematic_constraints": config["fusion"]["optimization"]["use_kinematic_constraints"],
         "loss_type": config["fusion"]["optimization"]["loss_type"],
+        "optimization_enabled": config["fusion"]["optimization"]["enabled"],
+        "orientation_correction": config["fusion"]["correction"]["orientation_enabled"],
+        "learnable_enabled": config["learnable"]["enabled"],
+        "learnable_extra_enabled": config["learnable_extra"]["enabled"],
         "pa_mpjpe": pa_mpjpe, "mble": mble, "accel": accel,
         "fusion_mble": fusion_mble, "le_mble": le_mble, "old_mble": old_mble,
         "gt_accel_error": gt_accel_error, "fusion_accel_error": fusion_accel_error,
@@ -496,6 +511,30 @@ def _get_timed_input(timeout: int) -> str | None:
     threading.Thread(target=ask, daemon=True).start()
     try: return q.get(timeout=timeout)
     except queue.Empty: return None
+
+
+def _matches_active_config(result: dict, config: dict) -> bool:
+    def as_bool(value):
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str) and value.lower() in ("true", "false"):
+            return value.lower() == "true"
+        return None
+
+    belief = config["fusion"]["belief"]
+    optimization = config["fusion"]["optimization"]
+    return (
+        result.get("alpha") == belief["alpha"]
+        and result.get("beta") == belief["beta"]
+        and as_bool(result.get("global_belief")) == belief["global"]
+        and result.get("local_method") == belief["local_method"]
+        and as_bool(result.get("kinematic_constraints")) == optimization["use_kinematic_constraints"]
+        and result.get("loss_type") == optimization["loss_type"]
+        and as_bool(result.get("optimization_enabled")) == optimization["enabled"]
+        and as_bool(result.get("orientation_correction")) == config["fusion"]["correction"]["orientation_enabled"]
+        and as_bool(result.get("learnable_enabled")) == config["learnable"]["enabled"]
+        and as_bool(result.get("learnable_extra_enabled")) == config["learnable_extra"]["enabled"]
+    )
 
 def _archive_old_spreadsheet(default_name: str):
     print(f"\n[+] Đang kiểm tra và lưu trữ file mặc định cũ '{default_name}'...")
@@ -592,12 +631,21 @@ def run_brute_force():
     print("Local method trong config:", base_cfg['fusion']['belief']['local_method'])
     print("Kinematic constraints trong config:", base_cfg['fusion']['optimization']['use_kinematic_constraints'])
     print("Loss type trong config:", base_cfg['fusion']['optimization']['loss_type'])
+    print("Optimization enabled trong config:", base_cfg['fusion']['optimization']['enabled'])
+    print("Orientation correction trong config:", base_cfg['fusion']['correction']['orientation_enabled'])
+    print("Learnable trong config:", base_cfg['learnable']['enabled'])
+    print("Learnable extra trong config:", base_cfg['learnable_extra']['enabled'])
     
     _, runner_name, _ = get_system_metadata()
     default_sh_name = f"{runner_name}_brute_force_pipeline"
     sh_name = get_spreadsheet_name_input(default_name=default_sh_name, timeout=10)
     
     existing, existing_ws_title, has_end_marker = load_existing_spreadsheet_results(sh_name)
+    if existing and not all(_matches_active_config(result, base_cfg) for result in existing.values()):
+        print("[!] Config hiện tại khác worksheet chưa hoàn thành. Tạo worksheet mới để không trộn kết quả cũ.")
+        existing = {}
+        existing_ws_title = None
+        has_end_marker = False
     if existing_ws_title and not has_end_marker:
         ws_title = existing_ws_title
         print(f"[+] Worksheet (cell/tab) gần nhất '{ws_title}' chưa hoàn thành (chưa có dấu END). Sẽ tiếp tục ghi bổ sung vào worksheet này.")
