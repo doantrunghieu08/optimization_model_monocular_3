@@ -14,7 +14,7 @@ def set_env_from_filename(notebook_filename: str):
     Đọc toàn bộ tham số config từ tên file notebook và nạp vào os.environ
     để pipeline.yml có thể đọc qua cú pháp ${VAR:-default}.
 
-    Các tham số được hỗ trợ (tất cả đều optional — nếu thiếu sẽ dùng default trong yml):
+    Tên notebook ablation phải khai báo đầy đủ các tham số sau:
 
     1. ALPHA / BETA  — hệ số belief:
        Cú pháp tên file: alpha1E_1_beta85E_2  hoặc  alpha1E-1_beta85E-2
@@ -36,7 +36,10 @@ def set_env_from_filename(notebook_filename: str):
        Từ khóa trong tên file: _huber_  → huber
                                _mse_    → mse
     """
-    name = notebook_filename
+    name = Path(notebook_filename).name
+    keys = ("ALPHA", "BETA", "LOCAL_METHOD", "GLOBAL", "KINEMATIC_CONSTRAINTS", "LOSS_TYPE")
+    for key in keys:
+        os.environ.pop(key, None)
 
     # ── 1. ALPHA & BETA ────────────────────────────────────────────────────────
     pattern_ab = r"alpha(\d+[Ee][_\-]?\d+)_beta(\d+[Ee][_\-]?\d+)"
@@ -88,6 +91,10 @@ def set_env_from_filename(notebook_filename: str):
     elif kw('mse'):
         os.environ["LOSS_TYPE"] = "mse"
         print("[ENV] LOSS_TYPE=mse")
+
+    missing = [key for key in keys if key not in os.environ]
+    if missing:
+        raise ValueError(f"Notebook filename does not define: {', '.join(missing)}")
 
 def get_notebook_name() -> str | None:
     """

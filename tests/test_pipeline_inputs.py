@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from config_loader import load_config, validate_config
+from config_loader import load_config, set_env_from_filename, validate_config
 from pipeline import _evaluation_input_dirs
 
 
@@ -65,6 +65,30 @@ class EvaluationInputsTest(unittest.TestCase):
         self.assertEqual(config["fusion"]["belief"]["local_method"], "optical_aware_belief")
         self.assertFalse(config["fusion"]["optimization"]["use_kinematic_constraints"])
         self.assertEqual(config["fusion"]["optimization"]["loss_type"], "mse")
+
+    def test_ablation_notebook_names_select_distinct_configs(self):
+        cases = {
+            "ablation_naive_global_kinematic_huber_alpha1E_1_beta85E_2.ipynb":
+                ("naive_distance_belief", True, True, "huber"),
+            "ablation_optical_global_kinematic_mse_alpha1E_1_beta85E_2.ipynb":
+                ("optical_aware_belief", True, True, "mse"),
+            "ablation_optical_global_unconstrained_huber_alpha1E_1_beta85E_2.ipynb":
+                ("optical_aware_belief", True, False, "huber"),
+            "ablation_optical_local_kinematic_huber_alpha1E_1_beta85E_2.ipynb":
+                ("optical_aware_belief", False, True, "huber"),
+        }
+        for filename, expected in cases.items():
+            with self.subTest(filename=filename), patch.dict(os.environ, {}, clear=True):
+                set_env_from_filename(filename)
+                config = load_config("configs/pipeline.yml")
+                belief = config["fusion"]["belief"]
+                optimization = config["fusion"]["optimization"]
+                self.assertEqual((belief["alpha"], belief["beta"]), (0.1, 0.85))
+                self.assertEqual(
+                    (belief["local_method"], belief["global"],
+                     optimization["use_kinematic_constraints"], optimization["loss_type"]),
+                    expected,
+                )
 
     def test_enabled_fusion_output_is_required(self):
         config = {

@@ -631,8 +631,9 @@ def run_brute_force():
         print(f"[ENV] Detecting notebook: '{nb_name}'")
         set_env_from_filename(nb_name)
     else:
-        print("[ENV] WARNING: Khong the lay ten notebook. Cac tham so se dung gia tri default trong pipeline.yml.")
-        print("[ENV] De fix: set os.environ['NOTEBOOK_NAME'] = '<ten_notebook>' truoc khi goi run_brute_force().")
+        raise RuntimeError(
+            "Cannot detect the notebook name. Set NOTEBOOK_NAME before calling run_brute_force()."
+        )
 
     # Gọi hàm load_config sau khi env vars đã sẵn sàng
     base_cfg = load_config(WS_DIR / "configs/pipeline.yml")
@@ -648,8 +649,7 @@ def run_brute_force():
     print("Learnable trong config:", base_cfg['learnable']['enabled'])
     print("Learnable extra trong config:", base_cfg['learnable_extra']['enabled'])
     
-    _, runner_name, _ = get_system_metadata()
-    default_sh_name = f"{runner_name}_brute_force_pipeline"
+    default_sh_name = Path(nb_name).stem
     sh_name = get_spreadsheet_name_input(default_name=default_sh_name, timeout=10)
     
     existing, existing_ws_title, has_end_marker = load_existing_spreadsheet_results(sh_name)
