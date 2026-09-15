@@ -82,12 +82,38 @@ def set_env_from_filename(notebook_filename: str):
         print("[ENV] KINEMATIC_CONSTRAINTS=false")
 
     # ── 5. LOSS_TYPE ───────────────────────────────────────────────────────────
-    if re.search(r'\bhuber\b', name):
+    if kw('huber'):
         os.environ["LOSS_TYPE"] = "huber"
         print("[ENV] LOSS_TYPE=huber")
-    elif re.search(r'\bmse\b', name):
+    elif kw('mse'):
         os.environ["LOSS_TYPE"] = "mse"
         print("[ENV] LOSS_TYPE=mse")
+
+def get_notebook_name() -> str | None:
+    """
+    Trả về tên file notebook Colab hiện tại (không kèm đường dẫn thư mục).
+    Ưu tiên theo thứ tự:
+      1. Biến môi trường NOTEBOOK_NAME (có thể set thủ công trong notebook).
+      2. google.colab._message API (chỉ dùng được khi đang chạy trong Colab).
+      3. None nếu không xác định được.
+    """
+    # 1. Env var thủ công — tiện khi chạy ngoài Colab hoặc khi test
+    name = os.environ.get("NOTEBOOK_NAME")
+    if name:
+        return name
+
+    # 2. Colab runtime API
+    try:
+        from google.colab import _message  # type: ignore
+        nb = _message.blocking_request("get_ipynb", request="", timeout_sec=5)
+        name = nb.get("metadata", {}).get("colab", {}).get("name") or nb.get("metadata", {}).get("name")
+        if name:
+            return name
+    except Exception:
+        pass
+
+    return None
+
 
 ALLOWED_STAGES = {
     "visualization",

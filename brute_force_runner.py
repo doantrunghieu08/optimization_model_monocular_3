@@ -28,7 +28,7 @@ except ImportError:
     print("Cảnh báo: Không tìm thấy thư viện google colab/gspread. "
           "Các tính năng Google Sheets sẽ không khả dụng.")
 
-from config_loader import load_config, absolutize_config_paths
+from config_loader import load_config, absolutize_config_paths, set_env_from_filename, get_notebook_name
 from pipeline import run_pipeline
 
 GC_CLIENT = None
@@ -622,7 +622,19 @@ def _process_segment(seg, existing, base_cfg, ws_dir, sh_name, ws_title, all_res
 def run_brute_force():
     WS_DIR = Path(__file__).parent.resolve()
     with open(WS_DIR / "configs/brute_force.yml", "r", encoding="utf-8") as f: brute_cfg = yaml.safe_load(f)
-    # Gọi hàm load_config đã được "nâng cấp" để nó tự động parse biến môi trường
+
+    # ── Nạp biến môi trường từ tên notebook TRƯỚC khi load config ──────────────
+    # Đây là bước bắt buộc: pipeline.yml dùng ${VAR:-default} nên phải set
+    # os.environ TRƯỚC khi custom_yaml.load() được gọi bên trong load_config().
+    nb_name = get_notebook_name()
+    if nb_name:
+        print(f"[ENV] Detecting notebook: '{nb_name}'")
+        set_env_from_filename(nb_name)
+    else:
+        print("[ENV] WARNING: Khong the lay ten notebook. Cac tham so se dung gia tri default trong pipeline.yml.")
+        print("[ENV] De fix: set os.environ['NOTEBOOK_NAME'] = '<ten_notebook>' truoc khi goi run_brute_force().")
+
+    # Gọi hàm load_config sau khi env vars đã sẵn sàng
     base_cfg = load_config(WS_DIR / "configs/pipeline.yml")
     # Kiểm tra xem file config đã nhận đúng giá trị chưa
     print("Alpha trong config:", base_cfg['fusion']['belief']['alpha'])
