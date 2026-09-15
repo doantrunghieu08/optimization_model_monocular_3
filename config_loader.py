@@ -11,25 +11,83 @@ env_pattern = re.compile(r'^\${([a-zA-Z0-9_]+)(?::-([^}]+))?}$')
 
 def set_env_from_filename(notebook_filename: str):
     """
-    Hàm này lấy alpha, beta từ tên file notebook và nạp vào os.environ
-    để tệp pipeline.yml có thể đọc được.
+    Đọc toàn bộ tham số config từ tên file notebook và nạp vào os.environ
+    để pipeline.yml có thể đọc qua cú pháp ${VAR:-default}.
+
+    Các tham số được hỗ trợ (tất cả đều optional — nếu thiếu sẽ dùng default trong yml):
+
+    1. ALPHA / BETA  — hệ số belief:
+       Cú pháp tên file: alpha1E_1_beta85E_2  hoặc  alpha1E-1_beta85E-2
+       → ALPHA=0.1, BETA=0.85
+
+    2. LOCAL_METHOD  — phương pháp tính belief local:
+       Từ khóa trong tên file: _optical_  → optical_aware_belief
+                               _naive_    → naive_distance_belief
+
+    3. GLOBAL  — có hòa belief với xương lân cận không:
+       Từ khóa trong tên file: _global_   → true
+                               _local_    → false   (phân biệt bằng context sau optical/naive)
+
+    4. KINEMATIC_CONSTRAINTS  — ràng buộc động học khi optimize:
+       Từ khóa trong tên file: _kinematic_      → true
+                               _unconstrained_  → false
+
+    5. LOSS_TYPE  — hàm loss cho optimizer:
+       Từ khóa trong tên file: _huber_  → huber
+                               _mse_    → mse
     """
-    pattern = r"_alpha(\d+[Ee]-?\d+)_beta(\d+[Ee]-?\d+)"
-    match = re.search(pattern, notebook_filename)
-    
-    if match:
-        alpha_val = float(match.group(1))
-        beta_val = float(match.group(2))
-        
-        # Nạp vào os.environ (cùng tên biến với file pipeline.yml)
+    name = notebook_filename
+
+    # ── 1. ALPHA & BETA ────────────────────────────────────────────────────────
+    pattern_ab = r"alpha(\d+[Ee][_\-]?\d+)_beta(\d+[Ee][_\-]?\d+)"
+    m = re.search(pattern_ab, name)
+    if m:
+        alpha_val = float(m.group(1).replace("_", "-"))
+        beta_val  = float(m.group(2).replace("_", "-"))
         os.environ["ALPHA"] = str(alpha_val)
-        os.environ["BETA"] = str(beta_val)
-        
-        print(f"[INFO] Đã nạp biến môi trường từ tên file:")
-        print(f"       ALPHA = {alpha_val}")
-        print(f"       BETA  = {beta_val}")
+        os.environ["BETA"]  = str(beta_val)
+        print(f"[ENV] ALPHA={alpha_val}  (raw: '{m.group(1)}')")
+        print(f"[ENV] BETA={beta_val}   (raw: '{m.group(2)}')")
     else:
-        print("[WARNING] Không tìm thấy alpha/beta trong tên file, sẽ dùng giá trị default trong tệp YML.")
+        print("[WARNING] Khong tim thay alpha/beta trong ten file — dung default trong YML.")
+
+    # Helper: match từ khóa được ngăn cách bởi _ trong tên file
+    def kw(keyword):
+        return bool(re.search(r'(?:^|_)' + keyword + r'(?:_|\.|$)', name))
+
+    # ── 2. LOCAL_METHOD ────────────────────────────────────────────────────────
+    if kw('optical'):
+        os.environ["LOCAL_METHOD"] = "optical_aware_belief"
+        print("[ENV] LOCAL_METHOD=optical_aware_belief")
+    elif kw('naive'):
+        os.environ["LOCAL_METHOD"] = "naive_distance_belief"
+        print("[ENV] LOCAL_METHOD=naive_distance_belief")
+
+    # ── 3. GLOBAL belief ───────────────────────────────────────────────────────
+    # Tìm _global_ hoặc _local_ xuất hiện SAU phần method (optical/naive)
+    # Dùng lookbehind để tránh nhầm "local" trong các ngữ cảnh khác
+    if re.search(r'(?:optical|naive)_global(?:_|\.|$)', name):
+        os.environ["GLOBAL"] = "true"
+        print("[ENV] GLOBAL=true")
+    elif re.search(r'(?:optical|naive)_local(?:_|\.|$)', name):
+        os.environ["GLOBAL"] = "false"
+        print("[ENV] GLOBAL=false")
+
+    # ── 4. KINEMATIC_CONSTRAINTS ───────────────────────────────────────────────
+    if kw('kinematic'):
+        os.environ["KINEMATIC_CONSTRAINTS"] = "true"
+        print("[ENV] KINEMATIC_CONSTRAINTS=true")
+    elif kw('unconstrained'):
+        os.environ["KINEMATIC_CONSTRAINTS"] = "false"
+        print("[ENV] KINEMATIC_CONSTRAINTS=false")
+
+    # ── 5. LOSS_TYPE ───────────────────────────────────────────────────────────
+    if re.search(r'\bhuber\b', name):
+        os.environ["LOSS_TYPE"] = "huber"
+        print("[ENV] LOSS_TYPE=huber")
+    elif re.search(r'\bmse\b', name):
+        os.environ["LOSS_TYPE"] = "mse"
+        print("[ENV] LOSS_TYPE=mse")
 
 ALLOWED_STAGES = {
     "visualization",
