@@ -232,6 +232,7 @@ def _parse_history_row(row: list, idx: dict) -> tuple:
     
     key = (row[idx['Segment']], row[idx['Cam Master']], row[idx['Cam Slave']])
     res = {
+        "set": get_val('Set', "Unknown_Set"), "master": key[1], "supplement": key[2],
         "alpha": sf('Alpha'), "beta": sf('Beta'),
         "global_belief": get_val('Global Belief'),
         "local_method": get_val('Local Method'),
@@ -653,7 +654,8 @@ def run_brute_force():
     sh_name = get_spreadsheet_name_input(default_name=default_sh_name, timeout=10)
     
     existing, existing_ws_title, has_end_marker = load_existing_spreadsheet_results(sh_name)
-    if existing and not all(_matches_active_config(result, base_cfg) for result in existing.values()):
+    completed = [result for result in existing.values() if result.get("mpjpe", float('inf')) != float('inf')]
+    if completed and not all(_matches_active_config(result, base_cfg) for result in completed):
         print("[!] Config hiện tại khác worksheet chưa hoàn thành. Tạo worksheet mới để không trộn kết quả cũ.")
         existing = {}
         existing_ws_title = None

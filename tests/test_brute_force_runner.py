@@ -1,11 +1,23 @@
 import copy
 import unittest
 
-from brute_force_runner import _build_report_rows, _matches_active_config
+from brute_force_runner import _build_report_rows, _get_header_indices, _matches_active_config, _parse_history_row
 from config_loader import load_config
 
 
 class BruteForceResumeTest(unittest.TestCase):
+    def test_history_row_keeps_report_identity(self):
+        header = ["Set", "Segment", "Cam Master", "Cam Slave", "Alpha", "Beta", "MPJPE"]
+        row = ["S1/Seq1", "seg_1", "video_5", "video_6", "0.1", "0.85", "N/A"]
+
+        key, result = _parse_history_row(row, _get_header_indices(header))
+
+        self.assertEqual(key, ("seg_1", "video_5", "video_6"))
+        self.assertEqual(result["set"], "S1/Seq1")
+        self.assertEqual(result["master"], "video_5")
+        self.assertEqual(result["supplement"], "video_6")
+        _build_report_rows({"seg_1": [result]}, [])
+
     def test_resume_requires_the_same_full_config(self):
         config = load_config("configs/pipeline.yml")
         result = {
