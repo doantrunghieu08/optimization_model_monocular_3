@@ -221,6 +221,7 @@ def detect_cross_view_errors(
     confidence2d2=None,
     global_belief=True,
     local_method="naive_distance_belief",
+    confidence_delta_cap=CONFIDENCE_DELTA_CAP,
 ):
     flags1 = get_orientation_flag(cam1)
     flags2 = get_orientation_flag(cam2)
@@ -239,7 +240,9 @@ def detect_cross_view_errors(
     H2_all = _blend_detector_confidences(names, H2_old, confidence2d2)
     all_weights = {name: (H1_all[name] + H2_all[name]) / 2.0 for name in names}
     abs_diffs = [abs(H1_all[n] - H2_all[n]) for n in names]
-    delta = min(float(np.percentile(abs_diffs, 75)) if abs_diffs else 0.0, CONFIDENCE_DELTA_CAP)
+    if confidence_delta_cap < 0:
+        raise ValueError("fusion.correction.confidence_delta_cap must be non-negative")
+    delta = min(float(np.percentile(abs_diffs, 75)) if abs_diffs else 0.0, confidence_delta_cap)
     k1_set = {n for n in names if H1_all[n] > H2_all[n] + delta}
     k2_set = {n for n in names if H2_all[n] > H1_all[n] + delta}
     k1_set.difference_update(NON_REPLACEABLE_ANCHORS)

@@ -32,6 +32,7 @@ paths:
 
 fusion:
   enabled: true
+  shared_body_pose_enabled: false # Fusion local SMPL rotations; không cần camera calibration.
   max_fallback_ratio: 0.0 # Fail nếu có bất kỳ frame nào không fusion được.
   belief:
     alpha: ${ALPHA:-0.001} # alpha: hệ số phạt theo khoảng cách 3D của joint, càng lớn thì joint xa camera càng bị giảm tin cậy mạnh hơn.
@@ -50,8 +51,13 @@ fusion:
 
   # Cấu hình tối ưu hóa cho nhóm điểm F trong fusion.
   correction:
+    enabled: false # Disabled until a held-out benchmark beats raw posed output, not only legacy hard replacement.
     orientation_enabled: false # Disabled after the 20-pair ablation showed regression.
     reject_new_mismatches: true
+    confidence_delta_cap: 0.05 # Ngưỡng phân loại camera tin cậy hơn; giữ thấp để correction có coverage.
+    blend_mode: confidence # Trộn theo belief thay vì hard replace joint của camera kém tin cậy.
+    alignment_mode: sequence_root # Tự ước lượng scale/rotation từ cả sequence, không cần camera calibration.
+    selector: occlusion # Chỉ sửa khi một camera thật sự bị che khuất; confidence heuristic chưa đủ tin cậy.
 
   optimization:
     enabled: false # F optimizer is disabled after the 20-pair regression ablation.

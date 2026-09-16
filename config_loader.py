@@ -306,9 +306,18 @@ def validate_config(config):
         raise ValueError("fusion.occlusion.tau must be a non-negative number")
 
     correction_cfg = fusion_cfg["correction"]
-    for key in ("orientation_enabled", "reject_new_mismatches"):
+    for key in ("enabled", "orientation_enabled", "reject_new_mismatches"):
         if not isinstance(correction_cfg.get(key), bool):
             raise ValueError(f"fusion.correction.{key} must be a boolean")
+    confidence_delta_cap = correction_cfg.get("confidence_delta_cap", 0.05)
+    if not isinstance(confidence_delta_cap, (int, float)) or isinstance(confidence_delta_cap, bool) or confidence_delta_cap < 0:
+        raise ValueError("fusion.correction.confidence_delta_cap must be a non-negative number")
+    if correction_cfg.get("blend_mode", "confidence") not in ("hard", "confidence"):
+        raise ValueError("fusion.correction.blend_mode must be hard or confidence")
+    if correction_cfg.get("alignment_mode", "frame") not in ("frame", "sequence_root"):
+        raise ValueError("fusion.correction.alignment_mode must be frame or sequence_root")
+    if correction_cfg.get("selector", "confidence") not in ("confidence", "occlusion"):
+        raise ValueError("fusion.correction.selector must be confidence or occlusion")
 
     ransac_cfg = fusion_cfg["ransac"]
     for key in ("threshold", "max_combos"):

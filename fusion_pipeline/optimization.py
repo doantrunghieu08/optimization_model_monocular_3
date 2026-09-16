@@ -31,8 +31,6 @@ def calculate_stats(cam1, cam2, f_list, anchors, conf1=None, conf2=None, vis1=No
     if not f_list or not anchors:
         return 0.0, 0.0, 0.0, 0.0, 0.0
     diffs = [get_diff_f(f, anchors, cam1, cam2, conf1=conf1, conf2=conf2, vis1=vis1, vis2=vis2, occluded_factor=occluded_factor) for f in f_list]
-    if f_weights:
-        diffs = [d * f_weights[n] for d, n in zip(diffs, f_list)]
     arr_diffs = np.array(diffs, dtype=float)
     q1 = float(np.percentile(arr_diffs, 25))
     q3 = float(np.percentile(arr_diffs, 75))
@@ -44,6 +42,8 @@ def calculate_stats(cam1, cam2, f_list, anchors, conf1=None, conf2=None, vis1=No
         loss = arr_diffs ** 2
     else:
         raise ValueError("loss_type must be huber or mse")
+    if f_weights:
+        loss *= np.array([f_weights[name] for name in f_list], dtype=float)
     return q1, q3, mean_val, median_val, float(np.mean(loss))
 
 

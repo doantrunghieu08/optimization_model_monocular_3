@@ -46,8 +46,11 @@ def _load_tracking_payload(pkl_path: Path) -> Optional[dict]:
         return None
 
     tracking = person.get("tracking_results_for_reproj")
+    tracking_path = pkl_path.with_name("tracking_results.pth")
+    if not isinstance(tracking, Mapping) and tracking_path.exists():
+        tracking = _extract_person_payload(load_joblib_compat(tracking_path))
     if not isinstance(tracking, Mapping):
-        print(f"[Preprocess] 2D skip: tracking_results_for_reproj missing in {pkl_path}")
+        print(f"[Preprocess] 2D skip: tracking data missing for {pkl_path}")
         return None
     return dict(tracking)
 
@@ -82,10 +85,13 @@ def _build_2d_camera_payload(tracking: dict, keypoints2d_map: dict[str, object])
         source_keypoints = keypoints[row_idx]
         resolved_keypoints: dict[str, list[float]] = {}
         for joint_name, spec in keypoints2d_map.items():
-            resolved_keypoints[joint_name] = _resolve_keypoint_spec(spec, source_keypoints)
+            try:
+                resolved_keypoints[joint_name] = _resolve_keypoint_spec(spec, source_keypoints)
+            except IndexError:
+                continue
 
-        if len(resolved_keypoints) != 21:
-            raise ValueError(f"Expected 21 keys, got {len(resolved_keypoints)}")
+        if not resolved_keypoints:
+            raise ValueError("No configured keypoints exist in tracking data")
 
         by_frame[str(int(frame_id))] = resolved_keypoints
 

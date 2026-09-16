@@ -2,6 +2,7 @@ import copy
 from pathlib import Path
 import joblib
 import numpy as np
+from scipy.spatial.transform import Rotation
 from tqdm import tqdm  # Thêm thư viện tqdm tạo progress bar
 
 from pose_pipeline.smpl_runner import create_smpl_model
@@ -13,6 +14,17 @@ from preprocess_pipeline.calib import resolve_selected_offset_from_camera_profil
 
 
 POSE_OUTPUT_SUBDIRS = ("keypoints3d", "metadata")
+
+
+def _midpoint_body_pose(pose1, pose2):
+    pose1 = np.asarray(pose1, dtype=float)
+    pose2 = np.asarray(pose2, dtype=float)
+    if pose1.shape != pose2.shape or pose1.ndim != 2 or pose1.shape[1] != 72:
+        raise ValueError("SMPL pose arrays must have matching shape (frames, 72)")
+    r1 = Rotation.from_rotvec(pose1[:, 3:].reshape(-1, 3))
+    r2 = Rotation.from_rotvec(pose2[:, 3:].reshape(-1, 3))
+    midpoint = (r1 * Rotation.from_rotvec(0.5 * (r1.inv() * r2).as_rotvec())).as_rotvec()
+    return midpoint.reshape(pose1.shape[0], 69)
 
 
 def _extract_person_payload(data):
@@ -136,6 +148,14 @@ def run_pose_export(config: dict) -> None:
 
     cam1_export_data = slice_person_frames(cam1_data, cam1_start, min_frames)
     cam2_export_data = slice_person_frames(cam2_data, cam2_start, min_frames)
+    shared_body_pose = None
+    if pose_cfg.get("shared_body_pose", False):
+        shared = _midpoint_body_pose(cam1_export_data["pose"], cam2_export_data["pose"])
+        shared_cam1_data = copy.deepcopy(cam1_export_data)
+        shared_cam2_data = copy.deepcopy(cam2_export_data)
+        shared_cam1_data["pose"][:, 3:] = shared
+        shared_cam2_data["pose"][:, 3:] = shared
+        shared_body_pose = (shared_cam1_data, shared_cam2_data)
     cam1_vertices = np.empty((min_frames, 6890, 3), dtype=np.float32)
     cam2_vertices = np.empty((min_frames, 6890, 3), dtype=np.float32)
 
@@ -152,6 +172,15 @@ def run_pose_export(config: dict) -> None:
             "camera1": cam1_joints,
             "camera2": cam2_joints,
         }
+        if shared_body_pose is not None:
+            keypoints3d_data["shared_body_pose"] = {
+                "camera1": get_3d_joints_for_frame(
+                    model, shared_body_pose[0], i, j_regressor_path, paths["keypoints3d_map"]
+                ),
+                "camera2": get_3d_joints_for_frame(
+                    model, shared_body_pose[1], i, j_regressor_path, paths["keypoints3d_map"]
+                ),
+            }
         metadata_data = {
             "metadata": {
                 "camera_sync": sync_result,

@@ -1,87 +1,102 @@
-# Báo cáo Cải tiến & Nâng cấp Hệ thống Optimization Model Monocular (v3.0)
+# Các cải tiến của phương pháp đề xuất so với mô hình gốc
 
-## Tổng quan
+## 1. Phạm vi so sánh
 
-Tài liệu này tổng hợp toàn bộ các điểm cải tiến cốt lõi, nâng cấp kiến trúc và tối ưu thuật toán của phiên bản **Optimization Model Monocular v3.0** so với phiên bản gốc trước đó (monolithic notebook / v1-v2). Phiên bản này chuyển đổi hệ thống từ các kịch bản chạy đơn lẻ (standalone scripts) sang một **Framework Modular chuyên nghiệp**, có khả năng mở rộng, kiểm thử tự động và đánh giá đa chiều.
+Mô hình gốc đã có một pipeline hoàn chỉnh gồm đồng bộ dữ liệu, ước lượng pose 3D cho từng camera, căn chỉnh hai hệ tọa độ bằng RANSAC–Umeyama, tối ưu các khớp bằng SLSQP, hậu xử lý Learnable SMPLify và đánh giá bằng MPJPE, PA-MPJPE, PCK. Vì vậy, đóng góp của phiên bản cải tiến không nằm ở việc thay thế backbone WHAM/SMPL hoặc mạng `NetBody25`, mà tập trung vào ba vấn đề của bước fusion: nhận biết che khuất, mô hình hóa độ tin cậy của khớp và kiểm soát sai số khi hiệu chỉnh liên camera.
 
----
+Các thay đổi về runner, cấu hình và chỉ số đánh giá được bổ sung để việc kiểm chứng các cải tiến trên có thể lặp lại và không trộn lẫn kết quả giữa các thí nghiệm.
 
-## 1. Kiến trúc Hệ thống & Tái cấu trúc Modular (Modular Refactoring)
+## 2. Phát hiện tự che khuất bằng ray-casting trên mesh SMPL
 
-- **Phân tách các Phase độc lập**:
-  - Hệ thống được tách thành các module riêng biệt trong từng thư mục: `preprocess_pipeline`, `pose_pipeline`, `fusion_pipeline`, `learnable_pipeline`, `evaluation_pipeline`, và `visualization_pipeline`.
-  - Mỗi phase chịu trách nhiệm cho một công đoạn duy nhất, giao tiếp qua dữ liệu định dạng chuẩn JSON (`keypoints3d` và `metadata`), giúp dễ dàng bảo trì, phát triển độc lập và viết Unit Test.
-- **Hệ thống Quản lý Cấu hình Tập trung (`config_loader.py`)**:
-  - Sử dụng YAML configuration (`configs/pipeline.yml` và `configs/brute_force.yml`) với cơ chế nạp biến môi trường động (`${ALPHA}`, `${BETA}`).
-  - Tự động chuẩn hóa đường dẫn tuyệt đối (absolute path resolution), kiểm tra loại dữ liệu (type validation) và các điều kiện ràng buộc giữa các module trước khi thực thi (`validate_config`).
-- **Lớp Tương thích Đa nền tảng (`compat.py`)**:
-  - Giải quyết triệt để các lỗi tương thích deserialization/pickle từ các thư viện cũ (như `Joblib`, `NumPy` versions khác nhau) khi chạy trên Windows, Linux hoặc Google Colab.
+Ở bản gốc, che khuất được ước lượng bằng cách chiếu các đỉnh phần thân lên ảnh, tạo bao lồi 2D và so sánh độ sâu của khớp với một nhóm đỉnh lân cận. Cách làm này phụ thuộc vào camera intrinsics, file phân vùng SMPL bên ngoài và trường `verts_cam` trong dữ liệu WHAM. Do đầu vào thực tế không luôn chứa `verts_cam`, chức năng này mặc định bị tắt; bao lồi 2D cũng không mô tả chính xác bề mặt và khoảng trống của cơ thể.
 
----
+Phiên bản cải tiến sinh trực tiếp mesh SMPL trong hệ tọa độ của từng camera ở bước Pose và lưu đồng bộ với các frame keypoint. Các mặt thuộc vùng torso được xác định từ trọng số skinning (`lbs_weights`) của chính mô hình SMPL. Với mỗi khớp cần kiểm tra, hệ thống dựng tia từ tâm camera đến khớp và tính giao với các tam giác torso bằng phép thử ray–triangle. Khớp được xem là bị che nếu tồn tại giao điểm nằm trước khớp một khoảng lớn hơn ngưỡng an toàn `tau`.
 
-## 2. Nâng cấp Thuật toán Kết hợp 3D (3D Fusion Pipeline Improvements)
+Cách tiếp cận này mang lại ba lợi ích:
 
-- **Phát hiện Che khuất nâng cao bằng Ray-Casting (Torso Mesh Ray-Casting Occlusion)**:
-  - Tích hợp mô hình lưới thân (torso mesh) trong không gian tọa độ camera để phát hiện hiện tượng khớp bị che khuất bởi chính cơ thể.
-  - Tính toán điểm giao giữa tia chiếu (ray-casting) từ camera tới khớp với lưới torso; nếu khoảng cách nhỏ hơn ngưỡng $\tau$, khớp đó sẽ được gắn nhãn bị occlusion và điều chỉnh giảm điểm tin cậy (belief score).
-- **Véc-tơ hóa và Tối ưu hóa Niềm tin Cục bộ (Belief Score Vectorization)**:
-  - Thuật toán tính toán độ tin cậy kết hợp khoảng cách từ camera ($\alpha$) và mối liên kết skeleton lân cận ($\beta$) được tối ưu hóa bằng các phép toán ma trận NumPy/Torch, tăng tốc độ xử lý hàng loạt khung hình.
-- **RANSAC & SLSQP Stabilization**:
-  - Bổ sung cơ chế fallback linh hoạt và giới hạn tỷ lệ khớp lỗi (`max_fallback_ratio`), đảm bảo quá trình tìm ma trận biến đổi Similarity Transform giữa các camera không bị phân kỳ khi dữ liệu đầu vào nhiễu nặng.
+- kiểm tra che khuất trực tiếp trong không gian 3D thay vì xấp xỉ bằng bao lồi 2D;
+- sử dụng đúng mesh và đúng frame đã tạo ra pose của từng camera;
+- không còn phụ thuộc vào intrinsics hoặc file phân vùng ngoài trong đường chạy fusion hiện tại.
 
----
+Kết quả visibility được đưa vào belief score; khớp bị che khuất nhận độ tin cậy bằng 0 trước khi kết hợp với thông tin từ camera còn lại.
 
-## 3. Kiến trúc Đa nhánh Learnable (Dual-Branch Learnable Execution)
+## 3. Belief score thích nghi theo khoảng cách, che khuất và cấu trúc xương
 
-- **Hỗ trợ 2 nhánh thử nghiệm (Ablation Study Support)**:
-  - **`learnable` (`Fusion + Learnable`)**: Lấy đầu vào từ kết quả 3D Fusion (`fused_output_dir`), cho phép mô hình Neural Network `NetBody25` học mượt hóa và tinh chỉnh dựa trên dữ liệu đã tối ưu không gian 3D đa camera.
-  - **`learnable_extra` (`Pose + Learnable`)**: Lấy đầu vào trực tiếp từ kết quả 3D Pose đơn camera (`pose_output_dir`), giúp so sánh đối chứng trực tiếp hiệu quả của bước Fusion đối với mô hình Learnable.
-- **Cơ chế Bảo vệ & Fallback (Guarded Prediction Fallback)**:
-  - Nếu dự đoán của mạng Learnable gây ra sai số lớn hơn dữ liệu ban đầu, hệ thống sẽ tự động khôi phục (fallback) về pose gốc, ngăn chặn hiện tượng méo mó khung xương hoặc suy giảm chất lượng sau khi đi qua mạng.
+Bản gốc chỉ sử dụng một hàm belief cục bộ cố định dựa trên khoảng cách từ camera đến khớp:
 
----
+\[
+P_j = \frac{C_j}{1 + \alpha L_j^2},
+\]
 
-## 4. Mở rộng Bộ chỉ số Đánh giá (Expanded Evaluation Metrics)
+trong đó \(C_j\) là visibility và \(L_j\) là khoảng cách từ camera đến khớp \(j\). Sau đó, belief của khớp luôn được hòa với belief của các khớp kề trên skeleton bằng trung bình điều hòa.
 
-Ngoài các chỉ số truyền thống, phiên bản này bổ sung thêm các metric đánh giá chất lượng động học (kinematics) và độ ổn định thời gian:
+Phiên bản cải tiến giữ công thức trên như một baseline (`naive_distance_belief`) và bổ sung `optical_aware_belief`. Hàm mới chia không gian quan sát thành ba vùng:
 
-1. **PA-MPJPE (Procrustes Aligned MPJPE)**: Sai số vị trí khớp trung bình (mm) sau khi căn chỉnh hình học Procrustes.
-2. **MPJPE (Mean Per Joint Position Error)**: Sai số vị trí 3D tuyệt đối tính bằng mm.
-3. **PCK (Percentage of Correct Keypoints)**: Tỷ lệ khớp được ước lượng đúng trong bán kính ngưỡng cho phép.
-4. **MBLE (Mean Bone Length Error)**: Chỉ số mới đánh giá độ biến dạng chiều dài xương qua các khung hình, giúp đo lường sự co giãn bất thường của khung xương.
-5. **Accel (Acceleration Error)**: Sai số gia tốc thời gian giữa các khung hình (đơn vị $\text{mm/s}^2$), phản ánh độ giật (jitter) và độ mượt mà của chuyển động 3D.
+- vùng quá gần camera: belief giảm theo hàm Gaussian;
+- vùng quan sát ổn định: belief giảm từ từ theo khoảng cách;
+- vùng quá xa camera: belief tiếp tục giảm theo Gaussian để phản ánh suy giảm chất lượng quan sát.
 
----
+Ngoài belief cục bộ, hệ thống cho phép bật hoặc tắt lan truyền belief theo cấu trúc xương. Khi `global=true`, belief của khớp được kết hợp với trung bình belief của các khớp lân cận:
 
-## 5. Công cụ Vét cạn Đa Camera & Báo cáo HTML (Brute-Force Runner & HTML Benchmark)
+\[
+H_j = \frac{2P_jB_j}{P_j + B_j + \varepsilon},
+\qquad
+B_j = \beta\,\mathrm{mean}_{k\in\mathcal{N}(j)}(P_k).
+\]
 
-- **Chạy tự động 56+ cặp Camera (`brute_force_runner.py`)**:
-  - Hỗ trợ quét toàn bộ các tổ hợp ghép cặp từ hệ thống đa camera (ví dụ: 8 camera).
-  - Cho phép truyền tham số `alpha`, `beta` tùy biến qua lệnh CLI hoặc file cấu hình.
-- **Báo cáo HTML Trực quan (`brute_force_report.html`)**:
-  - Tự động tổng hợp và hiển thị bảng xếp hạng chi tiết (Rank 1 - Top performance được highlight màu nổi bật).
-  - Xuất báo cáo đẹp mắt, đầy đủ biểu đồ so sánh các chỉ số PA-MPJPE, MPJPE, MBLE, Accel cho từng cặp camera.
+Các láng giềng có belief bằng 0 không được dùng để làm suy giảm một khớp đang nhìn thấy. Belief hình học sau đó tiếp tục được hòa với confidence 2D nếu dữ liệu này tồn tại. Nhờ đó, quyết định chọn khớp từ camera nào không chỉ dựa trên khoảng cách mà còn xét che khuất, chất lượng phát hiện 2D và tính nhất quán của chuỗi xương.
 
----
+## 4. Hiệu chỉnh liên camera và tối ưu có cơ chế bảo vệ
 
-## 6. Trực quan hóa & Tự động hóa Pipeline (Visualization & Automation)
+Khung RANSAC–Umeyama và SLSQP của bản gốc được giữ lại, nhưng phiên bản mới bổ sung các ràng buộc an toàn:
 
-- **Video Render 3 Cột (3-Column Comparison Animation)**:
-  - Render so sánh trực quan đồng thời giữa **Video gốc**, **Khung xương 3D Fusion**, và **Khung xương Learnable** theo từng view camera.
-- **Tự động Mã hóa Video & Lưu trữ Kết quả**:
-  - Tích hợp tự động công cụ `ffmpeg` để mã hóa video đầu ra sang chuẩn `H.264/yuv420p` tương thích hoàn hảo trên Web/Colab.
-  - Tự động đóng gói nén zip các báo cáo đánh giá (`evaluation_results.zip`).
+- phép biến đổi similarity chỉ được ước lượng khi có ít nhất ba anchor không thẳng hàng và mọi tọa độ đều hữu hạn;
+- khi confidence correction được bật, một khớp chỉ được trộn với dự đoán từ camera còn lại khi độ dịch chuyển không vượt quá ngưỡng RANSAC; tỷ lệ trộn lấy trực tiếp từ belief tương đối của hai camera;
+- hiệu chỉnh orientation có thể bật/tắt độc lập; các mismatch mới sinh ra sau hiệu chỉnh được khôi phục về pose trước hiệu chỉnh;
+- bộ tối ưu SLSQP có thể chạy với hoặc không có ràng buộc chiều dài xương;
+- hàm mất mát có thể chọn Huber để giảm ảnh hưởng của outlier hoặc MSE để làm đối chứng;
+- nếu một frame lỗi dữ liệu, hệ thống ghi nhận fallback; toàn bộ kết quả chỉ được xuất khi tỷ lệ fallback không vượt quá `max_fallback_ratio`.
 
----
+Các cơ chế này không mặc định khẳng định rằng mọi hiệu chỉnh đều tốt hơn. Confidence correction, orientation correction và optimizer hiện đều tắt mặc định vì benchmark held-out chưa vượt raw pose; từng thành phần chỉ được bật trong ablation cho đến khi chứng minh được cải thiện thay vì chỉ vượt một baseline yếu hơn.
 
-## Bảng So sánh Tóm tắt
+## 5. Thiết kế ablation có thể tái lập
 
-| Tính năng                     | Phiên bản Gốc (v1-v2 / Monolith)         | Phiên bản Mới (v3.0 Refactored)                                  |
-| :------------------------------ | :------------------------------------------ | :------------------------------------------------------------------ |
-| **Cấu trúc Mã nguồn** | Script/Notebook đơn khối, khó bảo trì | Tách module hóa chuẩn mực, dễ mở rộng                        |
-| **Bắt Occlusion**        | Đơn giản hoặc chưa có                 | **Ray-Casting trên Torso Mesh 3D**                           |
-| **Nhánh Learnable**      | Chỉ hỗ trợ 1 luồng cố định           | **Hỗ trợ Đa nhánh (`learnable` & `learnable_extra`)** |
-| **Chỉ số Đánh giá**  | MPJPE, PA-MPJPE                             | **Bổ sung MBLE (Bone Error) & Accel (Jitter)**          |
-| **Quét Đa Camera**      | Chạy thủ công từng cặp                 | **Vét cạn tự động 56+ cặp & Xuất HTML Report**         |
-| **Kiểm tra Cấu hình**  | Không có                                  | **Validation tập trung (`config_loader.py`)**              |
-| **Xuất Video**           | Phụ thuộc script ngoài                   | **Tự động mã hóa ffmpeg & nén Zip kết quả**           |
+Các tham số thí nghiệm được mã hóa trực tiếp trong tên notebook và được nạp vào `pipeline.yml` trước khi chạy. Sáu trường bắt buộc gồm `alpha`, `beta`, phương pháp belief cục bộ, phạm vi belief (`global/local`), ràng buộc động học và loại loss. Tên thiếu hoặc sai thành phần sẽ gây lỗi thay vì âm thầm dùng cấu hình mặc định.
+
+Bốn cấu hình hiện tại kiểm tra lần lượt:
+
+| Cấu hình | Belief cục bộ | Belief toàn cục | Ràng buộc động học | Loss |
+| --- | --- | --- | --- | --- |
+| `naive_global_kinematic_huber` | Khoảng cách thuần | Có | Có | Huber |
+| `optical_global_kinematic_mse` | Optical-aware | Có | Có | MSE |
+| `optical_global_unconstrained_huber` | Optical-aware | Có | Không | Huber |
+| `optical_local_kinematic_huber` | Optical-aware | Không | Có | Huber |
+
+Mỗi notebook khai báo `NOTEBOOK_NAME` riêng và mặc định ghi vào một Google Sheet mang tên tương ứng. Runner lưu toàn bộ cấu hình vào metadata, từ chối nối tiếp một worksheet chưa hoàn tất nếu cấu hình không khớp, và có thể tiếp tục từ kết quả dở dang khi cấu hình giống nhau. Điều này khắc phục nguy cơ nhiều thí nghiệm khác nhau nhưng vô tình dùng chung giá trị mặc định hoặc trộn chung kết quả.
+
+## 6. Đánh giá đầy đủ hơn
+
+Bên cạnh MPJPE và PA-MPJPE, phiên bản mới:
+
+- sửa PCK thành tỷ lệ phần trăm khớp có sai số nhỏ hơn ngưỡng `pck_threshold_mm`, thay vì trả về khoảng cách trung bình;
+- bổ sung MBLE để đo sai số chiều dài từng xương;
+- bổ sung acceleration error theo đơn vị `mm/frame²` để đánh giá độ ổn định theo thời gian;
+- xuất cả giá trị tổng hợp và sai số chi tiết theo frame, khớp hoặc xương;
+- kiểm tra frame, nguồn PKL và metadata cấu hình trước khi so sánh với ground truth;
+- ghi kết quả định kỳ lên Google Sheets, hỗ trợ tiếp tục thí nghiệm và đánh dấu `END` khi hoàn tất.
+
+## 7. Tóm tắt khác biệt chính
+
+| Thành phần | Mô hình gốc | Phiên bản cải tiến |
+| --- | --- | --- |
+| Che khuất | Bao lồi 2D và xấp xỉ độ sâu; mặc định tắt | Ray-casting trên tam giác torso của mesh SMPL theo từng frame |
+| Nguồn mesh | Phụ thuộc `verts_cam` trong WHAM | Mesh camera-space được sinh và đồng bộ tại bước Pose |
+| Belief cục bộ | Một hàm suy giảm theo khoảng cách | Có đối chứng giữa naive và optical-aware |
+| Belief toàn cục | Luôn lan truyền qua skeleton | Có thể bật/tắt để ablation |
+| Hiệu chỉnh | Thay thế trực tiếp theo confidence | Trộn theo belief, giới hạn dịch chuyển, có diagnostic và tắt mặc định sau benchmark regression |
+| Tối ưu | Huber và ràng buộc động học cố định | Bật/tắt optimizer, Huber/MSE, có/không ràng buộc động học |
+| Xử lý lỗi | Fallback từng frame có thể che giấu lỗi | Theo dõi tỷ lệ fallback và chỉ xuất khi đạt ngưỡng |
+| Đánh giá | MPJPE, PA-MPJPE và PCK chưa đúng ngữ nghĩa | PCK đúng ngưỡng, bổ sung MBLE và acceleration error |
+| Thí nghiệm | Tham số có thể rơi về mặc định | Cấu hình bắt buộc từ tên notebook, metadata và Sheet tách biệt |
+
+Các cải tiến trên làm cho fusion phản ánh rõ hơn điều kiện quan sát của từng camera và giúp quá trình đánh giá có thể kiểm chứng. Mức cải thiện định lượng về MPJPE, PA-MPJPE, MBLE hoặc acceleration error phải được kết luận từ kết quả của cùng tập dữ liệu và cùng cặp camera; tài liệu này không suy diễn mức tăng độ chính xác khi chưa có số liệu đối chứng hoàn chỉnh.

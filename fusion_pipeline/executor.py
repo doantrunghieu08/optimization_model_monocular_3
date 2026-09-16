@@ -10,8 +10,10 @@ from fusion_pipeline.detector import detect_cross_view_errors
 from fusion_pipeline.optimization import calculate_stats
 from config_loader import resolve_preprocess_output_dir
 from fusion_pipeline.correction import estimate_bidirectional_similarity
+from fusion_pipeline.correction import estimate_sequence_root_similarity
 from fusion_pipeline.detector import get_orientation_flag
 from fusion_pipeline.config import OUTPUT_SUBDIRS
+from fusion_pipeline.config import NON_REPLACEABLE_ANCHORS
 from fusion_pipeline.detector import load_torso_faces
 from fusion_pipeline.detector import as_xyz
 from fusion_pipeline.detector import make_raw_judgement_fallback
@@ -138,6 +140,22 @@ def _orientation_mismatches(cam1: dict, cam2: dict, names: list[str]) -> set[str
     }
 
 
+def _change_diagnostics(before: dict, after: dict, names: list[str]) -> dict:
+    changed = []
+    displacements = []
+    for name in names:
+        displacement_mm = float(np.linalg.norm(as_xyz(after[name]) - as_xyz(before[name])) * 1000.0)
+        if displacement_mm > 1e-6:
+            changed.append(name)
+            displacements.append(displacement_mm)
+    return {
+        "changed_joints": changed,
+        "changed_joint_count": len(changed),
+        "mean_displacement_mm": float(np.mean(displacements)) if displacements else 0.0,
+        "max_displacement_mm": max(displacements, default=0.0),
+    }
+
+
 def run_phase3_pipeline(
     data_in,
     map_path,
@@ -162,9 +180,21 @@ def run_phase3_pipeline(
     local_method="naive_distance_belief",
     use_kinematic_constraints=True,
     loss_type="huber",
+    confidence_delta_cap=0.05,
+    correction_blend_mode="confidence",
+    confidence_correction_enabled=True,
+    precomputed_transforms=None,
+    root_relative_correction=False,
+    correction_selector="confidence",
+    shared_body_pose_enabled=False,
 ):
-    cam1 = {k: as_xyz(v) for k, v in data_in["camera1"].items()}
-    cam2 = {k: as_xyz(v) for k, v in data_in["camera2"].items()}
+    raw_cam1 = {k: as_xyz(v) for k, v in data_in["camera1"].items()}
+    raw_cam2 = {k: as_xyz(v) for k, v in data_in["camera2"].items()}
+    source = data_in.get("shared_body_pose") if shared_body_pose_enabled else data_in
+    if not isinstance(source, dict) or "camera1" not in source or "camera2" not in source:
+        raise ValueError("Shared SMPL body pose was not exported; set pose_export.shared_body_pose=true")
+    cam1 = {k: as_xyz(v) for k, v in source["camera1"].items()}
+    cam2 = {k: as_xyz(v) for k, v in source["camera2"].items()}
 
     map_data = load_keypoints3d_map(map_path)
     expected_names = [kp["name"] for kp in map_data["keypoints"]]
@@ -200,6 +230,7 @@ def run_phase3_pipeline(
         beta=belief_beta,
         global_belief=global_belief,
         local_method=local_method,
+        confidence_delta_cap=confidence_delta_cap,
     )
     m_set = detected["M"]
     k1_set = detected["K1"]
@@ -208,18 +239,37 @@ def run_phase3_pipeline(
     all_weights = detected["weights"]
     H1_all = detected["H1"]
     H2_all = detected["H2"]
+    if correction_selector == "occlusion":
+        k1_set = {name for name in names if vis1[name] and not vis2[name]} - NON_REPLACEABLE_ANCHORS
+        k2_set = {name for name in names if vis2[name] and not vis1[name]} - NON_REPLACEABLE_ANCHORS
+        l_list = [name for name in names if name not in (m_set | k1_set | k2_set)]
+    elif correction_selector != "confidence":
+        raise ValueError("fusion.correction.selector must be confidence or occlusion")
 
-    t12, t21, a_list = estimate_bidirectional_similarity(
-        cam1,
-        cam2,
-        l_list,
-        threshold=ransac_threshold,
-        max_combos=ransac_max_combos,
-    )
+    needs_transform = confidence_correction_enabled or orientation_correction_enabled or optimization_enabled
+    if precomputed_transforms is not None:
+        t12, t21 = precomputed_transforms
+        a_list = l_list
+    elif needs_transform:
+        t12, t21, a_list = estimate_bidirectional_similarity(
+            cam1,
+            cam2,
+            l_list,
+            threshold=ransac_threshold,
+            max_combos=ransac_max_combos,
+        )
+    else:
+        identity = (1.0, np.eye(3), np.zeros(3))
+        t12, t21, a_list = identity, identity, l_list
 
-    cam1_corr, cam2_corr = apply_confidence_corrections(
-        cam1, cam2, k1_set, k2_set, t12, t21, max_displacement=ransac_threshold,
-    )
+    if confidence_correction_enabled:
+        cam1_corr, cam2_corr = apply_confidence_corrections(
+            cam1, cam2, k1_set, k2_set, t12, t21, max_displacement=ransac_threshold,
+            h1=H1_all, h2=H2_all, blend_mode=correction_blend_mode,
+            root_relative=root_relative_correction,
+        )
+    else:
+        cam1_corr, cam2_corr = dict(cam1), dict(cam2)
     if orientation_correction_enabled:
         cam1_corr, cam2_corr = apply_rotation_mismatch_corrections(
             cam1_corr,
@@ -233,6 +283,7 @@ def run_phase3_pipeline(
             H2_all,
             t12,
             t21,
+            root_relative=root_relative_correction,
         )
 
     a_new = sorted(set(a_list) | k1_set | k2_set)
@@ -266,6 +317,10 @@ def run_phase3_pipeline(
     if rejected_mismatches:
         m_after = _orientation_mismatches(optimized_data["camera1"], optimized_data["camera2"], names)
     after_stats = calculate_stats(optimized_data["camera1"], optimized_data["camera2"], f_list, a_new, conf1=H1_all, conf2=H2_all, vis1=vis1, vis2=vis2, f_weights=all_weights, loss_type=loss_type)
+    changes = {
+        "camera1": _change_diagnostics(raw_cam1, optimized_data["camera1"], names),
+        "camera2": _change_diagnostics(raw_cam2, optimized_data["camera2"], names),
+    }
 
     return {
         "M": sorted(m_set),
@@ -277,7 +332,12 @@ def run_phase3_pipeline(
         "F": f_list,
         "F_optimized": f_list if optimization_enabled else [],
         "orientation_correction_enabled": bool(orientation_correction_enabled),
+        "confidence_correction_enabled": bool(confidence_correction_enabled),
+        "alignment_mode": "sequence_root" if root_relative_correction else "frame",
+        "correction_selector": correction_selector,
+        "shared_body_pose_enabled": bool(shared_body_pose_enabled),
         "rejected_new_mismatches": rejected_mismatches,
+        "changes": changes,
         "before_stats": before_stats,
         "after_stats": after_stats,
         "optimized": {"camera1": {k: list(v) for k, v in optimized_data["camera1"].items()}, "camera2": {k: list(v) for k, v in optimized_data["camera2"].items()}},
@@ -331,17 +391,27 @@ def run_fusion(config: dict) -> None:
     ransac_cfg = fusion_cfg["ransac"]
     opt_cfg = fusion_cfg["optimization"]
     correction_cfg = fusion_cfg.get("correction", {})
+    alignment_mode = correction_cfg.get("alignment_mode", "frame")
+    loaded_frames = [(path, _load_pose_frame(path, metadata_dir=metadata_dir)) for path in file_paths]
+    sequence_transforms = None
+    sequence_alignment = None
+    if alignment_mode == "sequence_root" and (
+        correction_cfg.get("enabled", False) or correction_cfg.get("orientation_enabled", False)
+    ):
+        alignment_joints = ("neck", "left_shoulder", "right_shoulder", "left_hip", "right_hip")
+        t12, t21, sequence_alignment = estimate_sequence_root_similarity(
+            [data for _, data in loaded_frames], alignment_joints, ransac_cfg["threshold"]
+        )
+        sequence_transforms = (t12, t21)
 
     max_fallback_ratio = fusion_cfg.get("max_fallback_ratio", 0.0)
     fallback_count = 0
     prev_result = None
     pending_outputs = []
     # --- THÊM TQDM Ở ĐÂY ---
-    for path in tqdm(file_paths, desc="[Fusion] Processing", unit="frame", dynamic_ncols=True):
+    for path, data in tqdm(loaded_frames, desc="[Fusion] Processing", unit="frame", dynamic_ncols=True):
         frame_idx = _frame_index(path)
         out_name = f"fused_data_{frame_idx}.json"
-        data = _load_pose_frame(path, metadata_dir=metadata_dir)
-
         if mesh_loaded:
             mesh_frame = frame_idx - 1
             if 0 <= mesh_frame < mesh_frame_count:
@@ -380,6 +450,13 @@ def run_fusion(config: dict) -> None:
                 use_kinematic_constraints=opt_cfg["use_kinematic_constraints"],
                 loss_type=opt_cfg["loss_type"],
                 reject_new_mismatches=correction_cfg.get("reject_new_mismatches", True),
+                confidence_delta_cap=correction_cfg.get("confidence_delta_cap", 0.05),
+                correction_blend_mode=correction_cfg.get("blend_mode", "confidence"),
+                confidence_correction_enabled=correction_cfg.get("enabled", False),
+                precomputed_transforms=sequence_transforms,
+                root_relative_correction=alignment_mode == "sequence_root",
+                correction_selector=correction_cfg.get("selector", "confidence"),
+                shared_body_pose_enabled=fusion_cfg.get("shared_body_pose_enabled", False),
             )
             occluded_cam1 = sorted(name for name, visible in result.get("vis1", {}).items() if not visible)
             occluded_cam2 = sorted(name for name, visible in result.get("vis2", {}).items() if not visible)
@@ -407,6 +484,7 @@ def run_fusion(config: dict) -> None:
         fused_metadata["metadata"] = {
             **data.get("metadata", {}),
             "fusion_config": fusion_cfg,
+            "sequence_alignment": sequence_alignment,
         }
         pending_outputs.append((out_name, fused_keypoints, fused_metadata))
 

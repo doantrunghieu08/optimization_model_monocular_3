@@ -193,7 +193,8 @@ def _get_header_indices(header: list) -> dict:
     keys = [
         'Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 'Alpha', 'Beta',
         'Global Belief', 'Local Method', 'Kinematic Constraints', 'Loss Type',
-        'Optimization Enabled', 'Orientation Correction', 'Learnable', 'Learnable Extra',
+        'Optimization Enabled', 'Confidence Correction', 'Orientation Correction',
+        'Correction Blend', 'Alignment Mode', 'Correction Selector', 'Confidence Delta Cap', 'Learnable', 'Learnable Extra',
         'MPJPE', 'PA-MPJPE', 'MBLE',
         'Fusion MBLE', 'LE MBLE', 'Old MBLE',
         'Accel Error (mm/frame^2)', 'GT Accel Error (mm/frame^2)',
@@ -239,7 +240,12 @@ def _parse_history_row(row: list, idx: dict) -> tuple:
         "kinematic_constraints": get_val('Kinematic Constraints'),
         "loss_type": get_val('Loss Type'),
         "optimization_enabled": get_val('Optimization Enabled'),
+        "confidence_correction": get_val('Confidence Correction'),
         "orientation_correction": get_val('Orientation Correction'),
+        "correction_blend": get_val('Correction Blend'),
+        "alignment_mode": get_val('Alignment Mode'),
+        "correction_selector": get_val('Correction Selector'),
+        "confidence_delta_cap": sf('Confidence Delta Cap'),
         "learnable_enabled": get_val('Learnable'),
         "learnable_extra_enabled": get_val('Learnable Extra'),
         "mpjpe": sf('MPJPE'), "pa_mpjpe": sf('PA-MPJPE'),
@@ -272,7 +278,8 @@ def load_existing_spreadsheet_results(sheet_name: str) -> tuple[dict, str | None
     required = (
         'Segment', 'Alpha', 'Beta', 'Global Belief', 'Local Method',
         'Kinematic Constraints', 'Loss Type', 'MBLE', 'Accel Error (mm/frame^2)',
-        'Optimization Enabled', 'Orientation Correction', 'Learnable', 'Learnable Extra',
+        'Optimization Enabled', 'Confidence Correction', 'Orientation Correction',
+        'Correction Blend', 'Alignment Mode', 'Correction Selector', 'Confidence Delta Cap', 'Learnable', 'Learnable Extra',
         'Fusion MBLE', 'LE MBLE', 'Old MBLE', 'GT Accel Error (mm/frame^2)',
         'Fusion Accel Error (mm/frame^2)', 'LE Accel Error (mm/frame^2)',
         'Old Accel Error (mm/frame^2)',
@@ -287,7 +294,8 @@ def load_existing_spreadsheet_results(sheet_name: str) -> tuple[dict, str | None
 def _build_report_rows(all_results: dict, joint_keys: list) -> list:
     header = ['Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 'Alpha', 'Beta',
               'Global Belief', 'Local Method', 'Kinematic Constraints', 'Loss Type',
-              'Optimization Enabled', 'Orientation Correction', 'Learnable', 'Learnable Extra',
+              'Optimization Enabled', 'Confidence Correction', 'Orientation Correction',
+              'Correction Blend', 'Alignment Mode', 'Correction Selector', 'Confidence Delta Cap', 'Learnable', 'Learnable Extra',
               'MPJPE', 'PA-MPJPE', 'MBLE', 'Accel Error (mm/frame^2)',
               'Fusion MBLE', 'LE MBLE', 'Old MBLE',
               'GT Accel Error (mm/frame^2)', 'Fusion Accel Error (mm/frame^2)',
@@ -310,7 +318,12 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
                 res.get('kinematic_constraints', 'N/A'),
                 res.get('loss_type', 'N/A'),
                 res.get('optimization_enabled', 'N/A'),
+                res.get('confidence_correction', 'N/A'),
                 res.get('orientation_correction', 'N/A'),
+                res.get('correction_blend', 'N/A'),
+                res.get('alignment_mode', 'N/A'),
+                res.get('correction_selector', 'N/A'),
+                res.get('confidence_delta_cap', 'N/A'),
                 res.get('learnable_enabled', 'N/A'),
                 res.get('learnable_extra_enabled', 'N/A'),
                 fmt(res.get('mpjpe', float('inf'))), fmt(res.get('pa_mpjpe', float('inf'))),
@@ -408,6 +421,7 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
     eval_dir = Path(config["paths"]["evaluation_output_dir"])
     t_pref = "fusion-learnable" if config.get("learnable", {}).get("enabled", True) else "fused"
     belief_cfg = config["fusion"]["belief"]
+    correction_cfg = config["fusion"]["correction"]
     
     mpjpe, m_jts = parse_detailed_csv(eval_dir / "MPJPE_cam1.csv", t_pref)
     pa_mpjpe, pa_jts = parse_detailed_csv(eval_dir / "PA-MPJPE_cam1.csv", t_pref)
@@ -452,7 +466,12 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
         "kinematic_constraints": config["fusion"]["optimization"]["use_kinematic_constraints"],
         "loss_type": config["fusion"]["optimization"]["loss_type"],
         "optimization_enabled": config["fusion"]["optimization"]["enabled"],
-        "orientation_correction": config["fusion"]["correction"]["orientation_enabled"],
+        "confidence_correction": correction_cfg["enabled"],
+        "orientation_correction": correction_cfg["orientation_enabled"],
+        "correction_blend": correction_cfg["blend_mode"],
+        "alignment_mode": correction_cfg["alignment_mode"],
+        "correction_selector": correction_cfg["selector"],
+        "confidence_delta_cap": correction_cfg["confidence_delta_cap"],
         "learnable_enabled": config["learnable"]["enabled"],
         "learnable_extra_enabled": config["learnable_extra"]["enabled"],
         "pa_mpjpe": pa_mpjpe, "mble": mble, "accel": accel,
@@ -524,6 +543,7 @@ def _matches_active_config(result: dict, config: dict) -> bool:
 
     belief = config["fusion"]["belief"]
     optimization = config["fusion"]["optimization"]
+    correction = config["fusion"]["correction"]
     return (
         result.get("alpha") == belief["alpha"]
         and result.get("beta") == belief["beta"]
@@ -532,7 +552,12 @@ def _matches_active_config(result: dict, config: dict) -> bool:
         and as_bool(result.get("kinematic_constraints")) == optimization["use_kinematic_constraints"]
         and result.get("loss_type") == optimization["loss_type"]
         and as_bool(result.get("optimization_enabled")) == optimization["enabled"]
-        and as_bool(result.get("orientation_correction")) == config["fusion"]["correction"]["orientation_enabled"]
+        and as_bool(result.get("confidence_correction")) == correction["enabled"]
+        and as_bool(result.get("orientation_correction")) == correction["orientation_enabled"]
+        and result.get("correction_blend") == correction["blend_mode"]
+        and result.get("alignment_mode") == correction["alignment_mode"]
+        and result.get("correction_selector") == correction["selector"]
+        and result.get("confidence_delta_cap") == correction["confidence_delta_cap"]
         and as_bool(result.get("learnable_enabled")) == config["learnable"]["enabled"]
         and as_bool(result.get("learnable_extra_enabled")) == config["learnable_extra"]["enabled"]
     )

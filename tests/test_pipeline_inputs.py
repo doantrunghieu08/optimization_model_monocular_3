@@ -52,6 +52,17 @@ class EvaluationInputsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "optimization.enabled must be a boolean"):
             validate_config(config)
 
+    def test_correction_controls_are_validated(self):
+        config = copy.deepcopy(load_config("configs/pipeline.yml"))
+        config["fusion"]["correction"]["confidence_delta_cap"] = -1
+        with self.assertRaisesRegex(ValueError, "confidence_delta_cap"):
+            validate_config(config)
+
+        config = copy.deepcopy(load_config("configs/pipeline.yml"))
+        config["fusion"]["correction"]["blend_mode"] = "soft"
+        with self.assertRaisesRegex(ValueError, "blend_mode"):
+            validate_config(config)
+
     def test_ablation_environment_is_loaded(self):
         with patch.dict(os.environ, {
             "GLOBAL": "False",

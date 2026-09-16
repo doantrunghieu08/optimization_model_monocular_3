@@ -82,28 +82,115 @@ def estimate_bidirectional_similarity(cam1, cam2, candidate_names, threshold, ma
     return t12, t21, anchor_names
 
 
-def apply_confidence_corrections(cam1, cam2, k1_set, k2_set, t12, t21, max_displacement):
+def _pose_root(pose):
+    return (as_xyz(pose["left_hip"]) + as_xyz(pose["right_hip"])) / 2.0
+
+
+def _estimate_origin_similarity(src, dst):
+    src = np.asarray(src, dtype=float)
+    dst = np.asarray(dst, dtype=float)
+    if src.shape != dst.shape or src.ndim != 2 or src.shape[0] < 3 or src.shape[1] != 3:
+        raise ValueError("Origin similarity estimation requires matching (N, 3) arrays with N >= 3")
+    h = dst.T @ src
+    u, singular, vt = np.linalg.svd(h)
+    sign = np.eye(3)
+    if np.linalg.det(u) * np.linalg.det(vt.T) < 0:
+        sign[-1, -1] = -1
+    rotation = u @ sign @ vt
+    denominator = float(np.sum(src ** 2))
+    if denominator < 1e-12:
+        raise ValueError("Origin similarity estimation requires non-zero points")
+    scale = float(np.trace(np.diag(singular) @ sign) / denominator)
+    return scale, rotation, np.zeros(3)
+
+
+def estimate_sequence_root_similarity(frames, candidate_names, threshold):
+    src, dst = [], []
+    for frame in frames:
+        cam1, cam2 = frame["camera1"], frame["camera2"]
+        root1, root2 = _pose_root(cam1), _pose_root(cam2)
+        for name in candidate_names:
+            if name in cam1 and name in cam2:
+                src.append(as_xyz(cam1[name]) - root1)
+                dst.append(as_xyz(cam2[name]) - root2)
+    if len(src) < 3:
+        raise ValueError("Sequence alignment requires at least 3 joint observations")
+
+    src = np.asarray(src)
+    dst = np.asarray(dst)
+    mask = np.ones(len(src), dtype=bool)
+    for _ in range(5):
+        transform = _estimate_origin_similarity(src[mask], dst[mask])
+        residual = np.linalg.norm(
+            np.asarray([apply_similarity(point, transform) for point in src]) - dst,
+            axis=1,
+        )
+        median = float(np.median(residual))
+        mad = float(np.median(np.abs(residual - median)))
+        cutoff = max(float(threshold), median + 2.5 * 1.4826 * mad)
+        new_mask = residual <= cutoff
+        if new_mask.sum() < 3 or np.array_equal(new_mask, mask):
+            break
+        mask = new_mask
+
+    t12 = _estimate_origin_similarity(src[mask], dst[mask])
+    t21 = _estimate_origin_similarity(dst[mask], src[mask])
+    return t12, t21, {"observations": len(src), "inliers": int(mask.sum())}
+
+
+def apply_root_relative(point, source_pose, target_pose, transform):
+    relative = as_xyz(point) - _pose_root(source_pose)
+    return _pose_root(target_pose) + apply_similarity(relative, transform)
+
+
+def _correction_alpha(name, source_confidence, target_confidence, blend_mode):
+    if blend_mode == "hard":
+        return 1.0
+    if blend_mode != "confidence":
+        raise ValueError("fusion.correction.blend_mode must be hard or confidence")
+    source = max(0.0, float(source_confidence.get(name, 0.0)))
+    target = max(0.0, float(target_confidence.get(name, 0.0)))
+    return source / max(source + target, 1e-12)
+
+
+def apply_confidence_corrections(
+    cam1,
+    cam2,
+    k1_set,
+    k2_set,
+    t12,
+    t21,
+    max_displacement,
+    h1=None,
+    h2=None,
+    blend_mode="hard",
+    root_relative=False,
+):
     cam1_corr = dict(cam1)
     cam2_corr = dict(cam2)
+    h1 = h1 or {}
+    h2 = h2 or {}
     for name in k1_set:
-        candidate = apply_similarity(cam1[name], t12)
+        candidate = apply_root_relative(cam1[name], cam1, cam2, t12) if root_relative else apply_similarity(cam1[name], t12)
         if np.linalg.norm(candidate - as_xyz(cam2[name])) <= max_displacement:
-            cam2_corr[name] = candidate
+            alpha = _correction_alpha(name, h1, h2, blend_mode)
+            cam2_corr[name] = alpha * candidate + (1.0 - alpha) * as_xyz(cam2[name])
     for name in k2_set:
-        candidate = apply_similarity(cam2[name], t21)
+        candidate = apply_root_relative(cam2[name], cam2, cam1, t21) if root_relative else apply_similarity(cam2[name], t21)
         if np.linalg.norm(candidate - as_xyz(cam1[name])) <= max_displacement:
-            cam1_corr[name] = candidate
+            alpha = _correction_alpha(name, h2, h1, blend_mode)
+            cam1_corr[name] = alpha * candidate + (1.0 - alpha) * as_xyz(cam1[name])
     return cam1_corr, cam2_corr
 
 
-def apply_rotation_mismatch_corrections(cam1_corr, cam2_corr, cam1, cam2, m_set, k1_set, k2_set, h1, h2, t12, t21):
+def apply_rotation_mismatch_corrections(cam1_corr, cam2_corr, cam1, cam2, m_set, k1_set, k2_set, h1, h2, t12, t21, root_relative=False):
     cam1_fixed = dict(cam1_corr)
     cam2_fixed = dict(cam2_corr)
     for name in m_set:
         if name in k1_set or name in k2_set:
             continue
         if h1.get(name, 0.5) > h2.get(name, 0.5):
-            cam2_fixed[name] = apply_similarity(cam1[name], t12)
+            cam2_fixed[name] = apply_root_relative(cam1[name], cam1, cam2, t12) if root_relative else apply_similarity(cam1[name], t12)
         else:
-            cam1_fixed[name] = apply_similarity(cam2[name], t21)
+            cam1_fixed[name] = apply_root_relative(cam2[name], cam2, cam1, t21) if root_relative else apply_similarity(cam2[name], t21)
     return cam1_fixed, cam2_fixed

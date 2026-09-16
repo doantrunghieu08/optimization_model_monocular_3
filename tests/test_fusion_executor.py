@@ -8,6 +8,7 @@ from unittest.mock import patch
 import numpy as np
 
 from fusion_pipeline.detector import compute_harmonic_precision
+from fusion_pipeline.detector import detect_cross_view_errors
 from fusion_pipeline.executor import (
     _frame_confidence_from_profile,
     _load_pose_frame,
@@ -15,6 +16,7 @@ from fusion_pipeline.executor import (
     run_fusion,
 )
 from fusion_pipeline.optimization import calculate_stats, optimize_f_points
+from pose_pipeline.executor import _midpoint_body_pose
 
 
 def _config(root: Path, max_fallback_ratio=0.0):
@@ -37,7 +39,7 @@ def _config(root: Path, max_fallback_ratio=0.0):
             },
             "occlusion": {"enabled": False, "tau": 0.01},
             "ransac": {"threshold": 0.05, "max_combos": 10},
-            "correction": {"orientation_enabled": False, "reject_new_mismatches": True},
+            "correction": {"enabled": False, "orientation_enabled": False, "reject_new_mismatches": True},
             "optimization": {
                 "enabled": False,
                 "use_kinematic_constraints": True,
@@ -68,6 +70,15 @@ def _write_pose_frame(root: Path, frame: int):
 
 
 class FusionExecutorTest(unittest.TestCase):
+    def test_body_pose_midpoint_handles_axis_angle_wrap(self):
+        pose1 = np.zeros((1, 72))
+        pose2 = np.zeros((1, 72))
+        pose1[0, 3:6] = [0.0, 0.0, np.deg2rad(170.0)]
+        pose2[0, 3:6] = [0.0, 0.0, np.deg2rad(-170.0)]
+
+        midpoint = _midpoint_body_pose(pose1, pose2)
+
+        self.assertAlmostEqual(abs(midpoint[0, 2]), np.pi, places=6)
     @patch("fusion_pipeline.executor._orientation_mismatches", side_effect=[{"right_elbow"}, set()])
     @patch("fusion_pipeline.executor.optimize_f_points")
     @patch("fusion_pipeline.executor.apply_rotation_mismatch_corrections")
@@ -100,9 +111,11 @@ class FusionExecutorTest(unittest.TestCase):
             regularization=True, regularization_lambda=1.0, temporal_lambda=2.0,
             max_iter=10, ransac_threshold=0.05, ransac_max_combos=10,
             belief_alpha=0.001, belief_beta=0.8,
+            confidence_correction_enabled=False,
             orientation_correction_enabled=False, optimization_enabled=False,
         )
 
+        confidence_correction.assert_not_called()
         orientation_correction.assert_not_called()
         optimizer.assert_not_called()
         self.assertEqual(result["F_optimized"], [])
@@ -199,6 +212,27 @@ class FusionExecutorTest(unittest.TestCase):
 
         self.assertAlmostEqual(global_["left_shoulder"], local["left_shoulder"], delta=1e-6)
         self.assertEqual(global_["left_elbow"], 0.0)
+
+    def test_confidence_delta_cap_controls_correction_coverage(self):
+        names = ["left_elbow", "left_wrist", "right_elbow"]
+        cam1 = {name: [0.0, 0.0, 2.0] for name in names}
+        cam2 = {name: [0.0, 0.0, 2.0] for name in names}
+        visible = dict.fromkeys(names, True)
+        confidence1 = {name: [0.0, 0.0, value] for name, value in zip(names, (0.9, 0.8, 0.7))}
+        confidence2 = {name: [0.0, 0.0, 0.6] for name in names}
+
+        low = detect_cross_view_errors(
+            cam1, cam2, names, visible, visible, alpha=0.0, beta=1.0,
+            confidence2d1=confidence1, confidence2d2=confidence2,
+            global_belief=False, confidence_delta_cap=0.01,
+        )
+        high = detect_cross_view_errors(
+            cam1, cam2, names, visible, visible, alpha=0.0, beta=1.0,
+            confidence2d1=confidence1, confidence2d2=confidence2,
+            global_belief=False, confidence_delta_cap=1.0,
+        )
+
+        self.assertGreater(len(low["K1"]), len(high["K1"]))
 
     @patch("fusion_pipeline.optimization.minimize")
     def test_kinematic_ablation_controls_slsqp_constraints(self, minimize):
