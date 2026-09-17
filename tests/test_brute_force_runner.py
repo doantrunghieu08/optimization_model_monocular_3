@@ -40,7 +40,7 @@ class BruteForceResumeTest(unittest.TestCase):
 
         self.assertTrue(_matches_active_config(result, config))
         changed = copy.deepcopy(config)
-        changed["fusion"]["belief"]["local_method"] = "optical_aware_belief"
+        changed["fusion"]["belief"]["local_method"] = "naive_distance_belief"
         self.assertFalse(_matches_active_config(result, changed))
 
         changed = copy.deepcopy(config)

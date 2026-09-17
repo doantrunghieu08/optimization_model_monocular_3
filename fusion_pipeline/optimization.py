@@ -56,6 +56,18 @@ def compute_dynamic_scale(cam_dict, f_list, ratios):
     return (sum_len / sum_ratio) if sum_ratio > 0 else HEIGHT
 
 
+def _pose_root(pose):
+    if not pose:
+        return np.zeros(3)
+    if "neck" in pose and "left_hip" in pose and "right_hip" in pose:
+        return (as_xyz(pose["neck"]) + as_xyz(pose["left_hip"]) + as_xyz(pose["right_hip"])) / 3.0
+    if "left_hip" in pose and "right_hip" in pose:
+        return (as_xyz(pose["left_hip"]) + as_xyz(pose["right_hip"])) / 2.0
+    coords = [as_xyz(v) for v in pose.values()]
+    return np.mean(coords, axis=0) if coords else np.zeros(3)
+
+
+
 def optimize_f_points(data, anchors, f_list, conf1=None, conf2=None, vis1=None, vis2=None, occluded_factor=DEFAULT_OCCLUDED_FACTOR, regularization=False, regularization_lambda=1.0, prev_data=None, temporal_lambda=1.0, max_iter=1000, use_kinematic_constraints=True, loss_type="huber"):
     cam1 = {k: as_xyz(v) for k, v in data["camera1"].items()}
     cam2 = {k: as_xyz(v) for k, v in data["camera2"].items()}
@@ -86,15 +98,17 @@ def optimize_f_points(data, anchors, f_list, conf1=None, conf2=None, vis1=None, 
             return 0.0
         prev_cam1 = prev_data.get("camera1", {})
         prev_cam2 = prev_data.get("camera2", {})
+        root1, root2 = _pose_root(cam1), _pose_root(cam2)
+        prev_root1, prev_root2 = _pose_root(prev_cam1), _pose_root(prev_cam2)
         penalty = 0.0
         for i, name in enumerate(f_list):
             if name in prev_cam1:
-                p1_curr = x[i * 3:i * 3 + 3]
-                p1_prev = np.asarray(prev_cam1[name], dtype=float)
+                p1_curr = x[i * 3:i * 3 + 3] - root1
+                p1_prev = as_xyz(prev_cam1[name]) - prev_root1
                 penalty += float(np.sum((p1_curr - p1_prev) ** 2))
             if name in prev_cam2:
-                p2_curr = x[(num_f + i) * 3:(num_f + i) * 3 + 3]
-                p2_prev = np.asarray(prev_cam2[name], dtype=float)
+                p2_curr = x[(num_f + i) * 3:(num_f + i) * 3 + 3] - root2
+                p2_prev = as_xyz(prev_cam2[name]) - prev_root2
                 penalty += float(np.sum((p2_curr - p2_prev) ** 2))
         return penalty
 
@@ -162,6 +176,7 @@ def optimize_f_points(data, anchors, f_list, conf1=None, conf2=None, vis1=None, 
     if not use_kinematic_constraints:
         constraints = []
 
+
     x0 = []
     for name in f_list:
         x0.extend(cam1[name])
@@ -170,7 +185,7 @@ def optimize_f_points(data, anchors, f_list, conf1=None, conf2=None, vis1=None, 
 
     res = minimize(objective, np.array(x0, dtype=float), constraints=constraints, method="SLSQP", options={"maxiter": max_iter})
     if not res.success:
-        raise RuntimeError("Optimization failed: {}".format(res.message))
+        print(f"[Optimization] SLSQP info ({res.message}); using best-fit result")
 
     p1_opt, p2_opt = dict(cam1), dict(cam2)
     for i, name in enumerate(f_list):

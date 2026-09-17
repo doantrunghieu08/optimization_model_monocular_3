@@ -83,7 +83,15 @@ def estimate_bidirectional_similarity(cam1, cam2, candidate_names, threshold, ma
 
 
 def _pose_root(pose):
-    return (as_xyz(pose["left_hip"]) + as_xyz(pose["right_hip"])) / 2.0
+    if not pose:
+        return np.zeros(3)
+    if "neck" in pose and "left_hip" in pose and "right_hip" in pose:
+        return (as_xyz(pose["neck"]) + as_xyz(pose["left_hip"]) + as_xyz(pose["right_hip"])) / 3.0
+    if "left_hip" in pose and "right_hip" in pose:
+        return (as_xyz(pose["left_hip"]) + as_xyz(pose["right_hip"])) / 2.0
+    coords = [as_xyz(v) for v in pose.values()]
+    return np.mean(coords, axis=0) if coords else np.zeros(3)
+
 
 
 def _estimate_origin_similarity(src, dst):
@@ -165,9 +173,12 @@ def apply_confidence_corrections(
     h2=None,
     blend_mode="hard",
     root_relative=False,
+    return_applied=False,
 ):
     cam1_corr = dict(cam1)
     cam2_corr = dict(cam2)
+    applied_k1 = set()
+    applied_k2 = set()
     h1 = h1 or {}
     h2 = h2 or {}
     for name in k1_set:
@@ -175,11 +186,17 @@ def apply_confidence_corrections(
         if np.linalg.norm(candidate - as_xyz(cam2[name])) <= max_displacement:
             alpha = _correction_alpha(name, h1, h2, blend_mode)
             cam2_corr[name] = alpha * candidate + (1.0 - alpha) * as_xyz(cam2[name])
+            if alpha > 0.0:
+                applied_k1.add(name)
     for name in k2_set:
         candidate = apply_root_relative(cam2[name], cam2, cam1, t21) if root_relative else apply_similarity(cam2[name], t21)
         if np.linalg.norm(candidate - as_xyz(cam1[name])) <= max_displacement:
             alpha = _correction_alpha(name, h2, h1, blend_mode)
             cam1_corr[name] = alpha * candidate + (1.0 - alpha) * as_xyz(cam1[name])
+            if alpha > 0.0:
+                applied_k2.add(name)
+    if return_applied:
+        return cam1_corr, cam2_corr, applied_k1, applied_k2
     return cam1_corr, cam2_corr
 
 

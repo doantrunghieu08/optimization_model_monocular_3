@@ -123,6 +123,47 @@ class FusionExecutorTest(unittest.TestCase):
         self.assertEqual(result["rejected_new_mismatches"], ["right_elbow"])
         self.assertEqual(result["optimized"]["camera1"]["right_elbow"], camera["right_elbow"])
 
+    @patch("fusion_pipeline.executor._orientation_mismatches", return_value=set())
+    @patch("fusion_pipeline.executor.optimize_f_points")
+    @patch("fusion_pipeline.executor.calculate_stats", return_value=(0, 0, 0, 0, 0))
+    @patch("fusion_pipeline.executor.estimate_bidirectional_similarity")
+    @patch("fusion_pipeline.executor.apply_confidence_corrections")
+    @patch("fusion_pipeline.executor.detect_cross_view_errors")
+    def test_optimizer_ignores_rejected_corrections_and_keeps_fixed_anchors(
+        self, detect, correction, similarity, _stats, optimizer, _mismatches
+    ):
+        names = [
+            "head", "neck", "right_shoulder", "right_elbow", "right_wrist",
+            "left_shoulder", "left_elbow", "left_wrist", "pelvis", "right_hip",
+            "right_knee", "right_ankle", "left_hip", "left_knee", "left_ankle",
+            "left_toe", "left_foot", "right_toe", "right_foot", "left_hand", "right_hand",
+        ]
+        camera = {name: [float(index), float(index % 3), 2.0] for index, name in enumerate(names)}
+        detect.return_value = {
+            "M": set(), "K1": {"right_elbow"}, "K2": set(),
+            "L": [name for name in names if name != "right_elbow"],
+            "weights": {name: 1.0 for name in names},
+            "H1": {name: 1.0 for name in names}, "H2": {name: 1.0 for name in names},
+        }
+        identity = (1.0, np.eye(3), np.zeros(3))
+        similarity.return_value = (identity, identity, ["head", "neck", "pelvis"])
+        correction.return_value = (camera, camera, set(), set())
+        optimizer.return_value = ({"camera1": camera, "camera2": camera}, None)
+
+        result = run_phase3_pipeline(
+            {"camera1": camera, "camera2": camera},
+            map_path="configs/keypoints3D_map.yml", occlusion_tau=0.01,
+            regularization=True, regularization_lambda=1.0, temporal_lambda=2.0,
+            max_iter=10, ransac_threshold=0.05, ransac_max_combos=10,
+            belief_alpha=0.001, belief_beta=0.8,
+            confidence_correction_enabled=True, optimization_enabled=True,
+        )
+
+        self.assertNotIn("right_elbow", result["F"])
+        self.assertNotIn("right_elbow", result["A_new"])
+        self.assertEqual(result["corrections_skipped"], ["right_elbow"])
+        self.assertTrue({"left_hip", "right_hip", "left_shoulder", "right_shoulder"} <= set(result["A_new"]))
+
     def test_authoritative_source_index_does_not_fall_back_to_wrong_frame(self):
         profile = {"0": {"joint": [1, 2, 0.9]}}
 
@@ -213,6 +254,26 @@ class FusionExecutorTest(unittest.TestCase):
         self.assertAlmostEqual(global_["left_shoulder"], local["left_shoulder"], delta=1e-6)
         self.assertEqual(global_["left_elbow"], 0.0)
 
+    def test_zero_beta_preserves_local_belief(self):
+        names = ["left_shoulder", "left_elbow"]
+        camera = {
+            "left_shoulder": [0.0, 0.0, 1.5],
+            "left_elbow": [0.0, 0.0, 3.0],
+        }
+        visible = dict.fromkeys(names, True)
+
+        _, local, _ = compute_harmonic_precision(
+            camera, camera, names, visible, visible, alpha=0.1, beta=0.0,
+            global_belief=False, local_method="naive_distance_belief",
+        )
+        _, global_, _ = compute_harmonic_precision(
+            camera, camera, names, visible, visible, alpha=0.1, beta=0.0,
+            global_belief=True, local_method="naive_distance_belief",
+        )
+
+        for name in names:
+            self.assertAlmostEqual(global_[name], local[name], places=6)
+
     def test_confidence_delta_cap_controls_correction_coverage(self):
         names = ["left_elbow", "left_wrist", "right_elbow"]
         cam1 = {name: [0.0, 0.0, 2.0] for name in names}
@@ -247,6 +308,33 @@ class FusionExecutorTest(unittest.TestCase):
         self.assertEqual(minimize.call_args.kwargs["constraints"], [])
         optimize_f_points(**kwargs, use_kinematic_constraints=True)
         self.assertGreater(len(minimize.call_args.kwargs["constraints"]), 0)
+
+    @patch("fusion_pipeline.optimization.minimize")
+    def test_temporal_penalty_ignores_whole_body_translation(self, minimize):
+        current = {
+            "left_hip": [10.0, 0.0, 0.0],
+            "right_hip": [12.0, 0.0, 0.0],
+            "left_elbow": [11.0, 1.0, 0.0],
+        }
+        previous = {
+            "left_hip": [0.0, 0.0, 0.0],
+            "right_hip": [2.0, 0.0, 0.0],
+            "left_elbow": [1.0, 1.0, 0.0],
+        }
+
+        def solve(fun, x0, **_kwargs):
+            self.assertAlmostEqual(fun(x0), 0.0)
+            return SimpleNamespace(success=True, x=x0, message="")
+
+        minimize.side_effect = solve
+        optimize_f_points(
+            data={"camera1": current, "camera2": current},
+            anchors=["left_hip", "right_hip"],
+            f_list=["left_elbow"],
+            prev_data={"camera1": previous, "camera2": previous},
+            temporal_lambda=1.0,
+            use_kinematic_constraints=False,
+        )
 
     def test_loss_ablation_switches_huber_and_mse(self):
         cam1 = {"anchor": [0, 0, 0], "joint": [0, 0, 0]}

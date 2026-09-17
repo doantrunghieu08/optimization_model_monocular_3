@@ -38,12 +38,14 @@ class FusionCorrectionTest(unittest.TestCase):
         cam2 = {"near": [0.04, 0.0, 0.0], "far": [1.0, 0.0, 0.0]}
         identity = (1.0, np.eye(3), np.zeros(3))
 
-        _, corrected = apply_confidence_corrections(
+        _, corrected, applied, _ = apply_confidence_corrections(
             cam1, cam2, {"near", "far"}, set(), identity, identity, max_displacement=0.05,
+            return_applied=True,
         )
 
         np.testing.assert_array_equal(corrected["near"], cam1["near"])
         np.testing.assert_array_equal(corrected["far"], cam2["far"])
+        self.assertEqual(applied, {"near"})
 
     def test_confidence_correction_blends_by_source_reliability(self):
         cam1 = {"joint": [0.0, 0.0, 0.0]}

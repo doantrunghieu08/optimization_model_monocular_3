@@ -191,7 +191,7 @@ def _get_sheet_data(sheet_name: str) -> tuple[list, list, str | None, bool]:
 def _get_header_indices(header: list) -> dict:
     idx = {}
     keys = [
-        'Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 'Alpha', 'Beta',
+        'Set', 'Segment', 'Cam Master', 'Cam Slave', 'Alpha', 'Beta',
         'Global Belief', 'Local Method', 'Kinematic Constraints', 'Loss Type',
         'Optimization Enabled', 'Confidence Correction', 'Orientation Correction',
         'Correction Blend', 'Alignment Mode', 'Correction Selector', 'Confidence Delta Cap', 'Learnable', 'Learnable Extra',
@@ -292,7 +292,7 @@ def load_existing_spreadsheet_results(sheet_name: str) -> tuple[dict, str | None
     return existing, ws_title, has_end_marker
 
 def _build_report_rows(all_results: dict, joint_keys: list) -> list:
-    header = ['Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 'Alpha', 'Beta',
+    header = ['Set', 'Segment', 'Cam Master', 'Cam Slave', 'Alpha', 'Beta',
               'Global Belief', 'Local Method', 'Kinematic Constraints', 'Loss Type',
               'Optimization Enabled', 'Confidence Correction', 'Orientation Correction',
               'Correction Blend', 'Alignment Mode', 'Correction Selector', 'Confidence Delta Cap', 'Learnable', 'Learnable Extra',
@@ -310,9 +310,9 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
     def fmt(v): return round(float(v), 2) if v != float('inf') else "N/A"
     
     for seg_name, results in all_results.items():
-        for rank, res in enumerate(results, start=1):
+        for res in results:
             row = [
-                res.get('set', 'Unknown_Set'), seg_name, rank, res['master'], res.get('supplement', 'N/A'),
+                res.get('set', 'Unknown_Set'), seg_name, res['master'], res.get('supplement', 'N/A'),
                 res.get('alpha', 'N/A'), res.get('beta', 'N/A'),
                 res.get('global_belief', 'N/A'), res.get('local_method', 'N/A'),
                 res.get('kinematic_constraints', 'N/A'),

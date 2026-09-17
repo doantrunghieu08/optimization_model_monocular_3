@@ -166,7 +166,7 @@ def compute_harmonic_precision(
         for name in joint_names:
             p = P[name]
             nb = [P[n] for n in neighbors.get(name, []) if P.get(n, 0.0) > 0.0]
-            b = beta * (sum(nb) / len(nb)) if nb else p
+            b = (1.0 - beta) * p + beta * (sum(nb) / len(nb)) if nb else p
             H[name] = (2.0 * b * p) / (b + p + epsilon)
         return H
 

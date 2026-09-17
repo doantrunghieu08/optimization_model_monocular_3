@@ -263,13 +263,15 @@ def run_phase3_pipeline(
         t12, t21, a_list = identity, identity, l_list
 
     if confidence_correction_enabled:
-        cam1_corr, cam2_corr = apply_confidence_corrections(
+        cam1_corr, cam2_corr, applied_k1, applied_k2 = apply_confidence_corrections(
             cam1, cam2, k1_set, k2_set, t12, t21, max_displacement=ransac_threshold,
             h1=H1_all, h2=H2_all, blend_mode=correction_blend_mode,
             root_relative=root_relative_correction,
+            return_applied=True,
         )
     else:
         cam1_corr, cam2_corr = dict(cam1), dict(cam2)
+        applied_k1, applied_k2 = set(), set()
     if orientation_correction_enabled:
         cam1_corr, cam2_corr = apply_rotation_mismatch_corrections(
             cam1_corr,
@@ -277,17 +279,21 @@ def run_phase3_pipeline(
             cam1,
             cam2,
             m_set,
-            k1_set,
-            k2_set,
+            applied_k1,
+            applied_k2,
             H1_all,
             H2_all,
             t12,
             t21,
             root_relative=root_relative_correction,
         )
+        orientation_applied = m_set - applied_k1 - applied_k2
+    else:
+        orientation_applied = set()
 
-    a_new = sorted(set(a_list) | k1_set | k2_set)
-    f_list = [n for n in names if n not in set(a_new)]
+    a_new = sorted(set(a_list) | applied_k1 | applied_k2 | orientation_applied | NON_REPLACEABLE_ANCHORS)
+    skipped_corrections = (k1_set | k2_set) - applied_k1 - applied_k2
+    f_list = [n for n in names if n not in set(a_new) | skipped_corrections]
     before_stats = calculate_stats(cam1_corr, cam2_corr, f_list, a_new, conf1=H1_all, conf2=H2_all, vis1=vis1, vis2=vis2, f_weights=all_weights, loss_type=loss_type)
     if optimization_enabled:
         optimized_data, _ = optimize_f_points(
@@ -328,10 +334,14 @@ def run_phase3_pipeline(
         "M_resolved": len(m_after) == 0 and len(m_set) > 0,
         "K1": sorted(k1_set),
         "K2": sorted(k2_set),
+        "K1_applied": sorted(applied_k1),
+        "K2_applied": sorted(applied_k2),
+        "corrections_skipped": sorted(skipped_corrections),
         "A_new": a_new,
         "F": f_list,
         "F_optimized": f_list if optimization_enabled else [],
         "orientation_correction_enabled": bool(orientation_correction_enabled),
+        "orientation_applied": sorted(orientation_applied),
         "confidence_correction_enabled": bool(confidence_correction_enabled),
         "alignment_mode": "sequence_root" if root_relative_correction else "frame",
         "correction_selector": correction_selector,

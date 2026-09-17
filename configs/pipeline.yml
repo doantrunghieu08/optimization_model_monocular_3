@@ -38,11 +38,11 @@ fusion:
     alpha: ${ALPHA:-0.001} # alpha: hệ số phạt theo khoảng cách 3D của joint, càng lớn thì joint xa camera càng bị giảm tin cậy mạnh hơn.
     beta: ${BETA:-0.8} # beta: hệ số trộn tin cậy của láng giềng xương trong harmonic mean, càng lớn thì belief càng chịu ảnh hưởng bởi skeleton lân cận.
     global: ${GLOBAL:-true} # true: hòa belief của joint với các joint xương lân cận.
-    local_method: ${LOCAL_METHOD:-"naive_distance_belief"} # naive_distance_belief hoặc optical_aware_belief.
+    local_method: ${LOCAL_METHOD:-"optical_aware_belief"} # naive_distance_belief hoặc optical_aware_belief.
 
   occlusion:
     enabled: true # Ray-casting trên mesh torso trong hệ tọa độ camera.
-    tau: 0.01 # Khoảng cách an toàn (m) giữa giao điểm mesh và joint.
+    tau: 0.001 # Khoảng cách an toàn (m) giữa giao điểm mesh và joint.
 
   # Cấu hình RANSAC dùng để ước lượng similarity transform giữa 2 camera.
   ransac:
@@ -51,16 +51,16 @@ fusion:
 
   # Cấu hình tối ưu hóa cho nhóm điểm F trong fusion.
   correction:
-    enabled: false # Disabled until a held-out benchmark beats raw posed output, not only legacy hard replacement.
+    enabled: true # Enabled soft confidence blending & sequence root alignment
     orientation_enabled: false # Disabled after the 20-pair ablation showed regression.
     reject_new_mismatches: true
-    confidence_delta_cap: 0.05 # Ngưỡng phân loại camera tin cậy hơn; giữ thấp để correction có coverage.
-    blend_mode: confidence # Trộn theo belief thay vì hard replace joint của camera kém tin cậy.
+    confidence_delta_cap: 0.05 # Ngưỡng cap cải tiến chống lây nhiễu từ camera kém
+    blend_mode: confidence # Trộn theo belief liên tục thay vì hard replace
     alignment_mode: sequence_root # Tự ước lượng scale/rotation từ cả sequence, không cần camera calibration.
-    selector: occlusion # Chỉ sửa khi một camera thật sự bị che khuất; confidence heuristic chưa đủ tin cậy.
+    selector: confidence # Dung hợp khi Slave có belief cao hơn Master (H2 > H1 + delta)
 
   optimization:
-    enabled: false # F optimizer is disabled after the 20-pair regression ablation.
+    enabled: true # Enabled kinematic & temporal SLSQP optimizer
     use_kinematic_constraints: ${KINEMATIC_CONSTRAINTS:-true}
     loss_type: ${LOSS_TYPE:-"huber"} # huber hoặc mse.
     regularization: true
