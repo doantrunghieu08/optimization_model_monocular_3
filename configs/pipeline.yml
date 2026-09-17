@@ -54,7 +54,7 @@ fusion:
     enabled: true # Enabled soft confidence blending & sequence root alignment
     orientation_enabled: false # Disabled after the 20-pair ablation showed regression.
     reject_new_mismatches: true
-    confidence_delta_cap: 0.05 # Ngưỡng cap cải tiến chống lây nhiễu từ camera kém
+    confidence_delta_cap: 0.15 # Fix #2: tăng ngưỡng để K2_set có joint khi slave belief thấp hơn master vừa phải
     blend_mode: confidence # Trộn theo belief liên tục thay vì hard replace
     alignment_mode: sequence_root # Tự ước lượng scale/rotation từ cả sequence, không cần camera calibration.
     selector: confidence # Dung hợp khi Slave có belief cao hơn Master (H2 > H1 + delta)

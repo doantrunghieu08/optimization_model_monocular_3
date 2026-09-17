@@ -14,6 +14,8 @@ from fusion_pipeline.correction import estimate_sequence_root_similarity
 from fusion_pipeline.detector import get_orientation_flag
 from fusion_pipeline.config import OUTPUT_SUBDIRS
 from fusion_pipeline.config import NON_REPLACEABLE_ANCHORS
+from fusion_pipeline.config import MIN_SLAVE_BELIEF_THRESHOLD
+from fusion_pipeline.config import MIN_LLIST_FOR_RANSAC
 from fusion_pipeline.detector import load_torso_faces
 from fusion_pipeline.detector import as_xyz
 from fusion_pipeline.detector import make_raw_judgement_fallback
@@ -170,6 +172,7 @@ def run_phase3_pipeline(
     belief_beta,
     verts_by_cam=None,
     torso_faces=None,
+    vertex_parts=None,
     frame_idx=None,
     prev_optimized_data=None,
     confidence2d_by_cam=None,
@@ -195,7 +198,6 @@ def run_phase3_pipeline(
         raise ValueError("Shared SMPL body pose was not exported; set pose_export.shared_body_pose=true")
     cam1 = {k: as_xyz(v) for k, v in source["camera1"].items()}
     cam2 = {k: as_xyz(v) for k, v in source["camera2"].items()}
-
     map_data = load_keypoints3d_map(map_path)
     expected_names = [kp["name"] for kp in map_data["keypoints"]]
 
@@ -209,8 +211,8 @@ def run_phase3_pipeline(
     if verts_by_cam is not None:
         if torso_faces is None:
             raise ValueError("torso_faces is required when verts_by_cam is provided")
-        vis1 = compute_visibility_from_mesh_vertices(cam1, verts_by_cam["camera1"], torso_faces, occlusion_tau)
-        vis2 = compute_visibility_from_mesh_vertices(cam2, verts_by_cam["camera2"], torso_faces, occlusion_tau)
+        vis1 = compute_visibility_from_mesh_vertices(cam1, verts_by_cam["camera1"], torso_faces, occlusion_tau, vertex_parts=vertex_parts)
+        vis2 = compute_visibility_from_mesh_vertices(cam2, verts_by_cam["camera2"], torso_faces, occlusion_tau, vertex_parts=vertex_parts)
     else:
         vis1 = {n: True for n in names}
         vis2 = {n: True for n in names}
@@ -246,23 +248,49 @@ def run_phase3_pipeline(
     elif correction_selector != "confidence":
         raise ValueError("fusion.correction.selector must be confidence or occlusion")
 
-    needs_transform = confidence_correction_enabled or orientation_correction_enabled or optimization_enabled
+    # Fix #4: Fusion Rejection Guard — nếu slave belief quá thấp thì bỏ qua correction
+    # để tránh áp similarity transform kém chất lượng lên dữ liệu (gây regression)
+    slave_mean_belief = float(np.mean(list(H2_all.values()))) if H2_all else 0.0
+    slave_belief_sufficient = slave_mean_belief >= MIN_SLAVE_BELIEF_THRESHOLD
+    if not slave_belief_sufficient:
+        import warnings
+        warnings.warn(
+            f"[Fusion] Slave mean belief={slave_mean_belief:.4f} < threshold={MIN_SLAVE_BELIEF_THRESHOLD}. "
+            "Bỏ qua confidence correction và optimization để tránh áp transform kém."
+        )
+        effective_correction = False
+        effective_optimization = False
+    else:
+        effective_correction = confidence_correction_enabled
+        effective_optimization = optimization_enabled
+
+    # Fix #3: l_list Minimum Size Guard — kiểm tra đủ joint trước khi gọi RANSAC
+    identity = (1.0, np.eye(3), np.zeros(3))
+    needs_transform = effective_correction or orientation_correction_enabled or effective_optimization
     if precomputed_transforms is not None:
         t12, t21 = precomputed_transforms
         a_list = l_list
     elif needs_transform:
-        t12, t21, a_list = estimate_bidirectional_similarity(
-            cam1,
-            cam2,
-            l_list,
-            threshold=ransac_threshold,
-            max_combos=ransac_max_combos,
-        )
+        if len(l_list) < MIN_LLIST_FOR_RANSAC:
+            # l_list quá nhỏ → RANSAC sẽ cho transform không ổn định → dùng identity
+            import warnings
+            warnings.warn(
+                f"[Fusion] l_list chỉ có {len(l_list)} joint (< {MIN_LLIST_FOR_RANSAC} tối thiểu). "
+                "Dùng identity transform thay vì RANSAC để tránh transform kém."
+            )
+            t12, t21, a_list = identity, identity, l_list
+        else:
+            t12, t21, a_list = estimate_bidirectional_similarity(
+                cam1,
+                cam2,
+                l_list,
+                threshold=ransac_threshold,
+                max_combos=ransac_max_combos,
+            )
     else:
-        identity = (1.0, np.eye(3), np.zeros(3))
         t12, t21, a_list = identity, identity, l_list
 
-    if confidence_correction_enabled:
+    if effective_correction:  # Fix #4: dùng effective_correction thay vì confidence_correction_enabled
         cam1_corr, cam2_corr, applied_k1, applied_k2 = apply_confidence_corrections(
             cam1, cam2, k1_set, k2_set, t12, t21, max_displacement=ransac_threshold,
             h1=H1_all, h2=H2_all, blend_mode=correction_blend_mode,
@@ -295,7 +323,7 @@ def run_phase3_pipeline(
     skipped_corrections = (k1_set | k2_set) - applied_k1 - applied_k2
     f_list = [n for n in names if n not in set(a_new) | skipped_corrections]
     before_stats = calculate_stats(cam1_corr, cam2_corr, f_list, a_new, conf1=H1_all, conf2=H2_all, vis1=vis1, vis2=vis2, f_weights=all_weights, loss_type=loss_type)
-    if optimization_enabled:
+    if effective_optimization:  # Fix #4 & #5: dùng effective_optimization thay vì optimization_enabled
         optimized_data, _ = optimize_f_points(
             {"camera1": cam1_corr, "camera2": cam2_corr},
             a_new,
@@ -339,10 +367,10 @@ def run_phase3_pipeline(
         "corrections_skipped": sorted(skipped_corrections),
         "A_new": a_new,
         "F": f_list,
-        "F_optimized": f_list if optimization_enabled else [],
+        "F_optimized": f_list if effective_optimization else [],  # Fix #4/#5
         "orientation_correction_enabled": bool(orientation_correction_enabled),
         "orientation_applied": sorted(orientation_applied),
-        "confidence_correction_enabled": bool(confidence_correction_enabled),
+        "confidence_correction_enabled": bool(effective_correction),  # Fix #4: phản ánh trạng thái thực tế
         "alignment_mode": "sequence_root" if root_relative_correction else "frame",
         "correction_selector": correction_selector,
         "shared_body_pose_enabled": bool(shared_body_pose_enabled),
@@ -441,6 +469,7 @@ def run_fusion(config: dict) -> None:
                 map_path=paths["keypoints3d_map"],
                 verts_by_cam=verts_input,
                 torso_faces=torso_faces,
+                vertex_parts=vertex_parts,
                 occlusion_tau=occlusion_cfg["tau"],
                 regularization=opt_cfg["regularization"],
                 regularization_lambda=opt_cfg["regularization_lambda"],

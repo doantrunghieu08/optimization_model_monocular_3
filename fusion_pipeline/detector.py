@@ -7,6 +7,8 @@ from fusion_pipeline.config import ORIENTATION_EPSILON
 from fusion_pipeline.config import RIGID_BONES_RATIO
 from fusion_pipeline.config import OCCLUSION_CHECK_JOINTS
 from fusion_pipeline.config import CONFIDENCE_DELTA_CAP
+from fusion_pipeline.config import JOINT_TO_SMPL_PART_ID
+from fusion_pipeline.config import JOINT_EXCLUDED_PART_IDS
 
 def as_xyz(point):
     arr = np.asarray(point, dtype=float)
@@ -84,8 +86,8 @@ def _ray_hits_before_target(target, triangle_origins, edge1, edge2, margin):
     return bool(np.any(hit))
 
 
-def compute_visibility_from_mesh_vertices(joints, verts, torso_faces, occlusion_tau=0.05):
-    # ponytail: torso-only covers the dominant self-occlusion; use part-aware full mesh if limb-on-limb cases matter.
+def compute_visibility_from_mesh_vertices(joints, verts, torso_faces, occlusion_tau=0.05, vertex_parts=None):
+    # Option 1: Part-Aware Body-Part Ray-Casting
     visibility = {name: True for name in joints.keys()}
     verts = np.asarray(verts, dtype=float)
     torso_faces = np.asarray(torso_faces, dtype=np.int64)
@@ -94,17 +96,42 @@ def compute_visibility_from_mesh_vertices(joints, verts, torso_faces, occlusion_
     if occlusion_tau < 0:
         raise ValueError("fusion.occlusion.tau must be non-negative")
 
-    triangles = verts[torso_faces]
-    triangle_origins = triangles[:, 0]
-    edge1 = triangles[:, 1] - triangle_origins
-    edge2 = triangles[:, 2] - triangle_origins
+    v_parts = np.asarray(vertex_parts, dtype=np.int32) if vertex_parts is not None else None
+    face_parts = v_parts[torso_faces] if (v_parts is not None and len(torso_faces) > 0) else None
+
     for name, pos in joints.items():
         if name not in OCCLUSION_CHECK_JOINTS:
             continue
+
+        # 1. Target calculation: Body-part center of mass if vertex_parts available
         kp_3d = as_xyz(pos)
+        if v_parts is not None and name in JOINT_TO_SMPL_PART_ID:
+            part_id = JOINT_TO_SMPL_PART_ID[name]
+            part_indices = np.where(v_parts == part_id)[0]
+            if len(part_indices) > 0:
+                kp_3d = np.mean(verts[part_indices], axis=0)
+
         if kp_3d[2] <= 0:
             visibility[name] = False
             continue
+
+        # 2. Obstacle faces calculation: exclude faces belonging to self/adjacent limb parts
+        if face_parts is not None and name in JOINT_EXCLUDED_PART_IDS:
+            excluded = list(JOINT_EXCLUDED_PART_IDS[name])
+            is_excluded = np.all(np.isin(face_parts, excluded), axis=1)
+            active_torso_faces = torso_faces[~is_excluded]
+        else:
+            active_torso_faces = torso_faces
+
+        if len(active_torso_faces) == 0:
+            visibility[name] = True
+            continue
+
+        triangles = verts[active_torso_faces]
+        triangle_origins = triangles[:, 0]
+        edge1 = triangles[:, 1] - triangle_origins
+        edge2 = triangles[:, 2] - triangle_origins
+
         visibility[name] = not _ray_hits_before_target(
             kp_3d, triangle_origins, edge1, edge2, float(occlusion_tau)
         )

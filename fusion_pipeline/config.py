@@ -49,6 +49,44 @@ OCCLUSION_CHECK_JOINTS = {
     "right_ankle",
 }
 
+JOINT_TO_SMPL_PART_ID = {
+    "left_shoulder": 16,
+    "right_shoulder": 17,
+    "left_elbow": 18,
+    "right_elbow": 19,
+    "left_wrist": 20,
+    "right_wrist": 21,
+    "left_hand": 22,
+    "right_hand": 23,
+    "left_hip": 1,
+    "right_hip": 2,
+    "left_knee": 4,
+    "right_knee": 5,
+    "left_ankle": 7,
+    "right_ankle": 8,
+    "left_foot": 10,
+    "right_foot": 11,
+    "left_toe": 10,
+    "right_toe": 11,
+}
+
+JOINT_EXCLUDED_PART_IDS = {
+    "left_elbow": {16, 18, 20},
+    "left_wrist": {18, 20, 22},
+    "left_hand": {20, 22},
+    "left_knee": {1, 4, 7},
+    "left_ankle": {4, 7, 10},
+    "left_foot": {7, 10},
+    "left_toe": {7, 10},
+    "right_elbow": {17, 19, 21},
+    "right_wrist": {19, 21, 23},
+    "right_hand": {21, 23},
+    "right_knee": {2, 5, 8},
+    "right_ankle": {5, 8, 11},
+    "right_foot": {8, 11},
+    "right_toe": {8, 11},
+}
+
 ORIENTATION_EPSILON = 1e-2
 HARMONIC_EPSILON = 1e-6
 CONFIDENCE_DELTA_CAP = 0.05
@@ -57,3 +95,12 @@ DEFAULT_OCCLUDED_FACTOR = 0.25
 HUBER_DELTA = 0.05
 BONE_LENGTH_MIN_SCALE = 0.85
 BONE_LENGTH_MAX_SCALE = 1.15
+
+# Fix #4: Ngưỡng belief tối thiểu của slave camera để fusion correction được phép kích hoạt.
+# Nếu mean belief slave < ngưỡng này, bỏ qua correction để tránh áp similarity transform kém lên dữ liệu.
+MIN_SLAVE_BELIEF_THRESHOLD = 0.06
+
+# Fix #3: Số joint tối thiểu trong l_list để RANSAC có thể ước lượng transform đáng tin cậy.
+# Dưới ngưỡng này, correction bị skip dù correction_enabled=True.
+MIN_LLIST_FOR_RANSAC = 4
+
