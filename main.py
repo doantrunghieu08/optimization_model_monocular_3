@@ -5,10 +5,10 @@ import subprocess
 import shutil
 
 # Import pipeline functions
-from pipeline import run_pipeline
+from src.pipelines.orchestrator import run_pipeline
 
 # Import utility functions for configuration
-from config_loader import absolutize_config_paths, load_config, print_path_summary
+from src.core.config_loader import absolutize_config_paths, load_config, print_path_summary
 
 def main():
     parser = argparse.ArgumentParser(description="Monocular Optimization Pipeline")

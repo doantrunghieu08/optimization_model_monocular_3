@@ -2,7 +2,7 @@ import copy
 import unittest
 
 from brute_force_runner import _build_report_rows, _get_header_indices, _matches_active_config, _parse_history_row
-from config_loader import load_config
+from src.core.config_loader import load_config
 
 
 class BruteForceResumeTest(unittest.TestCase):
@@ -28,12 +28,6 @@ class BruteForceResumeTest(unittest.TestCase):
             "kinematic_constraints": str(config["fusion"]["optimization"]["use_kinematic_constraints"]),
             "loss_type": config["fusion"]["optimization"]["loss_type"],
             "optimization_enabled": str(config["fusion"]["optimization"]["enabled"]),
-            "confidence_correction": str(config["fusion"]["correction"]["enabled"]),
-            "orientation_correction": str(config["fusion"]["correction"]["orientation_enabled"]),
-            "correction_blend": config["fusion"]["correction"]["blend_mode"],
-            "alignment_mode": config["fusion"]["correction"]["alignment_mode"],
-            "correction_selector": config["fusion"]["correction"]["selector"],
-            "confidence_delta_cap": config["fusion"]["correction"]["confidence_delta_cap"],
             "learnable_enabled": str(config["learnable"]["enabled"]),
             "learnable_extra_enabled": str(config["learnable_extra"]["enabled"]),
         }
@@ -43,14 +37,9 @@ class BruteForceResumeTest(unittest.TestCase):
         changed["fusion"]["belief"]["local_method"] = "naive_distance_belief"
         self.assertFalse(_matches_active_config(result, changed))
 
-        changed = copy.deepcopy(config)
-        changed["fusion"]["correction"]["enabled"] = not config["fusion"]["correction"]["enabled"]
-        self.assertFalse(_matches_active_config(result, changed))
-
-        header, row = _build_report_rows({"segment": [{"master": "m", **result}]}, [])
+        header, row = _build_report_rows({"segment": [{"master": "m", **result}]})
         self.assertEqual(len(header), len(row))
         self.assertIn("Optimization Enabled", header)
-        self.assertIn("Confidence Correction", header)
 
 
 if __name__ == "__main__":

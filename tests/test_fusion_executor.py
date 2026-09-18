@@ -7,16 +7,16 @@ from unittest.mock import patch
 
 import numpy as np
 
-from fusion_pipeline.detector import compute_harmonic_precision
-from fusion_pipeline.detector import detect_cross_view_errors
-from fusion_pipeline.executor import (
+from src.pipelines.fusion.detector import compute_harmonic_precision
+from src.pipelines.fusion.detector import detect_cross_view_errors
+from src.pipelines.fusion.executor import (
     _frame_confidence_from_profile,
     _load_pose_frame,
     run_phase3_pipeline,
     run_fusion,
 )
-from fusion_pipeline.optimization import calculate_stats, optimize_f_points
-from pose_pipeline.executor import _midpoint_body_pose
+from src.pipelines.fusion.optimization import calculate_stats, optimize_f_points
+from src.pipelines.pose.executor import _midpoint_body_pose
 
 
 def _config(root: Path, max_fallback_ratio=0.0):
@@ -79,13 +79,13 @@ class FusionExecutorTest(unittest.TestCase):
         midpoint = _midpoint_body_pose(pose1, pose2)
 
         self.assertAlmostEqual(abs(midpoint[0, 2]), np.pi, places=6)
-    @patch("fusion_pipeline.executor._orientation_mismatches", side_effect=[{"right_elbow"}, set()])
-    @patch("fusion_pipeline.executor.optimize_f_points")
-    @patch("fusion_pipeline.executor.apply_rotation_mismatch_corrections")
-    @patch("fusion_pipeline.executor.calculate_stats", return_value=(0, 0, 0, 0, 0))
-    @patch("fusion_pipeline.executor.estimate_bidirectional_similarity", return_value=((1, None, None), (1, None, None), ["head", "neck", "pelvis"]))
-    @patch("fusion_pipeline.executor.apply_confidence_corrections")
-    @patch("fusion_pipeline.executor.detect_cross_view_errors")
+    @patch("src.pipelines.fusion.executor._orientation_mismatches", side_effect=[{"right_elbow"}, set()])
+    @patch("src.pipelines.fusion.executor.optimize_f_points")
+    @patch("src.pipelines.fusion.executor.apply_rotation_mismatch_corrections")
+    @patch("src.pipelines.fusion.executor.calculate_stats", return_value=(0, 0, 0, 0, 0))
+    @patch("src.pipelines.fusion.executor.estimate_bidirectional_similarity", return_value=((1, None, None), (1, None, None), ["head", "neck", "pelvis"]))
+    @patch("src.pipelines.fusion.executor.apply_confidence_corrections")
+    @patch("src.pipelines.fusion.executor.detect_cross_view_errors")
     def test_disabled_regressive_stages_are_skipped(
         self, detect, confidence_correction, _similarity, stats, orientation_correction, optimizer, _mismatches
     ):
@@ -123,12 +123,12 @@ class FusionExecutorTest(unittest.TestCase):
         self.assertEqual(result["rejected_new_mismatches"], ["right_elbow"])
         self.assertEqual(result["optimized"]["camera1"]["right_elbow"], camera["right_elbow"])
 
-    @patch("fusion_pipeline.executor._orientation_mismatches", return_value=set())
-    @patch("fusion_pipeline.executor.optimize_f_points")
-    @patch("fusion_pipeline.executor.calculate_stats", return_value=(0, 0, 0, 0, 0))
-    @patch("fusion_pipeline.executor.estimate_bidirectional_similarity")
-    @patch("fusion_pipeline.executor.apply_confidence_corrections")
-    @patch("fusion_pipeline.executor.detect_cross_view_errors")
+    @patch("src.pipelines.fusion.executor._orientation_mismatches", return_value=set())
+    @patch("src.pipelines.fusion.executor.optimize_f_points")
+    @patch("src.pipelines.fusion.executor.calculate_stats", return_value=(0, 0, 0, 0, 0))
+    @patch("src.pipelines.fusion.executor.estimate_bidirectional_similarity")
+    @patch("src.pipelines.fusion.executor.apply_confidence_corrections")
+    @patch("src.pipelines.fusion.executor.detect_cross_view_errors")
     def test_optimizer_ignores_rejected_corrections_and_keeps_fixed_anchors(
         self, detect, correction, similarity, _stats, optimizer, _mismatches
     ):
@@ -183,7 +183,7 @@ class FusionExecutorTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Invalid pose metadata"):
                 _load_pose_frame(keypoints, root / "metadata")
 
-    @patch("fusion_pipeline.executor._load_2d_profiles", return_value={"camera1": None, "camera2": None})
+    @patch("src.pipelines.fusion.executor._load_2d_profiles", return_value={"camera1": None, "camera2": None})
     def test_empty_pose_directory_fails(self, _profiles):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -193,7 +193,7 @@ class FusionExecutorTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "No pose JSON files"):
                 run_fusion(_config(root))
 
-    @patch("fusion_pipeline.executor._load_2d_profiles", return_value={"camera1": None, "camera2": None})
+    @patch("src.pipelines.fusion.executor._load_2d_profiles", return_value={"camera1": None, "camera2": None})
     def test_fallback_is_not_used_as_next_temporal_target_and_metadata_is_preserved(self, _profiles):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -207,7 +207,7 @@ class FusionExecutorTest(unittest.TestCase):
                     raise ValueError("bad frame")
                 return {"optimized": {"camera1": data_in["camera1"], "camera2": data_in["camera2"]}}
 
-            with patch("fusion_pipeline.executor.run_phase3_pipeline", side_effect=fake_pipeline):
+            with patch("src.pipelines.fusion.executor.run_phase3_pipeline", side_effect=fake_pipeline):
                 run_fusion(_config(root, max_fallback_ratio=1.0))
 
             self.assertEqual(previous_values, [None, None])
@@ -295,7 +295,7 @@ class FusionExecutorTest(unittest.TestCase):
 
         self.assertGreater(len(low["K1"]), len(high["K1"]))
 
-    @patch("fusion_pipeline.optimization.minimize")
+    @patch("src.pipelines.fusion.optimization.minimize")
     def test_kinematic_ablation_controls_slsqp_constraints(self, minimize):
         minimize.return_value = SimpleNamespace(success=True, x=np.array([0, 0, 2, 0, 0, 2], dtype=float), message="")
         data = {
@@ -309,7 +309,7 @@ class FusionExecutorTest(unittest.TestCase):
         optimize_f_points(**kwargs, use_kinematic_constraints=True)
         self.assertGreater(len(minimize.call_args.kwargs["constraints"]), 0)
 
-    @patch("fusion_pipeline.optimization.minimize")
+    @patch("src.pipelines.fusion.optimization.minimize")
     def test_temporal_penalty_ignores_whole_body_translation(self, minimize):
         current = {
             "left_hip": [10.0, 0.0, 0.0],
@@ -345,12 +345,12 @@ class FusionExecutorTest(unittest.TestCase):
 
         self.assertGreater(mse, huber)
 
-    @patch("fusion_pipeline.executor._load_2d_profiles", return_value={"camera1": None, "camera2": None})
+    @patch("src.pipelines.fusion.executor._load_2d_profiles", return_value={"camera1": None, "camera2": None})
     def test_rejected_fallback_run_writes_no_partial_output(self, _profiles):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _write_pose_frame(root, 1)
-            with patch("fusion_pipeline.executor.run_phase3_pipeline", side_effect=ValueError("bad frame")):
+            with patch("src.pipelines.fusion.executor.run_phase3_pipeline", side_effect=ValueError("bad frame")):
                 with self.assertRaisesRegex(RuntimeError, "Fallback ratio"):
                     run_fusion(_config(root))
 

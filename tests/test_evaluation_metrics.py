@@ -3,7 +3,7 @@ from pathlib import Path
 
 import numpy as np
 
-from evaluation_pipeline.executor import (
+from src.pipelines.evaluation.executor import (
     _compute_pa_mpjpe,
     _compute_pck,
     _parse_new_gt,

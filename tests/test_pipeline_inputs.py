@@ -4,8 +4,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from config_loader import load_config, set_env_from_filename, validate_config
-from pipeline import _evaluation_input_dirs
+from src.core.config_loader import load_config, set_env_from_filename, validate_config
+from src.pipelines.orchestrator import _evaluation_input_dirs
 
 
 class EvaluationInputsTest(unittest.TestCase):

@@ -11,7 +11,7 @@ from datetime import datetime
 import time
 import threading
 import queue
-from config_loader import load_config
+from src.core.config_loader import load_config
 
 VIDEO_FOLDER = "imageSequence"
 
@@ -28,8 +28,8 @@ except ImportError:
     print("Cảnh báo: Không tìm thấy thư viện google colab/gspread. "
           "Các tính năng Google Sheets sẽ không khả dụng.")
 
-from config_loader import load_config, absolutize_config_paths, set_env_from_filename, get_notebook_name
-from pipeline import run_pipeline
+from src.core.config_loader import load_config, absolutize_config_paths, set_env_from_filename, get_notebook_name
+from src.pipelines.orchestrator import run_pipeline
 
 GC_CLIENT = None
 
@@ -193,8 +193,7 @@ def _get_header_indices(header: list) -> dict:
     keys = [
         'Set', 'Segment', 'Cam Master', 'Cam Slave', 'Alpha', 'Beta',
         'Global Belief', 'Local Method', 'Kinematic Constraints', 'Loss Type',
-        'Optimization Enabled', 'Confidence Correction', 'Orientation Correction',
-        'Correction Blend', 'Alignment Mode', 'Correction Selector', 'Confidence Delta Cap', 'Learnable', 'Learnable Extra',
+        'Optimization Enabled', 'Learnable', 'Learnable Extra',
         'MPJPE', 'PA-MPJPE', 'MBLE',
         'Fusion MBLE', 'LE MBLE', 'Old MBLE',
         'Accel Error (mm/frame^2)', 'GT Accel Error (mm/frame^2)',
@@ -219,7 +218,7 @@ def _get_header_indices(header: list) -> dict:
             idx[k] = header.index('Accel')
         else:
             idx[k] = -1
-    idx['joints'] = {h: i for i, h in enumerate(header) if h.startswith(("MPJPE_", "PA-MPJPE_"))}
+    idx['joints'] = {}
     return idx
 
 def _parse_history_row(row: list, idx: dict) -> tuple:
@@ -240,12 +239,6 @@ def _parse_history_row(row: list, idx: dict) -> tuple:
         "kinematic_constraints": get_val('Kinematic Constraints'),
         "loss_type": get_val('Loss Type'),
         "optimization_enabled": get_val('Optimization Enabled'),
-        "confidence_correction": get_val('Confidence Correction'),
-        "orientation_correction": get_val('Orientation Correction'),
-        "correction_blend": get_val('Correction Blend'),
-        "alignment_mode": get_val('Alignment Mode'),
-        "correction_selector": get_val('Correction Selector'),
-        "confidence_delta_cap": sf('Confidence Delta Cap'),
         "learnable_enabled": get_val('Learnable'),
         "learnable_extra_enabled": get_val('Learnable Extra'),
         "mpjpe": sf('MPJPE'), "pa_mpjpe": sf('PA-MPJPE'),
@@ -266,7 +259,7 @@ def _parse_history_row(row: list, idx: dict) -> tuple:
         "% delta_mpjpe": sf('% Δ_MPJPE') if sf('% Δ_MPJPE') != float('inf') else 0.0,
         "% delta_pa_mpjpe": sf('% Δ_PA-MPJPE') if sf('% Δ_PA-MPJPE') != float('inf') else 0.0,
         "os_version": get_val('OS Version'), "username": get_val('Username'), "timestamp": get_val('Timestamp'),
-        "joints": {jn: float(str(row[ji]).strip().replace(',', '.')) for jn, ji in idx['joints'].items() if ji < len(row) and row[ji] not in ("N/A", "")}
+        "joints": {}
     }
     return key, res
 
@@ -278,8 +271,7 @@ def load_existing_spreadsheet_results(sheet_name: str) -> tuple[dict, str | None
     required = (
         'Segment', 'Alpha', 'Beta', 'Global Belief', 'Local Method',
         'Kinematic Constraints', 'Loss Type', 'MBLE', 'Accel Error (mm/frame^2)',
-        'Optimization Enabled', 'Confidence Correction', 'Orientation Correction',
-        'Correction Blend', 'Alignment Mode', 'Correction Selector', 'Confidence Delta Cap', 'Learnable', 'Learnable Extra',
+        'Optimization Enabled', 'Learnable', 'Learnable Extra',
         'Fusion MBLE', 'LE MBLE', 'Old MBLE', 'GT Accel Error (mm/frame^2)',
         'Fusion Accel Error (mm/frame^2)', 'LE Accel Error (mm/frame^2)',
         'Old Accel Error (mm/frame^2)',
@@ -291,11 +283,32 @@ def load_existing_spreadsheet_results(sheet_name: str) -> tuple[dict, str | None
         if key and key[0] != "N/A": existing[key] = res
     return existing, ws_title, has_end_marker
 
-def _build_report_rows(all_results: dict, joint_keys: list) -> list:
+def load_existing_csv_results(csv_path: Path) -> tuple[dict, bool]:
+    existing = {}
+    if not csv_path.exists():
+        return existing, False
+    try:
+        with open(csv_path, "r", encoding="utf-8") as f:
+            reader = list(csv.reader(f))
+            if not reader or len(reader) < 2:
+                return existing, False
+            header = reader[0]
+            rows = reader[1:]
+            has_end_marker = any(row and row[0] == "End" for row in rows)
+            idx = _get_header_indices(header)
+            for row in rows:
+                key, res = _parse_history_row(row, idx)
+                if key and key[0] != "N/A":
+                    existing[key] = res
+            return existing, has_end_marker
+    except Exception as e:
+        print(f"[Local] Lỗi đọc file CSV cũ ({e}). Khởi tạo chạy mới.")
+        return existing, False
+
+def _build_report_rows(all_results: dict, joint_keys: list = None) -> list:
     header = ['Set', 'Segment', 'Cam Master', 'Cam Slave', 'Alpha', 'Beta',
               'Global Belief', 'Local Method', 'Kinematic Constraints', 'Loss Type',
-              'Optimization Enabled', 'Confidence Correction', 'Orientation Correction',
-              'Correction Blend', 'Alignment Mode', 'Correction Selector', 'Confidence Delta Cap', 'Learnable', 'Learnable Extra',
+              'Optimization Enabled', 'Learnable', 'Learnable Extra',
               'MPJPE', 'PA-MPJPE', 'MBLE', 'Accel Error (mm/frame^2)',
               'Fusion MBLE', 'LE MBLE', 'Old MBLE',
               'GT Accel Error (mm/frame^2)', 'Fusion Accel Error (mm/frame^2)',
@@ -304,13 +317,15 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
               'belief Master', 'belief Slave', 'Occluded Joint-Frames Master',
               'Occluded Joint-Frames Slave', 'Old MPJPE',
               'Old PA-MPJPE', '% Δ_MPJPE', '% Δ_PA-MPJPE', 
-              'OS Version', 'Username', 'Timestamp'] + joint_keys
+              'OS Version', 'Username', 'Timestamp']
     rows = [header]
     
     def fmt(v): return round(float(v), 2) if v != float('inf') else "N/A"
     
     for seg_name, results in all_results.items():
         for res in results:
+            if not res or res.get('alpha') is None or res.get('alpha') == 'N/A':
+                continue
             row = [
                 res.get('set', 'Unknown_Set'), seg_name, res['master'], res.get('supplement', 'N/A'),
                 res.get('alpha', 'N/A'), res.get('beta', 'N/A'),
@@ -318,12 +333,6 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
                 res.get('kinematic_constraints', 'N/A'),
                 res.get('loss_type', 'N/A'),
                 res.get('optimization_enabled', 'N/A'),
-                res.get('confidence_correction', 'N/A'),
-                res.get('orientation_correction', 'N/A'),
-                res.get('correction_blend', 'N/A'),
-                res.get('alignment_mode', 'N/A'),
-                res.get('correction_selector', 'N/A'),
-                res.get('confidence_delta_cap', 'N/A'),
                 res.get('learnable_enabled', 'N/A'),
                 res.get('learnable_extra_enabled', 'N/A'),
                 fmt(res.get('mpjpe', float('inf'))), fmt(res.get('pa_mpjpe', float('inf'))),
@@ -342,7 +351,6 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
                 fmt(res.get('% delta_mpjpe', 0.0)), fmt(res.get('% delta_pa_mpjpe', 0.0)), 
                 res.get('os_version', 'N/A'), res.get('username', 'N/A'), res.get('timestamp', 'N/A')
             ]
-            row.extend([fmt(res.get("joints", {}).get(jk, float('inf'))) for jk in joint_keys])
             rows.append(row)
             
     return rows
@@ -370,12 +378,7 @@ def _get_or_create_worksheet(sheet_name: str, worksheet_title: str = None, silen
 
 def generate_spreadsheet_report(all_results, sheet_name, worksheet_title=None, silent=False, is_final=False):
     sh, worksheet = _get_or_create_worksheet(sheet_name, worksheet_title, silent)
-    all_joint_keys = set()
-    for seg_results in all_results.values():
-        for res in seg_results:
-            all_joint_keys.update(res.get("joints", {}).keys())
-    
-    rows_to_insert = _build_report_rows(all_results, sorted(list(all_joint_keys)))
+    rows_to_insert = _build_report_rows(all_results)
     if is_final and len(rows_to_insert) > 0:
         rows_to_insert.append(["End"] * len(rows_to_insert[0]))
 
@@ -389,6 +392,17 @@ def generate_spreadsheet_report(all_results, sheet_name, worksheet_title=None, s
     if not silent: print(f"\nĐã xuất báo cáo ra Google Spreadsheet thành công!\n🔗 Xem file tại: {sh.url}")
 
 def generate_spreadsheet_report_safe(all_results, sheet_name, worksheet_title=None, silent=False, is_final=False, max_retries=5):
+    if not _COLAB_AVAILABLE:
+        output_dir = Path("output/reports")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        report_file = output_dir / f"{sheet_name}.csv"
+        rows = _build_report_rows(all_results)
+        with open(report_file, "w", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerows(rows)
+        if not silent:
+            print(f"\n[Local] Đã xuất báo cáo ra file CSV thành công!\n🔗 Lưu tại: {report_file}")
+        return
+
     for attempt in range(max_retries):
         try:
             generate_spreadsheet_report(all_results, sheet_name, worksheet_title, silent, is_final)
@@ -488,15 +502,64 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
         "os_version": os_v, "username": usr, "timestamp": ts
     }
 
+def resolve_existing_path(path_str: str, workspace: Path) -> Path | None:
+    if not path_str:
+        return None
+    p = workspace / path_str
+    if p.exists():
+        return p
+    p_path = Path(path_str)
+    parts = list(p_path.parts)
+    
+    if "input" in parts and "imageSequence" not in parts:
+        idx = parts.index("input")
+        if idx + 1 < len(parts) and parts[idx + 1] == "Seq1":
+            parts.insert(idx + 2, "imageSequence")
+            alt = workspace.joinpath(*parts)
+            if alt.exists():
+                return alt
+
+    if "Segments" in parts:
+        seg_idx = parts.index("Segments")
+        if seg_idx + 1 < len(parts) and not parts[seg_idx + 1].startswith("wham_output_"):
+            parts[seg_idx + 1] = f"wham_output_{parts[seg_idx + 1]}"
+            alt = workspace.joinpath(*parts)
+            if alt.exists():
+                return alt
+
+    parts = list(p_path.parts)
+    if "input" in parts and "imageSequence" not in parts:
+        idx = parts.index("input")
+        if idx + 1 < len(parts) and parts[idx + 1] == "Seq1":
+            parts.insert(idx + 2, "imageSequence")
+    if "Segments" in parts:
+        seg_idx = parts.index("Segments")
+        if seg_idx + 1 < len(parts) and not parts[seg_idx + 1].startswith("wham_output_"):
+            parts[seg_idx + 1] = f"wham_output_{parts[seg_idx + 1]}"
+    alt = workspace.joinpath(*parts)
+    if alt.exists():
+        return alt
+
+    return None
+
 def _evaluate_camera_pair(camA, camB, base_cfg, gt_dir, workspace, seg_name: str) -> dict:
     current_set = extract_set_name(camA["pkl"])
     os_v, usr, ts = get_system_metadata()
-    if not (workspace / camA["pkl"]).exists() or not (workspace / camB["pkl"]).exists():
-        print("Bỏ qua cặp này do thiếu file pkl đầu vào.")
-        return {"set": current_set, "master": camA["id"], "supplement": camB["id"], 
-                "os_version": os_v, "username": usr, "timestamp": ts}
+
+    pklA_path = resolve_existing_path(camA["pkl"], workspace)
+    pklB_path = resolve_existing_path(camB["pkl"], workspace)
+    gt_path = resolve_existing_path(gt_dir, workspace)
+
+    if not pklA_path or not pklB_path:
+        print(f"Bỏ qua cặp này do thiếu file pkl đầu vào: {camA['id']} -> {camB['id']}")
+        return None
+
+    camA_copy = dict(camA, pkl=str(pklA_path.relative_to(workspace)))
+    camB_copy = dict(camB, pkl=str(pklB_path.relative_to(workspace)))
+    resolved_gt_dir = str(gt_path) if gt_path else gt_dir
+
     try:
-        config = _setup_pipeline_config(base_cfg, gt_dir, camA, camB, workspace)
+        config = _setup_pipeline_config(base_cfg, resolved_gt_dir, camA_copy, camB_copy, workspace)
         run_pipeline(config, stage_override=None)
         res = _parse_pipeline_results(config, current_set, camA["id"], camB["id"], seg_name)
 
@@ -552,12 +615,6 @@ def _matches_active_config(result: dict, config: dict) -> bool:
         and as_bool(result.get("kinematic_constraints")) == optimization["use_kinematic_constraints"]
         and result.get("loss_type") == optimization["loss_type"]
         and as_bool(result.get("optimization_enabled")) == optimization["enabled"]
-        and as_bool(result.get("confidence_correction")) == correction["enabled"]
-        and as_bool(result.get("orientation_correction")) == correction["orientation_enabled"]
-        and result.get("correction_blend") == correction["blend_mode"]
-        and result.get("alignment_mode") == correction["alignment_mode"]
-        and result.get("correction_selector") == correction["selector"]
-        and result.get("confidence_delta_cap") == correction["confidence_delta_cap"]
         and as_bool(result.get("learnable_enabled")) == config["learnable"]["enabled"]
         and as_bool(result.get("learnable_extra_enabled")) == config["learnable_extra"]["enabled"]
     )
@@ -625,7 +682,8 @@ def _process_segment(seg, existing, base_cfg, ws_dir, sh_name, ws_title, all_res
                 print(f"[Thử lại] Cặp {cA['id']}-{cB['id']} từng bị lỗi ở lần chạy trước. Đang tiến hành chạy lại...")
         
         res = _evaluate_camera_pair(cA, cB, base_cfg, str(ws_dir / seg["ground_truth_dir"]), ws_dir, seg_name)
-        results.append(res)
+        if res is not None:
+            results.append(res)
         
         current_time = time.time()
         if current_time - last_update_time > 30:
@@ -653,13 +711,13 @@ def run_brute_force():
     # Đây là bước bắt buộc: pipeline.yml dùng ${VAR:-default} nên phải set
     # os.environ TRƯỚC khi custom_yaml.load() được gọi bên trong load_config().
     nb_name = get_notebook_name()
-    if nb_name:
-        print(f"[ENV] Detecting notebook: '{nb_name}'")
-        set_env_from_filename(nb_name)
+    if not nb_name:
+        nb_name = os.environ.get("NOTEBOOK_NAME", "ablation_hieuDT_belief_fusion_H260912RayCasting_optical_global_kinematic_huber_alpha1E_2_beta85E_2.ipynb")
+        print(f"[ENV] Defaulting to notebook environment: '{nb_name}'")
     else:
-        raise RuntimeError(
-            "Cannot detect the notebook name. Set NOTEBOOK_NAME before calling run_brute_force()."
-        )
+        print(f"[ENV] Detecting notebook: '{nb_name}'")
+    
+    set_env_from_filename(nb_name)
 
     # Gọi hàm load_config sau khi env vars đã sẵn sàng
     base_cfg = load_config(WS_DIR / "configs/pipeline.yml")
@@ -676,25 +734,45 @@ def run_brute_force():
     print("Learnable extra trong config:", base_cfg['learnable_extra']['enabled'])
     
     default_sh_name = Path(nb_name).stem
-    sh_name = get_spreadsheet_name_input(default_name=default_sh_name, timeout=10)
-    
-    existing, existing_ws_title, has_end_marker = load_existing_spreadsheet_results(sh_name)
+    if _COLAB_AVAILABLE:
+        sh_name = get_spreadsheet_name_input(default_name=default_sh_name, timeout=10)
+        existing, existing_ws_title, has_end_marker = load_existing_spreadsheet_results(sh_name)
+    else:
+        output_dir = Path("output/reports")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        report_file = output_dir / f"{default_sh_name}.csv"
+        existing, has_end_marker = load_existing_csv_results(report_file)
+        if has_end_marker:
+            new_csv_name = f"{default_sh_name}_Run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            sh_name = new_csv_name
+            existing = {}
+            existing_ws_title = None
+            print(f"[+] File báo cáo CSV cũ '{report_file.name}' đã HOÀN TẤT (có dấu END). Khởi tạo file báo cáo mới: '{sh_name}.csv'")
+        else:
+            sh_name = default_sh_name
+            existing_ws_title = sh_name
+            if existing:
+                print(f"[+] Tìm thấy file báo cáo CSV CHƯA HOÀN THÀNH '{report_file.name}' ({len(existing)} cặp đã chạy). Sẽ tiếp tục chạy nốt các cặp còn lại.")
+            else:
+                print(f"[+] Khởi tạo file báo cáo mới: '{sh_name}.csv'")
+
     completed = [result for result in existing.values() if result.get("mpjpe", float('inf')) != float('inf')]
     if completed and not all(_matches_active_config(result, base_cfg) for result in completed):
-        print("[!] Config hiện tại khác worksheet chưa hoàn thành. Tạo worksheet mới để không trộn kết quả cũ.")
+        print("[!] Config hiện tại khác worksheet/file chưa hoàn thành. Tạo file/sheet mới để không trộn kết quả cũ.")
         existing = {}
         existing_ws_title = None
         has_end_marker = False
+
     if existing_ws_title and not has_end_marker:
         ws_title = existing_ws_title
-        print(f"[+] Worksheet (cell/tab) gần nhất '{ws_title}' chưa hoàn thành (chưa có dấu END). Sẽ tiếp tục ghi bổ sung vào worksheet này.")
+        print(f"[+] Báo cáo gần nhất '{ws_title}' chưa hoàn thành (chưa có dấu END). Tiếp tục ghi bổ sung vào báo cáo này.")
     else:
         new_ws_title = f"Run_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
         if existing_ws_title and has_end_marker:
-            print(f"[+] Worksheet (cell/tab) gần nhất '{existing_ws_title}' đã hoàn tất (có dấu END). Tạo worksheet mới: '{new_ws_title}'.")
+            print(f"[+] Báo cáo gần nhất '{existing_ws_title}' đã hoàn tất (có dấu END). Tạo báo cáo mới: '{new_ws_title}'.")
             existing = {}
         else:
-            print(f"[+] Khởi tạo worksheet (cell/tab) mới: '{new_ws_title}' trong file Google Sheets '{sh_name}'.")
+            print(f"[+] Khởi tạo báo cáo mới: '{new_ws_title}'.")
         ws_title = new_ws_title
 
     all_res = {}

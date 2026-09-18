@@ -42,7 +42,7 @@ fusion:
 
   occlusion:
     enabled: true # Ray-casting trên mesh torso trong hệ tọa độ camera.
-    tau: 0.001 # Khoảng cách an toàn (m) giữa giao điểm mesh và joint.
+    tau: 0.02 # Khoảng cách an toàn (m) giữa giao điểm mesh và joint.
 
   # Cấu hình RANSAC dùng để ước lượng similarity transform giữa 2 camera.
   ransac:
@@ -54,18 +54,20 @@ fusion:
     enabled: true # Enabled soft confidence blending & sequence root alignment
     orientation_enabled: false # Disabled after the 20-pair ablation showed regression.
     reject_new_mismatches: true
-    confidence_delta_cap: 0.15 # Fix #2: tăng ngưỡng để K2_set có joint khi slave belief thấp hơn master vừa phải
+    confidence_delta_cap: 0.05 # Giảm ngưỡng delta cap xuống 0.05 để giải phóng tập điểm F cho SLSQP tối ưu hóa
     blend_mode: confidence # Trộn theo belief liên tục thay vì hard replace
     alignment_mode: sequence_root # Tự ước lượng scale/rotation từ cả sequence, không cần camera calibration.
-    selector: confidence # Dung hợp khi Slave có belief cao hơn Master (H2 > H1 + delta)
+    selector: limb_winner # Thay cả chuỗi tay/chân khi một camera tin cậy hơn; giữ confidence/occlusion để A/B.
+    max_bone_angle_deg: 25.0 # Bỏ qua chain nếu hướng xương đổi > 25° (giới hạn biến dạng hình dạng PA).
 
   optimization:
     enabled: true # Enabled kinematic & temporal SLSQP optimizer
     use_kinematic_constraints: ${KINEMATIC_CONSTRAINTS:-true}
     loss_type: ${LOSS_TYPE:-"huber"} # huber hoặc mse.
     regularization: true
-    regularization_lambda: 1.0 # Hệ số phạt của proximity regularization.
+    regularization_lambda: 2.0 # Hệ số phạt của proximity regularization.
     temporal_lambda: 2.0 # Hệ số phạt theo thời gian so với frame trước.
+    accel_lambda: 3.0 # Hệ số phạt gia tốc 2nd-order giữa 3 frame liên tiếp.
     max_iter: 1000 # Số vòng lặp tối đa cho bộ giải SLSQP.
 
 learnable:

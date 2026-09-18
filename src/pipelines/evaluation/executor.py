@@ -1,0 +1,651 @@
+import csv
+import json
+import os 
+import re
+from pathlib import Path
+from typing import Optional
+
+import numpy as np
+from src.core.keypoints_map import load_keypoints3d_map
+
+EVALUATION_OUTPUT_MODULE_NAMES = {
+    "learnable": "fusion-learnable",
+    "learnable_extra": "only_learnable",
+}
+CAMERAS = ["camera1", "camera2"]
+CAMERA_FILE_NAMES = {
+    "camera1": "cam1",
+    "camera2": "cam2",
+}
+
+
+def _camera_key_from_video_path(video_path: Optional[str]) -> str:
+    if not video_path:
+        return "camera1"
+    stem = Path(video_path).stem
+    match = re.search(r"video_(\d+)", stem)
+    if match:
+        return f"camera{int(match.group(1))}"
+    match = re.search(r"camera_(\d+)", stem)
+    if match:
+        return f"camera{int(match.group(1))}"
+    nums = re.findall(r"\d+", stem)
+    if nums:
+        return f"camera{int(nums[-1])}"
+    return "camera1"
+
+def _frame_index_from_path(p: Path) -> int:
+    nums = re.findall(r"\d+", p.stem)
+    return int(nums[-1]) if nums else -1
+
+def _resolve_root_joint(joints: dict) -> np.ndarray:
+    if "left_hip" in joints and "right_hip" in joints:
+        return (joints["left_hip"] + joints["right_hip"]) / 2.0
+    raise ValueError("Missing left_hip or right_hip for root alignment")
+
+def _compute_mpjpe(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], keys: list[str]) -> tuple[float, dict[str, float]]:
+    pred_root = _resolve_root_joint(pred)
+    truth_root = _resolve_root_joint(truth)
+
+    errors = []
+    errors_dict = {}
+    for k in keys:
+        p = pred[k] - pred_root
+        t = truth[k] - truth_root
+        err = float(np.linalg.norm(p - t) * 1000.0)
+        errors.append(err)
+        errors_dict[k] = err
+    return float(np.mean(errors)), errors_dict
+
+def _compute_pa_mpjpe(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], keys: list[str]) -> tuple[float, dict[str, float]]:
+    P = np.array([pred[k] for k in keys], dtype=float)
+    T = np.array([truth[k] for k in keys], dtype=float)
+
+    P_c = P - np.mean(P, axis=0)
+    T_c = T - np.mean(T, axis=0)
+
+    norm_P = np.linalg.norm(P_c)
+    norm_T = np.linalg.norm(T_c)
+    
+    if norm_P < 1e-6 or norm_T < 1e-6:
+        P_aligned = np.broadcast_to(np.mean(T, axis=0), P.shape)
+    else:
+        P_c_unit = P_c / norm_P
+        T_c_unit = T_c / norm_T
+
+        U, s, Vt = np.linalg.svd(np.dot(T_c_unit.T, P_c_unit))
+        correction = np.eye(3)
+        correction[-1, -1] = -1.0 if np.linalg.det(np.dot(U, Vt)) < 0 else 1.0
+        R = np.dot(np.dot(U, correction), Vt)
+
+        scale = np.sum(s * np.diag(correction)) * (norm_T / norm_P)
+        P_aligned = np.dot(P_c, R.T) * scale + np.mean(T, axis=0)
+
+    errors = []
+    errors_dict = {}
+    for i, k in enumerate(keys):
+        err = float(np.linalg.norm(P_aligned[i] - T[i]) * 1000.0)
+        errors.append(err)
+        errors_dict[k] = err
+        
+    return float(np.mean(errors)), errors_dict
+
+def _compute_pck(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], keys: list[str], threshold_mm: float) -> tuple[float, dict[str, float]]:
+    pred_root = _resolve_root_joint(pred)
+    truth_root = _resolve_root_joint(truth)
+    scores = []
+    scores_dict = {}
+    for k in keys:
+        error_mm = float(np.linalg.norm((pred[k] - pred_root) - (truth[k] - truth_root)) * 1000.0)
+        score = 100.0 if error_mm <= threshold_mm else 0.0
+        scores.append(score)
+        scores_dict[k] = score
+    return float(np.mean(scores)), scores_dict
+
+
+def _compute_mble(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], bones: list[list[str]]) -> tuple[float, dict]:
+    details = {}
+    for start, end in bones:
+        if start not in pred or end not in pred or start not in truth or end not in truth:
+            continue
+        pred_length = float(np.linalg.norm(pred[start] - pred[end]) * 1000.0)
+        truth_length = float(np.linalg.norm(truth[start] - truth[end]) * 1000.0)
+        details[f"{start}-{end}"] = {
+            "pred_length_mm": pred_length,
+            "truth_length_mm": truth_length,
+            "error_mm": abs(pred_length - truth_length),
+        }
+    errors = [values["error_mm"] for values in details.values()]
+    return (float(np.mean(errors)) if errors else float("nan")), details
+
+
+def _compute_acceleration_error(
+    pred_triplet: tuple[dict, dict, dict],
+    truth_triplet: tuple[dict, dict, dict],
+    keys: list[str],
+) -> tuple[float, dict]:
+    pred_prev, pred_current, pred_next = pred_triplet
+    truth_prev, truth_current, truth_next = truth_triplet
+    details = {}
+    for key in keys:
+        pred_accel = pred_next[key] - 2.0 * pred_current[key] + pred_prev[key]
+        truth_accel = truth_next[key] - 2.0 * truth_current[key] + truth_prev[key]
+        details[key] = {
+            "pred_accel_mm_frame2": float(np.linalg.norm(pred_accel) * 1000.0),
+            "truth_accel_mm_frame2": float(np.linalg.norm(truth_accel) * 1000.0),
+            "error_mm_frame2": float(np.linalg.norm(pred_accel - truth_accel) * 1000.0),
+        }
+    errors = [values["error_mm_frame2"] for values in details.values()]
+    return (float(np.mean(errors)) if errors else float("nan")), details
+
+def _load_json(p: Path) -> dict:
+    with p.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _validate_pose_sources(metadata: dict, expected: dict[str, str], metadata_path: Path) -> None:
+    actual = metadata.get("metadata", {}).get("source_pkl_stems")
+    if actual != expected:
+        raise ValueError(
+            f"Output source mismatch in {metadata_path}: expected {expected}, got {actual}. "
+            "Regenerate pose/fusion outputs for the configured inputs."
+        )
+
+
+def _validate_fusion_config(metadata: dict, expected: dict, metadata_path: Path) -> None:
+    actual = metadata.get("metadata", {}).get("fusion_config")
+    if actual != expected:
+        raise ValueError(
+            f"Fusion config mismatch in {metadata_path}. Regenerate fusion-dependent outputs."
+        )
+
+
+def _load_frame_map(frame_dir: Path, frame_offset: int = 0) -> dict[int, Path]:
+    frame_map = {}
+    for path in frame_dir.glob("*.json"):
+        frame_idx = _frame_index_from_path(path)
+        if frame_idx < 0:
+            raise ValueError(f"Cannot extract frame index from {path}")
+        frame_idx += frame_offset
+        if frame_idx in frame_map:
+            raise ValueError(f"Duplicate frame index {frame_idx} in {frame_dir}")
+        frame_map[frame_idx] = path
+    return frame_map
+
+
+def _load_segment_gt(path: Path) -> dict:
+    if not path.exists():
+        raise FileNotFoundError(f"GT file not found: {path}")
+    with path.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+    
+    gt_map = {}
+    for idx, item in enumerate(data):
+        gt_map[idx] = item
+        if "frame_id" in item:
+            gt_map[int(item["frame_id"])] = item
+    return gt_map
+
+
+def _parse_new_gt(item: dict, canonical_names: set, map_data: dict) -> dict:
+    joints = {}
+    # Convert from millimeters to meters to match the prediction scale
+    pose3d = np.array(item["pose3d"], dtype=float) / 1000.0
+    if pose3d.shape != (28, 3) or not np.isfinite(pose3d).all():
+        raise ValueError(f"Expected finite GT pose3d shape (28, 3), got {pose3d.shape}")
+    
+    # MPI-INF-3DHP 28-joint format indices (correct mapping):
+    # [0]=spine3, [1]=spine4, [2]=spine2, [3]=spine, [4]=pelvis,
+    # [5]=neck, [6]=head, [7]=head_top,
+    # [8]=left_clavicle, [9]=left_shoulder, [10]=left_elbow, [11]=left_wrist, [12]=left_hand,
+    # [13]=right_clavicle, [14]=right_shoulder, [15]=right_elbow, [16]=right_wrist, [17]=right_hand,
+    # [18]=left_hip, [19]=left_knee, [20]=left_ankle, [21]=left_foot, [22]=left_toe,
+    # [23]=right_hip, [24]=right_knee, [25]=right_ankle, [26]=right_foot, [27]=right_toe
+    new_gt_indices = {
+        "head": 6,
+        "neck": 5,
+        "pelvis": 4,
+        "left_shoulder": 9,   "right_shoulder": 14,
+        "left_elbow": 10,     "right_elbow": 15,
+        "left_wrist": 11,     "right_wrist": 16,
+        "left_hand": 12,      "right_hand": 17,
+        "left_hip": 18,       "right_hip": 23,
+        "left_knee": 19,      "right_knee": 24,
+        "left_ankle": 20,     "right_ankle": 25,
+        "left_foot": 21,      "right_foot": 26,
+        "left_toe": 22,       "right_toe": 27,
+    }
+    
+    for name, idx in new_gt_indices.items():
+        joints[name] = pose3d[idx]
+            
+    return joints
+
+
+def _format_frame_sample(frames: set[int], limit: int = 8) -> str:
+    if not frames:
+        return "[]"
+    ordered = sorted(frames)
+    if len(ordered) <= limit:
+        return str(ordered)
+    head = ", ".join(str(n) for n in ordered[:limit])
+    return f"[{head}, ...] (total={len(ordered)})"
+
+
+def _warn_frame_mismatch(module_name: str, truth_frames: set[int], module_frames: set[int]) -> None:
+    extra_truth = truth_frames - module_frames
+    extra_module = module_frames - truth_frames
+    if not extra_truth and not extra_module:
+        return
+    print(
+        f"[Evaluation] Frame mismatch in {module_name}: "
+        f"truth={len(truth_frames)}, module={len(module_frames)}, "
+        f"overlap={len(truth_frames & module_frames)}"
+    )
+    if extra_truth:
+        print(f"[Evaluation]   GT-only frames: {_format_frame_sample(extra_truth)}")
+    if extra_module:
+        print(f"[Evaluation]   Output-only frames: {_format_frame_sample(extra_module)}")
+
+
+def _resolve_truth_frame_payload(truth_data: dict, testcase_name: Optional[str], truth_path: Path) -> dict:
+    if testcase_name is not None:
+        tc_data = truth_data.get(testcase_name)
+        if tc_data is None:
+            raise ValueError(f"Missing testcase {testcase_name} in {truth_path}")
+        if not isinstance(tc_data, dict):
+            raise ValueError(f"Invalid testcase payload for {testcase_name} in {truth_path}")
+        return tc_data
+
+    camera_keys = [key for key in truth_data if re.fullmatch(r"camera\d+", str(key))]
+    if camera_keys:
+        return truth_data
+
+    if len(truth_data) != 1:
+        raise ValueError(
+            f"Expected either camera* keys or exactly one top-level testcase entry in {truth_path} "
+            "when evaluation.testcase_name is null"
+        )
+
+    tc_data = next(iter(truth_data.values()))
+    if not isinstance(tc_data, dict):
+        raise ValueError(f"Invalid top-level testcase payload in {truth_path}")
+    return tc_data
+
+def run_evaluation(config: dict) -> None:
+    from src.core.config_loader import resolve_inputs
+
+    eval_cfg = config.get("evaluation", {})
+    if not eval_cfg["enabled"]:
+        print("[Evaluation] Disabled by config: evaluation.enabled=false")
+        return
+
+    paths = config["paths"]
+    inputs = resolve_inputs(config)
+    map_data = load_keypoints3d_map(paths["keypoints3d_map"])
+    joint_names = [k["name"] for k in map_data["keypoints"]]
+    canonical_names = set(joint_names)
+    priority1_names = map_data.get("priority1", [])
+    priority2_names = map_data.get("priority2", [])
+    skeleton = map_data.get("skeleton", [])
+
+    truth_dir = Path(inputs["ground_truth_dir"])
+    out_dir = Path(paths["evaluation_output_dir"])
+    testcase_name = eval_cfg.get("testcase_name")
+    if testcase_name in ("", None):
+        testcase_name = None
+
+    metrics_cfg = eval_cfg.get("metrics")
+    if not isinstance(metrics_cfg, dict):
+        raise ValueError("Missing config section: evaluation.metrics")
+    for key in ("pa_mpjpe", "mpjpe", "pck"):
+        if key not in metrics_cfg or metrics_cfg[key] is None:
+            raise ValueError(f"Missing config evaluation metric flag: evaluation.metrics.{key}")
+    metric_enabled = {
+        "MPJPE": bool(metrics_cfg["mpjpe"]),
+        "PA-MPJPE": bool(metrics_cfg["pa_mpjpe"]),
+        "PCK": bool(metrics_cfg["pck"]),
+    }
+    pck_threshold_mm = metrics_cfg.get("pck_threshold_mm", 150.0)
+    if not isinstance(pck_threshold_mm, (int, float)) or isinstance(pck_threshold_mm, bool) or pck_threshold_mm <= 0:
+        raise ValueError("evaluation.metrics.pck_threshold_mm must be a positive number")
+    enabled_metrics = [name for name, enabled in metric_enabled.items() if enabled]
+    mble_enabled = bool(metrics_cfg.get("mble", False))
+    accel_enabled = bool(metrics_cfg.get("accel", False))
+    if not enabled_metrics and not mble_enabled and not accel_enabled:
+        raise ValueError("At least one evaluation metric must be enabled")
+    if mble_enabled and not skeleton:
+        raise ValueError("MBLE requires skeleton entries in the 3D keypoint map")
+
+    if config.get("runtime", {}).get("clean_output", True):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for old in out_dir.glob("*.csv"):
+            old.unlink(missing_ok=True)
+    else:
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+    module_names = ["posed"]
+    if config.get("fusion", {}).get("enabled", False):
+        module_names.append("fused")
+    if config.get("learnable", {}).get("enabled", False):
+        module_names.append("learnable")
+    if config.get("learnable_extra", {}).get("enabled", False):
+        module_names.append("learnable_extra")
+
+    module_dirs = {
+        "posed": Path(paths["pose_output_dir"]) / "keypoints3d",
+    }
+    if "fused" in module_names:
+        module_dirs["fused"] = Path(paths["fused_output_dir"]) / "keypoints3d"
+    if "learnable" in module_names:
+        module_dirs["learnable"] = Path(paths["learnable_output_dir"]) / "keypoints3d"
+    if "learnable_extra" in module_names:
+        module_dirs["learnable_extra"] = Path(paths["learnable_extra_output_dir"]) / "keypoints3d"
+
+    for name, mdir in module_dirs.items():
+        if not mdir.exists():
+            raise FileNotFoundError(f"Missing required module directory: {mdir}")
+
+    # GT là segment file, mỗi camera có một file riêng.
+    cam1_gt_stem = Path(inputs.get("cam1_pkl", "")).stem
+    cam2_gt_stem = Path(inputs.get("cam2_pkl", "")).stem
+    if not cam1_gt_stem or not cam2_gt_stem:
+        raise ValueError("Missing cam1_pkl or cam2_pkl in inputs to determine GT files.")
+        
+    cam1_gt_path = truth_dir / f"{cam1_gt_stem}.json"
+    cam2_gt_path = truth_dir / f"{cam2_gt_stem}.json"
+    expected_source_stems = {"camera1": cam1_gt_stem, "camera2": cam2_gt_stem}
+    
+    gt_cam1_data = _load_segment_gt(cam1_gt_path)
+    gt_cam2_data = _load_segment_gt(cam2_gt_path)
+    gt_cam_data = {"camera1": gt_cam1_data, "camera2": gt_cam2_data}
+
+    gt_camera_keys = {
+        "camera1": _camera_key_from_video_path(inputs.get("camera1_video")),
+        "camera2": _camera_key_from_video_path(inputs.get("camera2_video")),
+    }
+
+    module_frame_maps = {}
+    module_frame_sets = {}
+    for name, mdir in module_dirs.items():
+        module_frame_maps[name] = _load_frame_map(mdir)
+        module_frame_sets[name] = set(module_frame_maps[name])
+
+    posed_frames = module_frame_sets["posed"]
+    if not posed_frames:
+        raise ValueError("No pose frames found for evaluation.")
+    for name, frames_set in module_frame_sets.items():
+        if frames_set != posed_frames:
+            _warn_frame_mismatch(name, posed_frames, frames_set)
+            raise ValueError(f"Frame set for {name} does not exactly match pose output.")
+
+    frames = sorted(posed_frames)
+    metadata_specs = {
+        "posed": (Path(paths["pose_output_dir"]) / "metadata", "pose_data_"),
+        "fused": (Path(paths["fused_output_dir"]) / "metadata", "fused_data_"),
+        "learnable": (Path(paths["learnable_output_dir"]) / "metadata", "learnable_frame_"),
+        "learnable_extra": (Path(paths["learnable_extra_output_dir"]) / "metadata", "learnable_extra_frame_"),
+    }
+
+    # metrics: metric -> cam -> frame -> module -> priority -> value
+    results = {metric: {"camera1": {}, "camera2": {}} for metric in enabled_metrics}
+    mble_results = {cam: {} for cam in CAMERAS}
+    sequences = {cam: {} for cam in CAMERAS}
+    source_frame_ids = {cam: {} for cam in CAMERAS}
+    evaluated_frames = []
+    # First pass: determine which frames have valid metadata + GT
+    frame_gt_ids = {}  # frame -> (cam1_frame_id, cam2_frame_id)
+    for frame in frames:
+        metadata_by_module = {}
+        for module_name in module_names:
+            metadata_dir, prefix = metadata_specs[module_name]
+            metadata_path = metadata_dir / f"{prefix}{frame}.json"
+            if not metadata_path.exists():
+                raise FileNotFoundError(f"Missing metadata for {module_name} frame {frame}: {metadata_path}")
+            metadata_by_module[module_name] = _load_json(metadata_path)
+            _validate_pose_sources(metadata_by_module[module_name], expected_source_stems, metadata_path)
+            if module_name in ("fused", "learnable"):
+                _validate_fusion_config(metadata_by_module[module_name], config["fusion"], metadata_path)
+
+        metadata = metadata_by_module["posed"]
+        src_indices = metadata.get("metadata", {}).get("source_frame_indices", {})
+        
+        cam1_frame_id = src_indices.get("camera1")
+        cam2_frame_id = src_indices.get("camera2")
+        
+        if cam1_frame_id not in gt_cam1_data or cam2_frame_id not in gt_cam2_data:
+            continue
+
+        evaluated_frames.append(frame)
+        frame_gt_ids[frame] = (cam1_frame_id, cam2_frame_id)
+
+    if not evaluated_frames:
+        raise ValueError(
+            f"Evaluation completed with 0 valid frames out of {len(frames)} common frames. "
+            f"All {len(frames)} frames were skipped due to missing metadata or GT mismatch. "
+            "Check that pose outputs match the configured ground truth."
+        )
+
+    # Second pass: compute metrics for all valid frames
+    for frame in evaluated_frames:
+        cam1_frame_id, cam2_frame_id = frame_gt_ids[frame]
+
+        for cam in CAMERAS:
+            gt_frame_id = cam1_frame_id if cam == "camera1" else cam2_frame_id
+            truth_item = gt_cam_data[cam][gt_frame_id]
+            truth_joints = _parse_new_gt(truth_item, canonical_names, map_data)
+
+            if accel_enabled:
+                source_frame_ids[cam][frame] = gt_frame_id
+                sequences[cam][frame] = {"truth": truth_joints}
+
+            for metric in results:
+                if frame not in results[metric][cam]:
+                    results[metric][cam][frame] = {}
+
+            for mod in module_names:
+                mod_path = module_frame_maps[mod][frame]
+                mod_data = _load_json(mod_path)
+                if cam not in mod_data:
+                    raise ValueError(f"Missing {cam} in {mod_path}")
+
+                pred_joints = {k: np.array(v, dtype=float) for k, v in mod_data[cam].items()}
+
+                if mble_enabled:
+                    mean_mble, bone_details = _compute_mble(pred_joints, truth_joints, skeleton)
+                    mble_results[cam].setdefault(frame, {})[mod] = {
+                        "mean_mm": mean_mble,
+                        "details": bone_details,
+                    }
+                if accel_enabled:
+                    sequences[cam][frame][mod] = pred_joints
+                
+                # Filter priority names to only include keys present in both pred and truth
+                available_keys = set(pred_joints.keys()) & set(truth_joints.keys())
+                valid_priority1 = [k for k in priority1_names if k in available_keys]
+                valid_priority2 = [k for k in priority2_names if k in available_keys]
+                
+                if not valid_priority1:
+                    print(f"Warning: No overlapping priority1 keys for {mod} {cam} frame {frame}")
+
+                # compute metrics
+                # MPJPE
+                if metric_enabled["MPJPE"]:
+                    results["MPJPE"][cam][frame].setdefault(mod, {})
+                    mean_p1, dict_p1 = _compute_mpjpe(pred_joints, truth_joints, valid_priority1) if valid_priority1 else (0.0, {})
+                    results["MPJPE"][cam][frame][mod]["priority1_mm"] = mean_p1
+                    results["MPJPE"][cam][frame][mod]["priority1_details"] = dict_p1
+                    
+                    mean_p2, dict_p2 = _compute_mpjpe(pred_joints, truth_joints, valid_priority2) if valid_priority2 else (0.0, {})
+                    results["MPJPE"][cam][frame][mod]["priority2_mm"] = mean_p2
+                    results["MPJPE"][cam][frame][mod]["priority2_details"] = dict_p2
+
+                if metric_enabled["PA-MPJPE"]:
+                    results["PA-MPJPE"][cam][frame].setdefault(mod, {})
+                    mean_p1, dict_p1 = _compute_pa_mpjpe(pred_joints, truth_joints, valid_priority1) if valid_priority1 else (0.0, {})
+                    results["PA-MPJPE"][cam][frame][mod]["priority1_mm"] = mean_p1
+                    results["PA-MPJPE"][cam][frame][mod]["priority1_details"] = dict_p1
+                    
+                    mean_p2, dict_p2 = _compute_pa_mpjpe(pred_joints, truth_joints, valid_priority2) if valid_priority2 else (0.0, {})
+                    results["PA-MPJPE"][cam][frame][mod]["priority2_mm"] = mean_p2
+                    results["PA-MPJPE"][cam][frame][mod]["priority2_details"] = dict_p2
+
+                if metric_enabled["PCK"]:
+                    results["PCK"][cam][frame].setdefault(mod, {})
+                    mean_p1, dict_p1 = _compute_pck(pred_joints, truth_joints, valid_priority1, pck_threshold_mm) if valid_priority1 else (0.0, {})
+                    results["PCK"][cam][frame][mod]["priority1_mm"] = mean_p1
+                    results["PCK"][cam][frame][mod]["priority1_details"] = dict_p1
+
+                    mean_p2, dict_p2 = _compute_pck(pred_joints, truth_joints, valid_priority2, pck_threshold_mm) if valid_priority2 else (0.0, {})
+                    results["PCK"][cam][frame][mod]["priority2_mm"] = mean_p2
+                    results["PCK"][cam][frame][mod]["priority2_details"] = dict_p2
+
+
+    module_output_names = {
+        mod: EVALUATION_OUTPUT_MODULE_NAMES.get(mod, mod)
+        for mod in module_names
+    }
+
+    accel_results = {cam: {} for cam in CAMERAS}
+    if accel_enabled:
+        for cam in CAMERAS:
+            for previous_frame, frame, next_frame in zip(evaluated_frames, evaluated_frames[1:], evaluated_frames[2:]):
+                if source_frame_ids[cam][frame] - source_frame_ids[cam][previous_frame] != 1:
+                    continue
+                if source_frame_ids[cam][next_frame] - source_frame_ids[cam][frame] != 1:
+                    continue
+
+                truth_triplet = tuple(sequences[cam][f]["truth"] for f in (previous_frame, frame, next_frame))
+                for mod in module_names:
+                    pred_triplet = tuple(sequences[cam][f][mod] for f in (previous_frame, frame, next_frame))
+                    keys = [
+                        key for key in joint_names
+                        if all(key in joints for joints in (*pred_triplet, *truth_triplet))
+                    ]
+                    mean_accel, joint_details = _compute_acceleration_error(pred_triplet, truth_triplet, keys)
+                    accel_results[cam].setdefault(frame, {})[mod] = {
+                        "mean_mm_frame2": mean_accel,
+                        "details": joint_details,
+                    }
+
+    for metric in enabled_metrics:
+        unit = "percent" if metric == "PCK" else "mm"
+        header = ["Frame", "Evaluated_Camera", "Ground_Truth_Camera"]
+        for mod in module_names:
+            out_name = module_output_names[mod]
+            header.append(f"{out_name}_priority1_{unit}")
+            header.append(f"{out_name}_priority2_{unit}")
+            for joint in priority1_names:
+                header.append(f"{out_name}_{joint}_{unit}")
+
+        for cam in CAMERAS:
+            filename = f"{metric}_{CAMERA_FILE_NAMES[cam]}.csv"
+            out_file = out_dir / filename
+            with out_file.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(header)
+
+                avg_sums = {h: 0.0 for h in header[3:]}
+
+                for frame in evaluated_frames:
+                    row = [frame, cam, gt_camera_keys[cam]]
+                    for mod in module_names:
+                        out_name = module_output_names[mod]
+                        
+                        v1 = results[metric][cam][frame][mod]["priority1_mm"]
+                        v2 = results[metric][cam][frame][mod]["priority2_mm"]
+                        row.append(f"{v1:.2f}")
+                        row.append(f"{v2:.2f}")
+                        avg_sums[f"{out_name}_priority1_{unit}"] += v1
+                        avg_sums[f"{out_name}_priority2_{unit}"] += v2
+                        
+                        p1_details = results[metric][cam][frame][mod]["priority1_details"]
+                        for joint in priority1_names:
+                            err_j = p1_details.get(joint, 0.0)
+                            row.append(f"{err_j:.2f}")
+                            avg_sums[f"{out_name}_{joint}_{unit}"] += err_j
+                    writer.writerow(row)
+
+                n_frames = len(evaluated_frames)
+                if n_frames > 0:
+                    avg_row = ["AVERAGE", cam, gt_camera_keys[cam]]
+                    for h in header[3:]:
+                        avg_row.append(f"{(avg_sums[h]/n_frames):.2f}")
+                    writer.writerow(avg_row)
+
+    if mble_enabled:
+        header = [
+            "Frame", "Evaluated_Camera", "Ground_Truth_Camera", "Module", "Bone",
+            "Pred_Length_mm", "GT_Length_mm", "Bone_Error_mm", "Frame_MBLE_mm",
+        ]
+        for cam in CAMERAS:
+            out_file = out_dir / f"MBLE_{CAMERA_FILE_NAMES[cam]}.csv"
+            with out_file.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(header)
+                for frame in evaluated_frames:
+                    for mod in module_names:
+                        result = mble_results[cam][frame][mod]
+                        for bone, values in result["details"].items():
+                            writer.writerow([
+                                frame, cam, gt_camera_keys[cam], module_output_names[mod], bone,
+                                f'{values["pred_length_mm"]:.2f}',
+                                f'{values["truth_length_mm"]:.2f}',
+                                f'{values["error_mm"]:.2f}',
+                                f'{result["mean_mm"]:.2f}',
+                            ])
+
+    if accel_enabled:
+        header = [
+            "Frame", "Evaluated_Camera", "Ground_Truth_Camera", "Module", "Joint",
+            "Pred_Accel_mm_frame2", "GT_Accel_mm_frame2", "Accel_Error_mm_frame2", "Frame_Accel_Error_mm_frame2",
+        ]
+        for cam in CAMERAS:
+            out_file = out_dir / f"Accel_{CAMERA_FILE_NAMES[cam]}.csv"
+            with out_file.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(header)
+                for frame in evaluated_frames:
+                    for mod in module_names:
+                        result = accel_results[cam].get(frame, {}).get(mod)
+                        if result is None:
+                            continue
+                        for joint, values in result["details"].items():
+                            writer.writerow([
+                                frame, cam, gt_camera_keys[cam], module_output_names[mod], joint,
+                                f'{values["pred_accel_mm_frame2"]:.2f}',
+                                f'{values["truth_accel_mm_frame2"]:.2f}',
+                                f'{values["error_mm_frame2"]:.2f}',
+                                f'{result["mean_mm_frame2"]:.2f}',
+                            ])
+
+    if "learnable_extra" in module_names and len(evaluated_frames) > 0:
+        learnable_extra_summary = {}
+        target_metrics = ["MPJPE", "PA-MPJPE"]
+        
+        for cam in CAMERAS:
+            cam_dict = {}
+            for metric in target_metrics:
+                if metric_enabled.get(metric):
+                    # Tính tổng lỗi của priority1_mm trên tất cả các frame
+                    total_err = sum(
+                        results[metric][cam][frame]["learnable_extra"]["priority1_mm"] 
+                        for frame in evaluated_frames
+                    )
+                    # Tính trung bình và ép kiểu sang string (giữ 2 chữ số thập phân)
+                    avg_err = total_err / len(evaluated_frames)
+                    cam_dict[metric] = f"{avg_err:.2f}"
+            
+            if cam_dict:
+                learnable_extra_summary[cam] = cam_dict
+
+        # Chuyển đổi dictionary sang chuỗi JSON
+        summary_str = json.dumps(learnable_extra_summary)
+        
+        # Lưu vào biến môi trường của OS
+        os.environ["LEARNABLE_EXTRA_METRICS"] = summary_str
+        print(f"[Evaluation] Đã lưu metrics vào os.environ['LEARNABLE_EXTRA_METRICS']: {summary_str}")
+    
+    print(f"[Evaluation] Done. Output: {out_dir}")
+
+"""## 12. Visualization phase"""

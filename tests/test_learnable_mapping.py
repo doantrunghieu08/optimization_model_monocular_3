@@ -5,8 +5,8 @@ from pathlib import Path
 
 import numpy as np
 
-from keypoints_map import load_keypoints3d_map
-from learnable_pipeline.executor import _get_custom_to_body25, _load_wham_starts, _slice_person, load_stage_results
+from src.core.keypoints_map import load_keypoints3d_map
+from src.pipelines.learnable.executor import _get_custom_to_body25, _load_wham_starts, _slice_person, load_stage_results
 
 
 class LearnableMappingTest(unittest.TestCase):

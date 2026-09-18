@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from fusion_pipeline.correction import (
+from src.pipelines.fusion.correction import (
     apply_confidence_corrections,
     apply_root_relative,
     estimate_sequence_root_similarity,

@@ -1,7 +1,7 @@
 import unittest
 import numpy as np
 from scipy.optimize import minimize
-from fusion_pipeline.optimization import optimize_f_points, calculate_stats
+from src.pipelines.fusion.optimization import optimize_f_points, calculate_stats
 
 class OptimizationDeepDiveTest(unittest.TestCase):
     def setUp(self):

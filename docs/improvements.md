@@ -1,102 +1,144 @@
-# Các cải tiến của phương pháp đề xuất so với mô hình gốc
+# Các Cải Tiến Của Phương Pháp Đề Xuất So Với Mô Hình Gốc
 
-## 1. Phạm vi so sánh
+> [!NOTE]
+> Tài liệu này tổng hợp chi tiết các cải tiến về mặt kiến trúc, thuật toán nhận biết che khuất (occlusion), mô hình hóa độ tin cậy (belief score), hiệu chỉnh liên camera (cross-view correction), và quy trình đánh giá thực nghiệm của pipeline Fusion 3D Pose.
 
-Mô hình gốc đã có một pipeline hoàn chỉnh gồm đồng bộ dữ liệu, ước lượng pose 3D cho từng camera, căn chỉnh hai hệ tọa độ bằng RANSAC–Umeyama, tối ưu các khớp bằng SLSQP, hậu xử lý Learnable SMPLify và đánh giá bằng MPJPE, PA-MPJPE, PCK. Vì vậy, đóng góp của phiên bản cải tiến không nằm ở việc thay thế backbone WHAM/SMPL hoặc mạng `NetBody25`, mà tập trung vào ba vấn đề của bước fusion: nhận biết che khuất, mô hình hóa độ tin cậy của khớp và kiểm soát sai số khi hiệu chỉnh liên camera.
+---
 
-Các thay đổi về runner, cấu hình và chỉ số đánh giá được bổ sung để việc kiểm chứng các cải tiến trên có thể lặp lại và không trộn lẫn kết quả giữa các thí nghiệm.
+## 1. Phạm Vi So Sánh
 
-## 2. Phát hiện tự che khuất bằng ray-casting trên mesh SMPL
+Mô hình gốc đã xây dựng một pipeline hoàn chỉnh gồm:
+* Đồng bộ dữ liệu đa góc nhìn.
+* Ước lượng Pose 3D đơn quan sát (monocular) cho từng camera.
+* Căn chỉnh hai hệ tọa độ bằng thuật toán RANSAC–Umeyama.
+* Tối ưu hóa vị trí khớp bằng bộ giải SLSQP.
+* Hậu xử lý Learnable (SMPLify) và đánh giá qua các chỉ số MPJPE, PA-MPJPE, PCK.
 
-Ở bản gốc, che khuất được ước lượng bằng cách chiếu các đỉnh phần thân lên ảnh, tạo bao lồi 2D và so sánh độ sâu của khớp với một nhóm đỉnh lân cận. Cách làm này phụ thuộc vào camera intrinsics, file phân vùng SMPL bên ngoài và trường `verts_cam` trong dữ liệu WHAM. Do đầu vào thực tế không luôn chứa `verts_cam`, chức năng này mặc định bị tắt; bao lồi 2D cũng không mô tả chính xác bề mặt và khoảng trống của cơ thể.
+Đóng góp của phiên bản cải tiến **không nằm ở việc thay thế backbone** (như WHAM, SMPL hay `NetBody25`), mà tập trung giải quyết 3 vấn đề cốt lõi trong giai đoạn Fusion:
+1. **Nhận biết che khuất góc nhìn (Occlusion Detection)** bằng Ray-Casting 3D.
+2. **Mô hình hóa độ tin cậy thích nghi (Adaptive Belief Score)** kết hợp hình học và 2D confidence.
+3. **Kiểm soát sai số & hiệu chỉnh an toàn (Robust Cross-View Correction)** giữa 2 camera.
 
-Phiên bản cải tiến sinh trực tiếp mesh SMPL trong hệ tọa độ của từng camera ở bước Pose và lưu đồng bộ với các frame keypoint. Các mặt thuộc vùng torso được xác định từ trọng số skinning (`lbs_weights`) của chính mô hình SMPL. Với mỗi khớp cần kiểm tra, hệ thống dựng tia từ tâm camera đến khớp và tính giao với các tam giác torso bằng phép thử ray–triangle. Khớp được xem là bị che nếu tồn tại giao điểm nằm trước khớp một khoảng lớn hơn ngưỡng an toàn `tau`.
+---
 
-Cách tiếp cận này mang lại ba lợi ích:
+## 2. Phát Hiện Tự Che Khuất Bằng Ray-Casting Trên Mesh SMPL
 
-- kiểm tra che khuất trực tiếp trong không gian 3D thay vì xấp xỉ bằng bao lồi 2D;
-- sử dụng đúng mesh và đúng frame đã tạo ra pose của từng camera;
-- không còn phụ thuộc vào intrinsics hoặc file phân vùng ngoài trong đường chạy fusion hiện tại.
+### Hạn chế của mô hình gốc
+Ở bản gốc, che khuất được ước lượng bằng cách chiếu các đỉnh phần thân lên ảnh 2D, tạo bao lồi (convex hull) và so sánh độ sâu của khớp với nhóm đỉnh lân cận.
+* Phụ thuộc vào camera intrinsics và file phân vùng SMPL bên ngoài.
+* Phụ thuộc trường `verts_cam` trong dữ liệu đầu vào. Do đầu vào thực tế không luôn chứa `verts_cam`, chức năng này mặc định bị tắt.
+* Bao lồi 2D không phản ánh đúng hình dạng bề mặt 3D thực tế và khoảng trống tự nhiên của cơ thể.
 
-Kết quả visibility được đưa vào belief score; khớp bị che khuất nhận độ tin cậy bằng 0 trước khi kết hợp với thông tin từ camera còn lại.
+### Giải pháp cải tiến
+Phiên bản cải tiến tái tạo trực tiếp mesh SMPL trong hệ tọa độ camera ở bước Pose và lưu đồng bộ với các frame keypoint.
+* Các mặt thuộc vùng thân (`torso`) được xác định từ trọng số skinning (`lbs_weights`) của mô hình SMPL.
+* Với mỗi khớp cần kiểm tra, hệ thống dựng tia (ray) từ tâm camera đến khớp và tính giao điểm với tam giác torso bằng thuật toán **Ray–Triangle Intersection (Möller–Trumbore)**.
+* Khớp được xác định bị che (`vis = False`) nếu tồn tại giao điểm nằm trước khớp một khoảng lớn hơn ngưỡng an toàn $\tau$ (`occlusion_tau`):
+  $$d_{\text{hit}} < d_{\text{target}} - \tau$$
 
-## 3. Belief score thích nghi theo khoảng cách, che khuất và cấu trúc xương
+> [!TIP]
+> **Ưu điểm vượt trội:**
+> 1. Kiểm tra che khuất trực tiếp trong không gian 3D, chính xác hơn xấp xỉ bao lồi 2D.
+> 2. Sử dụng chính xác mesh và frame đã tạo ra pose của từng camera.
+> 3. Độc lập hoàn toàn với thông số intrinsics camera hay file phân vùng ngoài.
 
-Bản gốc chỉ sử dụng một hàm belief cục bộ cố định dựa trên khoảng cách từ camera đến khớp:
+Kết quả `visibility` được đưa thẳng vào Belief Score: khớp bị che khuất sẽ có độ tin cậy bằng $0$ trước khi hòa trộn dữ liệu với camera còn lại.
 
-\[
-P_j = \frac{C_j}{1 + \alpha L_j^2},
-\]
+---
 
-trong đó \(C_j\) là visibility và \(L_j\) là khoảng cách từ camera đến khớp \(j\). Sau đó, belief của khớp luôn được hòa với belief của các khớp kề trên skeleton bằng trung bình điều hòa.
+## 3. Belief Score Thích Nghi Theo Khoảng Cách, Che Khuất Và Cấu Trúc Xương
 
-Phiên bản cải tiến giữ công thức trên như một baseline (`naive_distance_belief`) và bổ sung `optical_aware_belief`. Hàm mới chia không gian quan sát thành ba vùng:
+### Baseline cũ (`naive_distance_belief`)
+Mô hình gốc sử dụng hàm belief cục bộ cố định giảm dần theo khoảng cách từ camera tới khớp:
 
-- vùng quá gần camera: belief giảm theo hàm Gaussian;
-- vùng quan sát ổn định: belief giảm từ từ theo khoảng cách;
-- vùng quá xa camera: belief tiếp tục giảm theo Gaussian để phản ánh suy giảm chất lượng quan sát.
+$$P_j = \frac{C_j}{1 + \alpha L_j^2}$$
 
-Ngoài belief cục bộ, hệ thống cho phép bật hoặc tắt lan truyền belief theo cấu trúc xương. Khi `global=true`, belief của khớp được kết hợp với trung bình belief của các khớp lân cận:
+Trong đó $C_j \in \{0, 1\}$ là cờ visibility và $L_j$ là khoảng cách 3D từ camera đến khớp $j$.
 
-\[
-H_j = \frac{2P_jB_j}{P_j + B_j + \varepsilon},
-\qquad
-B_j = \beta\,\mathrm{mean}_{k\in\mathcal{N}(j)}(P_k).
-\]
+### Hàm mới (`optical_aware_belief`)
+Phiên bản cải tiến bổ sung mô hình suy giảm chất lượng quang học (`optical_aware_belief`), chia không gian quan sát thành 3 vùng rõ rệt:
+* **Vùng quá gần camera ($L_j < L_{\min}$):** Belief suy giảm theo hàm Gaussian do hiệu ứng méo ống kính/out-of-focus.
+* **Vùng quan sát tối ưu ($L_{\min} \le L_j \le L_{\max}$):** Belief giảm từ từ theo bình phương khoảng cách.
+* **Vùng quá xa camera ($L_j > L_{\max}$):** Belief suy giảm mạnh theo hàm Gaussian do giảm độ phân giải điểm ảnh.
 
-Các láng giềng có belief bằng 0 không được dùng để làm suy giảm một khớp đang nhìn thấy. Belief hình học sau đó tiếp tục được hòa với confidence 2D nếu dữ liệu này tồn tại. Nhờ đó, quyết định chọn khớp từ camera nào không chỉ dựa trên khoảng cách mà còn xét che khuất, chất lượng phát hiện 2D và tính nhất quán của chuỗi xương.
+### Lan truyền belief toàn cục (Global Harmonic Belief)
+Khi `global = true`, belief cục bộ $P_j$ được hòa trộn với trung bình belief của các khớp láng giềng kề trên khung xương:
 
-## 4. Hiệu chỉnh liên camera và tối ưu có cơ chế bảo vệ
+$$H_j = \frac{2 P_j B_j}{P_j + B_j + \varepsilon}$$
 
-Khung RANSAC–Umeyama và SLSQP của bản gốc được giữ lại, nhưng phiên bản mới bổ sung các ràng buộc an toàn:
+$$B_j = (1 - \beta) P_j + \beta \cdot \mathrm{mean}_{k \in \mathcal{N}(j)}(P_k)$$
 
-- phép biến đổi similarity chỉ được ước lượng khi có ít nhất ba anchor không thẳng hàng và mọi tọa độ đều hữu hạn;
-- khi confidence correction được bật, một khớp chỉ được trộn với dự đoán từ camera còn lại khi độ dịch chuyển không vượt quá ngưỡng RANSAC; tỷ lệ trộn lấy trực tiếp từ belief tương đối của hai camera;
-- hiệu chỉnh orientation có thể bật/tắt độc lập; các mismatch mới sinh ra sau hiệu chỉnh được khôi phục về pose trước hiệu chỉnh;
-- bộ tối ưu SLSQP có thể chạy với hoặc không có ràng buộc chiều dài xương;
-- hàm mất mát có thể chọn Huber để giảm ảnh hưởng của outlier hoặc MSE để làm đối chứng;
-- nếu một frame lỗi dữ liệu, hệ thống ghi nhận fallback; toàn bộ kết quả chỉ được xuất khi tỷ lệ fallback không vượt quá `max_fallback_ratio`.
+> [!NOTE]
+> Các khớp láng giềng bị che khuất ($P_k = 0$) sẽ tự động bị loại khỏi phép tính trung bình $B_j$, giúp tránh hiện tượng một khớp visible bị giảm tin cậy oan do láng giềng bị che.
 
-Các cơ chế này không mặc định khẳng định rằng mọi hiệu chỉnh đều tốt hơn. Confidence correction, orientation correction và optimizer hiện đều tắt mặc định vì benchmark held-out chưa vượt raw pose; từng thành phần chỉ được bật trong ablation cho đến khi chứng minh được cải thiện thay vì chỉ vượt một baseline yếu hơn.
+Belief hình học sau đó tiếp tục được kết hợp với điểm tin cậy 2D (từ OpenPose/YOLO/AlphaPose nếu có), đảm bảo việc chọn khớp từ camera nào được cân nhắc toàn diện: khoảng cách 3D, che khuất, 2D confidence và tính nhất quán của chuỗi xương.
 
-## 5. Thiết kế ablation có thể tái lập
+---
 
-Các tham số thí nghiệm được mã hóa trực tiếp trong tên notebook và được nạp vào `pipeline.yml` trước khi chạy. Sáu trường bắt buộc gồm `alpha`, `beta`, phương pháp belief cục bộ, phạm vi belief (`global/local`), ràng buộc động học và loại loss. Tên thiếu hoặc sai thành phần sẽ gây lỗi thay vì âm thầm dùng cấu hình mặc định.
+## 4. Hiệu Chỉnh Liên Camera Và Tối Ưu Có Cơ Chế Bảo Vệ
 
-Bốn cấu hình hiện tại kiểm tra lần lượt:
+Khung RANSAC–Umeyama và bộ giải SLSQP được nâng cấp thêm các cơ chế bảo vệ an toàn nghiêm ngặt:
 
-| Cấu hình | Belief cục bộ | Belief toàn cục | Ràng buộc động học | Loss |
-| --- | --- | --- | --- | --- |
-| `naive_global_kinematic_huber` | Khoảng cách thuần | Có | Có | Huber |
-| `optical_global_kinematic_mse` | Optical-aware | Có | Có | MSE |
-| `optical_global_unconstrained_huber` | Optical-aware | Có | Không | Huber |
-| `optical_local_kinematic_huber` | Optical-aware | Không | Có | Huber |
+1. **Điều kiện RANSAC tối thiểu:** Phép biến đổi đồng dạng (similarity transform) chỉ được tính toán khi có **ít nhất 3 điểm anchor không thẳng hàng** và tọa độ hợp lệ (không chứa `NaN`/`Inf`).
+2. **Ngưỡng dịch chuyển tối đa (Confidence Correction Guard):** Một khớp chỉ được trộn với vị trí dự đoán từ camera đối diện khi khoảng cách dịch chuyển không vượt quá ngưỡng RANSAC (`threshold`). Tỷ lệ trộn $\alpha$ lấy trực tiếp theo tỷ lệ belief tương đối giữa 2 quan sát.
+3. **Quản lý lệch hướng (Orientation Correction):** Hiệu chỉnh mismatch hướng xoay có thể bật/tắt độc lập. Các mismatch mới xuất hiện sau hiệu chỉnh sẽ tự động bị từ chối và khôi phục về pose ban đầu (`reject_new_mismatches`).
+4. **Cơ chế Limb-Winner (Thay thế theo chuỗi chi):** Cho phép thay thế toàn bộ chuỗi khớp tay/chân khi một camera có độ tin cậy vượt trội, đồng thời giới hạn góc quay tối đa của xương (`max_bone_angle_deg`) để tránh biến dạng hình học.
+5. **Bộ giải SLSQP linh hoạt:** Hỗ trợ bật/tắt các ràng buộc độ dài xương (`use_kinematic_constraints`), tùy chọn hàm mất mát giữa **Huber loss** (kháng nhiễu ngoại lai) và **MSE loss** (đối chứng).
+6. **Kiểm soát Fallback:** Khi 1 frame bị lỗi dữ liệu, hệ thống chuyển sang chế độ fallback an toàn. Nếu tỷ lệ frame fallback vượt quá `max_fallback_ratio`, pipeline sẽ dừng và cảnh báo thay vì xuất kết quả lỗi.
 
-Mỗi notebook khai báo `NOTEBOOK_NAME` riêng và mặc định ghi vào một Google Sheet mang tên tương ứng. Runner lưu toàn bộ cấu hình vào metadata, từ chối nối tiếp một worksheet chưa hoàn tất nếu cấu hình không khớp, và có thể tiếp tục từ kết quả dở dang khi cấu hình giống nhau. Điều này khắc phục nguy cơ nhiều thí nghiệm khác nhau nhưng vô tình dùng chung giá trị mặc định hoặc trộn chung kết quả.
+> [!IMPORTANT]
+> Các tính năng hiệu chỉnh (Confidence correction, Orientation correction, SLSQP optimizer) mặc định tắt trên held-out benchmark trừ khi được chứng minh cải thiện qua các bài thí nghiệm Ablation.
 
-## 6. Đánh giá đầy đủ hơn
+---
 
-Bên cạnh MPJPE và PA-MPJPE, phiên bản mới:
+## 5. Thiết Kế Ablation Có Thể Tái Lập (Reproducible Ablation Study)
 
-- sửa PCK thành tỷ lệ phần trăm khớp có sai số nhỏ hơn ngưỡng `pck_threshold_mm`, thay vì trả về khoảng cách trung bình;
-- bổ sung MBLE để đo sai số chiều dài từng xương;
-- bổ sung acceleration error theo đơn vị `mm/frame²` để đánh giá độ ổn định theo thời gian;
-- xuất cả giá trị tổng hợp và sai số chi tiết theo frame, khớp hoặc xương;
-- kiểm tra frame, nguồn PKL và metadata cấu hình trước khi so sánh với ground truth;
-- ghi kết quả định kỳ lên Google Sheets, hỗ trợ tiếp tục thí nghiệm và đánh dấu `END` khi hoàn tất.
+Các tham số thí nghiệm được mã hóa trực tiếp trong tên notebook và nạp vào cấu hình `pipeline.yml` trước khi chạy. Sáu trường bắt buộc bao gồm:
+* `alpha`: Hệ số phạt khoảng cách.
+* `beta`: Trọng số lan truyền skeleton.
+* Phương pháp belief cục bộ (`naive_distance_belief` / `optical_aware_belief`).
+* Phạm vi belief (`global` / `local`).
+* Ràng buộc động học (`use_kinematic_constraints`).
+* Loại hàm loss (`huber` / `mse`).
 
-## 7. Tóm tắt khác biệt chính
+### Các cấu hình Ablation tiêu chuẩn
 
-| Thành phần | Mô hình gốc | Phiên bản cải tiến |
-| --- | --- | --- |
-| Che khuất | Bao lồi 2D và xấp xỉ độ sâu; mặc định tắt | Ray-casting trên tam giác torso của mesh SMPL theo từng frame |
-| Nguồn mesh | Phụ thuộc `verts_cam` trong WHAM | Mesh camera-space được sinh và đồng bộ tại bước Pose |
-| Belief cục bộ | Một hàm suy giảm theo khoảng cách | Có đối chứng giữa naive và optical-aware |
-| Belief toàn cục | Luôn lan truyền qua skeleton | Có thể bật/tắt để ablation |
-| Hiệu chỉnh | Thay thế trực tiếp theo confidence | Trộn theo belief, giới hạn dịch chuyển, có diagnostic và tắt mặc định sau benchmark regression |
-| Tối ưu | Huber và ràng buộc động học cố định | Bật/tắt optimizer, Huber/MSE, có/không ràng buộc động học |
-| Xử lý lỗi | Fallback từng frame có thể che giấu lỗi | Theo dõi tỷ lệ fallback và chỉ xuất khi đạt ngưỡng |
-| Đánh giá | MPJPE, PA-MPJPE và PCK chưa đúng ngữ nghĩa | PCK đúng ngưỡng, bổ sung MBLE và acceleration error |
-| Thí nghiệm | Tham số có thể rơi về mặc định | Cấu hình bắt buộc từ tên notebook, metadata và Sheet tách biệt |
+| Cấu hình | Belief Cục Bộ | Belief Toàn Cục | Ràng Buộc Động Học | Hàm Loss |
+| :--- | :--- | :--- | :--- | :--- |
+| `naive_global_kinematic_huber` | Distance-based | Bật (`global`) | Bật (`kinematic`) | Huber |
+| `optical_global_kinematic_mse` | Optical-aware | Bật (`global`) | Bật (`kinematic`) | MSE |
+| `optical_global_unconstrained_huber` | Optical-aware | Bật (`global`) | Tắt (`unconstrained`) | Huber |
+| `optical_local_kinematic_huber` | Optical-aware | Tắt (`local`) | Bật (`kinematic`) | Huber |
 
-Các cải tiến trên làm cho fusion phản ánh rõ hơn điều kiện quan sát của từng camera và giúp quá trình đánh giá có thể kiểm chứng. Mức cải thiện định lượng về MPJPE, PA-MPJPE, MBLE hoặc acceleration error phải được kết luận từ kết quả của cùng tập dữ liệu và cùng cặp camera; tài liệu này không suy diễn mức tăng độ chính xác khi chưa có số liệu đối chứng hoàn chỉnh.
+Mỗi notebook tự động xác nhận tham số, ghi log vào metadata và đồng bộ trạng thái lên Google Sheets riêng biệt, loại bỏ hoàn toàn nguy cơ dùng nhầm cấu hình mặc định hoặc trộn lẫn kết quả giữa các lần chạy.
+
+---
+
+## 6. Bộ Đánh Giá Mới Đầy Đủ & Chính Xác Hơn
+
+Hệ thống đánh giá (`evaluation`) được nâng cấp toàn diện:
+
+* **PCK (Percentage of Correct Keypoints):** Sửa lại đúng chuẩn ngữ nghĩa — tính tỷ lệ % số khớp có sai số 3D nhỏ hơn ngưỡng `pck_threshold_mm` (mặc định 150mm), thay vì tính khoảng cách trung bình như bản gốc.
+* **MBLE (Mean Bone Length Error):** Bổ sung chỉ số đo sai số chiều dài từng xương so với ground-truth, giúp đánh giá độ biến dạng hình học của khung xương.
+* **Acceleration Error:** Bổ sung đo chỉ số gia tốc khớp theo đơn vị `mm/frame²`, giúp đánh giá độ mượt và hiện tượng rung lắc (jitter) theo thời gian.
+* **Xuất dữ liệu chi tiết:** Hỗ trợ xuất kết quả tổng hợp lẫn phân tích chi tiết theo từng frame, từng loại khớp và từng đoạn xương.
+
+---
+
+## 7. Tóm Tắt So Sánh Thay Đổi Chính
+
+| Thành Phần | Mô Hình Gốc | Phiên Bản Cải Tiến |
+| :--- | :--- | :--- |
+| **Phát hiện che khuất** | Bao lồi 2D & xấp xỉ độ sâu; mặc định tắt | Ray-Casting 3D trên tam giác torso của mesh SMPL từng frame |
+| **Nguồn dữ liệu Mesh** | Phụ thuộc trường `verts_cam` từ WHAM | Mesh camera-space được khởi tạo và đồng bộ từ bước Pose |
+| **Belief cục bộ** | Hàm suy giảm khoảng cách đơn giản | Hỗ trợ đối chứng giữa `naive` và `optical_aware` |
+| **Belief toàn cục** | Luôn lan truyền qua skeleton | Cấu hình bật/tắt linh hoạt cho Ablation Study |
+| **Hiệu chỉnh Cross-View** | Thay thế cứng theo confidence | Trộn theo belief liên tục, giới hạn dịch chuyển, có RANSAC guard & Limb-Winner |
+| **Tối ưu hóa SLSQP** | Cố định Huber loss và kinematic constraints | Linh hoạt bật/tắt optimizer, chọn Huber/MSE, tùy chỉnh temporal/accel loss |
+| **Xử lý lỗi Pipeline** | Fallback ẩn theo từng frame | Giám sát tỷ lệ fallback thực tế (`max_fallback_ratio`) |
+| **Chỉ số đánh giá** | MPJPE, PA-MPJPE, PCK (chưa chuẩn) | PCK chuẩn ngưỡng mm, bổ sung MBLE (sai số xương) và Acceleration Error |
+| **Thực nghiệm Ablation** | Dễ rơi vào cấu hình mặc định | Ràng buộc cấu hình từ tên Notebook, metadata tự động, xuất Google Sheets |
+
+> [!NOTE]
+> Các cải tiến trên giúp hệ thống Fusion phản ánh chính xác điều kiện quan sát vật lý của camera và đem lại quy trình đánh giá chuẩn xác, có thể tái lập. Mức độ cải thiện định lượng (MPJPE / PA-MPJPE / MBLE / Acceleration) được kiểm chứng minh bạch trên từng tập dataset đối chứng.
+

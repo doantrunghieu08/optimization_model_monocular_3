@@ -37,28 +37,45 @@ python main.py
 - **Cấu hình**: Chỉnh sửa file `configs/pipeline.yml` (bật/tắt các bước, đổi đường dẫn input video/pkl, cài đặt device chạy GPU/CPU).
 
 ### 2. Chạy Vét Cạn Tìm Cặp Camera Tốt Nhất (Brute-Force)
-Nếu bạn có một mảng nhiều camera (ví dụ 8 camera) và không biết cặp nào ghép với nhau sẽ cho kết quả 3D tốt nhất, bạn có thể dùng công cụ quét vét cạn. Công cụ này sẽ sinh ra tất cả các hoán vị (ví dụ 56 cặp), chạy toàn bộ quá trình tính toán và xuất báo cáo xếp hạng bằng HTML.
+Nếu bạn có một mảng nhiều camera (ví dụ 8 camera) và không biết cặp nào ghép với nhau sẽ cho kết quả 3D tốt nhất, bạn có thể dùng công cụ quét vét cạn. Công cụ này sẽ sinh ra tất cả các hoán vị (ví dụ 56 cặp), chạy toàn bộ quá trình tính toán và xuất báo cáo xếp hạng.
 
 - **Cấu hình**: Mở `configs/brute_force.yml`, khai báo đường dẫn Ground Truth và danh sách các camera của từng segment.
-- **Lệnh chạy**:
+- **Lệnh chạy trên Local**:
+```bash
+python brute_force_runner_local.py
+```
+- **Lệnh chạy trên Colab / Cloud**:
 ```bash
 python brute_force_runner.py
 ```
-- **Kết quả**: Sau khi chạy xong, file `brute_force_report.html` sẽ được tạo ra tại thư mục gốc. Bạn mở bằng trình duyệt để xem cặp camera nào (Rank 1 - được bôi nền vàng) cho chỉ số MPJPE / PA-MPJPE thấp nhất.
+- **Kết quả**: Báo cáo CSV được lưu tự động vào thư mục `output/reports/brute_force_local_report.csv` và `output/reports/brute_force_full_report.csv`.
 
 ## Cấu trúc thư mục
 
 ```text
 optimization_model_monocular_3/
-├── configs/                   # Thư mục chứa cấu hình (pipeline.yml, brute_force.yml, keypoints map)
-├── input/                     # Dữ liệu đầu vào (Video, file PKL của các camera, thư mục Ground Truth)
-├── models/                    # Trọng số (weights) của SMPL model và các checkpoint
-├── output/                    # Kết quả sinh ra từ các bước (Pose, Fusion, Learnable, Evaluation, Visualization)
-├── _learnable_backend/        # Chứa mã nguồn kiến trúc mạng Neural NetBody25
-├── *_pipeline/                # Các thư mục chứa mã nguồn riêng của từng bước (preprocess, fusion, pose, learnable,...)
-├── brute_force_runner.py      # Script chạy vét cạn đa camera
-├── main.py                    # Script chạy chính gốc (2 camera)
-└── compat.py                  # Module vá lỗi tương thích thư viện cũ (numpy)
+├── configs/                   # Thư mục chứa các file cấu hình YAML (pipeline.yml, brute_force.yml,...)
+├── docs/                      # Tài liệu phân tích kỹ thuật và báo cáo Markdown
+├── input/                     # Dữ liệu đầu vào (Video, file PKL của các camera, Ground Truth)
+├── models/                    # Trọng số (weights) của mô hình SMPL và các checkpoint
+├── output/                    # Kết quả sinh ra từ các pipeline và thư mục reports/ chứa CSV/JSON
+├── notebooks/                 # Thư mục chứa các Jupyter Notebooks phục vụ thử nghiệm & Ablation
+├── scripts/                   # Thư mục chứa các script chạy vét cạn thực nghiệm và tiện ích phụ
+├── src/                       # MÃ NGUỒN CHÍNH CỦA DỰ ÁN (Python Package)
+│   ├── core/                  # Các module tiện ích lõi (config_loader, json_io, keypoints_map, compat)
+│   └── pipelines/             # Các module pipeline xử lý theo từng giai đoạn
+│       ├── preprocess/        # Tiền xử lý (DTW offset, extract 2D, calib)
+│       ├── pose/              # Trích xuất dáng điệu 3D
+│       ├── fusion/            # Hợp nhất đa camera (RANSAC, SLSQP, Correction)
+│       ├── learnable/         # Learnable SMPLify & Neural Backend (NetBody25)
+│       ├── evaluation/        # Đánh giá chỉ số (MPJPE, PA-MPJPE, PCK)
+│       ├── visualization/     # Vẽ và xuất video 3D
+│       └── orchestrator.py    # Điều phối toàn bộ luồng pipeline
+├── tests/                     # Bộ kiểm thử Unit Tests tự động
+├── brute_force_runner.py      # Script chạy vét cạn đa camera (Google Sheets / Colab)
+├── brute_force_runner_local.py # Script chạy vét cạn đa camera dành riêng cho môi trường Local
+├── main.py                    # Script chạy pipeline 2 camera chính
+└── requirements.txt           # Danh sách các thư viện phụ thuộc
 ```
 
 ## Các chỉ số Đánh giá (Evaluation Metrics)

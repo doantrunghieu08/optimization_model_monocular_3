@@ -1,8 +1,8 @@
 import unittest
 import numpy as np
-from fusion_pipeline.correction import _pose_root as correction_pose_root
-from fusion_pipeline.optimization import _pose_root as optimization_pose_root
-from fusion_pipeline.optimization import optimize_f_points, calculate_stats
+from src.pipelines.fusion.correction import _pose_root as correction_pose_root
+from src.pipelines.fusion.optimization import _pose_root as optimization_pose_root
+from src.pipelines.fusion.optimization import optimize_f_points, calculate_stats
 
 class SolutionValidationTest(unittest.TestCase):
     def setUp(self):

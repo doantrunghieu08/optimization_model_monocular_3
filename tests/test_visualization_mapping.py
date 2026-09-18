@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from visualization_pipeline.executor import _load_source_frame_map
+from src.pipelines.visualization.executor import _load_source_frame_map
 
 
 class VisualizationMappingTest(unittest.TestCase):
