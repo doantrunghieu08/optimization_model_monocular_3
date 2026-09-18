@@ -554,8 +554,18 @@ def _evaluate_camera_pair(camA, camB, base_cfg, gt_dir, workspace, seg_name: str
         print(f"Bỏ qua cặp này do thiếu file pkl đầu vào: {camA['id']} -> {camB['id']}")
         return None
 
-    camA_copy = dict(camA, pkl=str(pklA_path.relative_to(workspace)))
-    camB_copy = dict(camB, pkl=str(pklB_path.relative_to(workspace)))
+    try:
+        pklA_rel = str(pklA_path.relative_to(workspace))
+    except ValueError:
+        pklA_rel = str(pklA_path)
+
+    try:
+        pklB_rel = str(pklB_path.relative_to(workspace))
+    except ValueError:
+        pklB_rel = str(pklB_path)
+
+    camA_copy = dict(camA, pkl=pklA_rel)
+    camB_copy = dict(camB, pkl=pklB_rel)
     resolved_gt_dir = str(gt_path) if gt_path else gt_dir
 
     try:
