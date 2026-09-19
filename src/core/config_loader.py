@@ -250,6 +250,8 @@ def validate_config(config):
             raise ValueError("Missing config section: fusion.{}".format(key))
     if not isinstance(fusion_cfg["enabled"], bool):
         raise ValueError("fusion.enabled must be a boolean")
+    if fusion_cfg.get("method", "proposed") not in ("proposed", "aligned_averaging", "higher_belief_selection"):
+        raise ValueError("fusion.method must be proposed, aligned_averaging, or higher_belief_selection")
     max_fallback_ratio = fusion_cfg.get("max_fallback_ratio", 0.0)
     if not isinstance(max_fallback_ratio, (int, float)) or isinstance(max_fallback_ratio, bool) or not 0 <= max_fallback_ratio <= 1:
         raise ValueError("fusion.max_fallback_ratio must be a number between 0 and 1")

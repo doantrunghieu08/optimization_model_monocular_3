@@ -11,6 +11,7 @@ from src.pipelines.fusion.optimization import calculate_stats
 from src.core.config_loader import resolve_preprocess_output_dir
 from src.pipelines.fusion.correction import estimate_bidirectional_similarity
 from src.pipelines.fusion.correction import estimate_sequence_root_similarity
+from src.pipelines.fusion.correction import fuse_aligned_poses
 from src.pipelines.fusion.detector import get_orientation_flag
 from src.pipelines.fusion.config import OUTPUT_SUBDIRS
 from src.pipelines.fusion.config import NON_REPLACEABLE_ANCHORS
@@ -196,6 +197,7 @@ def run_phase3_pipeline(
     correction_selector="confidence",
     shared_body_pose_enabled=False,
     max_bone_angle_deg=DEFAULT_MAX_BONE_ANGLE_DEG,
+    fusion_method="proposed",
 ):
     raw_cam1 = {k: as_xyz(v) for k, v in data_in["camera1"].items()}
     raw_cam2 = {k: as_xyz(v) for k, v in data_in["camera2"].items()}
@@ -281,7 +283,7 @@ def run_phase3_pipeline(
 
     # Fix #3: l_list Minimum Size Guard — kiểm tra đủ joint trước khi gọi RANSAC
     identity = (1.0, np.eye(3), np.zeros(3))
-    needs_transform = effective_correction or orientation_correction_enabled or effective_optimization
+    needs_transform = fusion_method != "proposed" or effective_correction or orientation_correction_enabled or effective_optimization
     if precomputed_transforms is not None:
         t12, t21 = precomputed_transforms
         a_list = l_list
@@ -305,7 +307,15 @@ def run_phase3_pipeline(
     else:
         t12, t21, a_list = identity, identity, l_list
 
-    if effective_correction:  # Fix #4: dùng effective_correction thay vì confidence_correction_enabled
+    if fusion_method != "proposed":
+        cam1_corr, cam2_corr = fuse_aligned_poses(
+            cam1, cam2, H1_all, H2_all, t12, t21, fusion_method,
+            root_relative=root_relative_correction,
+        )
+        applied_k1, applied_k2 = set(), set()
+        effective_correction = False
+        effective_optimization = False
+    elif effective_correction:  # Fix #4: dùng effective_correction thay vì confidence_correction_enabled
         if correction_selector == "limb_winner":
             cam1_corr, cam2_corr, applied_k1, applied_k2 = apply_limb_winner_corrections(
                 cam1, cam2, k1_set, k2_set, t12, t21,
@@ -324,7 +334,7 @@ def run_phase3_pipeline(
     else:
         cam1_corr, cam2_corr = dict(cam1), dict(cam2)
         applied_k1, applied_k2 = set(), set()
-    if orientation_correction_enabled:
+    if fusion_method == "proposed" and orientation_correction_enabled:
         cam1_corr, cam2_corr = apply_rotation_mismatch_corrections(
             cam1_corr,
             cam2_corr,
@@ -370,7 +380,7 @@ def run_phase3_pipeline(
         optimized_data = {"camera1": dict(cam1_corr), "camera2": dict(cam2_corr)}
 
     m_after = _orientation_mismatches(optimized_data["camera1"], optimized_data["camera2"], names)
-    rejected_mismatches = sorted(m_after - m_set) if reject_new_mismatches else []
+    rejected_mismatches = sorted(m_after - m_set) if fusion_method == "proposed" and reject_new_mismatches else []
     for name in rejected_mismatches:
         optimized_data["camera1"][name] = cam1[name]
         optimized_data["camera2"][name] = cam2[name]
@@ -399,6 +409,7 @@ def run_phase3_pipeline(
         "confidence_correction_enabled": bool(effective_correction),  # Fix #4: phản ánh trạng thái thực tế
         "alignment_mode": "sequence_root" if root_relative_correction else "frame",
         "correction_selector": correction_selector,
+        "fusion_method": fusion_method,
         "limb_decisions": limb_decisions,
         "shared_body_pose_enabled": bool(shared_body_pose_enabled),
         "rejected_new_mismatches": rejected_mismatches,
@@ -460,8 +471,9 @@ def run_fusion(config: dict) -> None:
     loaded_frames = [(path, _load_pose_frame(path, metadata_dir=metadata_dir)) for path in file_paths]
     sequence_transforms = None
     sequence_alignment = None
+    fusion_method = fusion_cfg.get("method", "proposed")
     if alignment_mode == "sequence_root" and (
-        correction_cfg.get("enabled", False) or correction_cfg.get("orientation_enabled", False)
+        fusion_method != "proposed" or correction_cfg.get("enabled", False) or correction_cfg.get("orientation_enabled", False)
     ):
         alignment_joints = ("neck", "left_shoulder", "right_shoulder", "left_hip", "right_hip")
         t12, t21, sequence_alignment = estimate_sequence_root_similarity(
@@ -528,6 +540,7 @@ def run_fusion(config: dict) -> None:
                 correction_selector=correction_cfg.get("selector", "confidence"),
                 shared_body_pose_enabled=fusion_cfg.get("shared_body_pose_enabled", False),
                 max_bone_angle_deg=correction_cfg.get("max_bone_angle_deg", DEFAULT_MAX_BONE_ANGLE_DEG),
+                fusion_method=fusion_method,
             )
             occluded_cam1 = sorted(name for name, visible in result.get("vis1", {}).items() if not visible)
             occluded_cam2 = sorted(name for name, visible in result.get("vis2", {}).items() if not visible)

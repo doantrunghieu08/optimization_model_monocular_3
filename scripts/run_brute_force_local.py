@@ -10,7 +10,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 # Set environment variables for best config
 # os.environ["NOTEBOOK_NAME"] = "ablation_hieuDT_belief_fusion_H260912RayCasting_optical_global_kinematic_huber_alpha1E_2_beta85E_2.ipynb"
-os.environ["NOTEBOOK_NAME"] = "ablation_hieuDT_belief_fusion_H260912RayCasting_optical_global_kinematic_mse_alpha1E_2_beta85E_2.ipynb"
+os.environ["NOTEBOOK_NAME"] = "ablation_hieuDT_belief_fusion_H260912RayCasting_optical_global_kinematic_huber_alpha1E_2_beta85E_2.ipynb"
 os.environ["ALPHA"] = "0.01"
 os.environ["BETA"] = "0.85"
 os.environ["LOCAL_METHOD"] = "optical_aware_belief"

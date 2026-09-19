@@ -32,6 +32,7 @@ paths:
 
 fusion:
   enabled: true
+  method: proposed # proposed, aligned_averaging, hoặc higher_belief_selection.
   shared_body_pose_enabled: false # Fusion local SMPL rotations; không cần camera calibration.
   max_fallback_ratio: 0.0 # Fail nếu có bất kỳ frame nào không fusion được.
   belief:

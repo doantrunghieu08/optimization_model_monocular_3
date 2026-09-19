@@ -7,6 +7,7 @@ from src.pipelines.fusion.correction import (
     apply_root_relative,
     estimate_sequence_root_similarity,
     estimate_umeyama,
+    fuse_aligned_poses,
     ransac_umeyama,
 )
 
@@ -90,6 +91,23 @@ class FusionCorrectionTest(unittest.TestCase):
 
         np.testing.assert_allclose(candidate, frames[0]["camera2"]["neck"], atol=1e-8)
         self.assertEqual(diagnostics["inliers"], diagnostics["observations"])
+
+    def test_aligned_baselines_average_or_select_higher_belief(self):
+        cam1 = {"joint": np.array([0.0, 0.0, 0.0])}
+        cam2 = {"joint": np.array([2.0, 0.0, 0.0])}
+        identity = (1.0, np.eye(3), np.zeros(3))
+
+        averaged1, averaged2 = fuse_aligned_poses(
+            cam1, cam2, {"joint": 0.8}, {"joint": 0.2}, identity, identity, "aligned_averaging"
+        )
+        selected1, selected2 = fuse_aligned_poses(
+            cam1, cam2, {"joint": 0.8}, {"joint": 0.2}, identity, identity, "higher_belief_selection"
+        )
+
+        np.testing.assert_array_equal(averaged1["joint"], [1.0, 0.0, 0.0])
+        np.testing.assert_array_equal(averaged2["joint"], [1.0, 0.0, 0.0])
+        np.testing.assert_array_equal(selected1["joint"], cam1["joint"])
+        np.testing.assert_array_equal(selected2["joint"], cam1["joint"])
 
 
 if __name__ == "__main__":

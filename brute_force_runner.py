@@ -132,6 +132,34 @@ def parse_detailed_csv(csv_path: str, prefix: str) -> tuple[float, dict[str, flo
                 return float(row[t_idx]), j_dict
     return float('inf'), {}
 
+def parse_visibility_mpjpe(csv_path: str, prefix: str, metadata_dir: Path) -> tuple[float, float]:
+    path = Path(csv_path)
+    if not path.exists() or not metadata_dir.exists():
+        return float('inf'), float('inf')
+    buckets = {False: [], True: []}
+    with open(path, 'r', encoding='utf-8') as f:
+        reader = csv.reader(f)
+        header = next(reader)
+        joint_indices = {
+            h[len(f"{prefix}_") : -len("_mm")]: i
+            for i, h in enumerate(header)
+            if h.startswith(f"{prefix}_") and h.endswith("_mm") and "priority" not in h
+        }
+        for row in reader:
+            if not row or row[0] == "AVERAGE":
+                continue
+            try:
+                frame = int(float(row[0]))
+                with open(metadata_dir / f"fused_data_{frame}.json", 'r', encoding='utf-8') as meta_file:
+                    visibility = json.load(meta_file).get("vis1", {})
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            for joint, idx in joint_indices.items():
+                if idx < len(row) and row[idx]:
+                    buckets[bool(visibility.get(joint, True))].append(float(row[idx]))
+    means = [sum(buckets[visible]) / len(buckets[visible]) if buckets[visible] else float('inf') for visible in (False, True)]
+    return means[0], means[1]
+
 def parse_frame_metric_csv(csv_path: str, module: str, target_column: str) -> float:
     path = Path(csv_path)
     if not path.exists(): return float('inf')
@@ -191,10 +219,10 @@ def _get_sheet_data(sheet_name: str) -> tuple[list, list, str | None, bool]:
 def _get_header_indices(header: list) -> dict:
     idx = {}
     keys = [
-        'Set', 'Segment', 'Cam Master', 'Cam Slave', 'Alpha', 'Beta',
+        'Set', 'Segment', 'Cam Master', 'Cam Slave', 'Fusion Method', 'Alpha', 'Beta',
         'Global Belief', 'Local Method', 'Kinematic Constraints', 'Loss Type',
         'Optimization Enabled', 'Learnable', 'Learnable Extra',
-        'MPJPE', 'PA-MPJPE', 'MBLE',
+        'MPJPE', 'Occ. MPJPE', 'Vis. MPJPE', 'PA-MPJPE', 'MBLE',
         'Fusion MBLE', 'LE MBLE', 'Old MBLE',
         'Accel Error (mm/frame^2)', 'GT Accel Error (mm/frame^2)',
         'Fusion Accel Error (mm/frame^2)', 'LE Accel Error (mm/frame^2)',
@@ -230,9 +258,11 @@ def _parse_history_row(row: list, idx: dict) -> tuple:
         v = str(v).strip().replace(',', '.')
         return float(v) if v not in ("N/A", "") else float('inf')
     
-    key = (row[idx['Segment']], row[idx['Cam Master']], row[idx['Cam Slave']])
+    method = get_val('Fusion Method', 'proposed')
+    key = (row[idx['Segment']], row[idx['Cam Master']], row[idx['Cam Slave']], method)
     res = {
         "set": get_val('Set', "Unknown_Set"), "master": key[1], "supplement": key[2],
+        "fusion_method": method,
         "alpha": sf('Alpha'), "beta": sf('Beta'),
         "global_belief": get_val('Global Belief'),
         "local_method": get_val('Local Method'),
@@ -241,7 +271,8 @@ def _parse_history_row(row: list, idx: dict) -> tuple:
         "optimization_enabled": get_val('Optimization Enabled'),
         "learnable_enabled": get_val('Learnable'),
         "learnable_extra_enabled": get_val('Learnable Extra'),
-        "mpjpe": sf('MPJPE'), "pa_mpjpe": sf('PA-MPJPE'),
+        "mpjpe": sf('MPJPE'), "occ_mpjpe": sf('Occ. MPJPE'), "vis_mpjpe": sf('Vis. MPJPE'),
+        "pa_mpjpe": sf('PA-MPJPE'),
         "mble": sf('MBLE'), "accel": sf('Accel Error (mm/frame^2)'),
         "fusion_mble": sf('Fusion MBLE'), "le_mble": sf('LE MBLE'),
         "old_mble": sf('Old MBLE'),
@@ -270,7 +301,7 @@ def load_existing_spreadsheet_results(sheet_name: str) -> tuple[dict, str | None
     idx = _get_header_indices(header)
     required = (
         'Segment', 'Alpha', 'Beta', 'Global Belief', 'Local Method',
-        'Kinematic Constraints', 'Loss Type', 'MBLE', 'Accel Error (mm/frame^2)',
+        'Kinematic Constraints', 'Loss Type', 'Occ. MPJPE', 'Vis. MPJPE', 'MBLE', 'Accel Error (mm/frame^2)',
         'Optimization Enabled', 'Learnable', 'Learnable Extra',
         'Fusion MBLE', 'LE MBLE', 'Old MBLE', 'GT Accel Error (mm/frame^2)',
         'Fusion Accel Error (mm/frame^2)', 'LE Accel Error (mm/frame^2)',
@@ -294,8 +325,10 @@ def load_existing_csv_results(csv_path: Path) -> tuple[dict, bool]:
                 return existing, False
             header = reader[0]
             rows = reader[1:]
-            has_end_marker = any(row and row[0] == "End" for row in rows)
             idx = _get_header_indices(header)
+            if idx['Occ. MPJPE'] == -1 or idx['Vis. MPJPE'] == -1:
+                return existing, False
+            has_end_marker = any(row and row[0] == "End" for row in rows)
             for row in rows:
                 key, res = _parse_history_row(row, idx)
                 if key and key[0] != "N/A":
@@ -306,10 +339,10 @@ def load_existing_csv_results(csv_path: Path) -> tuple[dict, bool]:
         return existing, False
 
 def _build_report_rows(all_results: dict, joint_keys: list = None) -> list:
-    header = ['Set', 'Segment', 'Cam Master', 'Cam Slave', 'Alpha', 'Beta',
+    header = ['Set', 'Segment', 'Cam Master', 'Cam Slave', 'Fusion Method', 'Alpha', 'Beta',
               'Global Belief', 'Local Method', 'Kinematic Constraints', 'Loss Type',
               'Optimization Enabled', 'Learnable', 'Learnable Extra',
-              'MPJPE', 'PA-MPJPE', 'MBLE', 'Accel Error (mm/frame^2)',
+              'MPJPE', 'Occ. MPJPE', 'Vis. MPJPE', 'PA-MPJPE', 'MBLE', 'Accel Error (mm/frame^2)',
               'Fusion MBLE', 'LE MBLE', 'Old MBLE',
               'GT Accel Error (mm/frame^2)', 'Fusion Accel Error (mm/frame^2)',
               'LE Accel Error (mm/frame^2)', 'Old Accel Error (mm/frame^2)',
@@ -328,6 +361,7 @@ def _build_report_rows(all_results: dict, joint_keys: list = None) -> list:
                 continue
             row = [
                 res.get('set', 'Unknown_Set'), seg_name, res['master'], res.get('supplement', 'N/A'),
+                res.get('fusion_method', 'proposed'),
                 res.get('alpha', 'N/A'), res.get('beta', 'N/A'),
                 res.get('global_belief', 'N/A'), res.get('local_method', 'N/A'),
                 res.get('kinematic_constraints', 'N/A'),
@@ -335,7 +369,9 @@ def _build_report_rows(all_results: dict, joint_keys: list = None) -> list:
                 res.get('optimization_enabled', 'N/A'),
                 res.get('learnable_enabled', 'N/A'),
                 res.get('learnable_extra_enabled', 'N/A'),
-                fmt(res.get('mpjpe', float('inf'))), fmt(res.get('pa_mpjpe', float('inf'))),
+                fmt(res.get('mpjpe', float('inf'))),
+                fmt(res.get('occ_mpjpe', float('inf'))), fmt(res.get('vis_mpjpe', float('inf'))),
+                fmt(res.get('pa_mpjpe', float('inf'))),
                 fmt(res.get('mble', float('inf'))), fmt(res.get('accel', float('inf'))),
                 fmt(res.get('fusion_mble', float('inf'))), fmt(res.get('le_mble', float('inf'))),
                 fmt(res.get('old_mble', float('inf'))),
@@ -438,6 +474,8 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
     correction_cfg = config["fusion"]["correction"]
     
     mpjpe, m_jts = parse_detailed_csv(eval_dir / "MPJPE_cam1.csv", t_pref)
+    metadata_dir = Path(config["paths"]["fused_output_dir"]) / "metadata"
+    occ_mpjpe, vis_mpjpe = parse_visibility_mpjpe(eval_dir / "MPJPE_cam1.csv", t_pref, metadata_dir)
     pa_mpjpe, pa_jts = parse_detailed_csv(eval_dir / "PA-MPJPE_cam1.csv", t_pref)
     mble_csv = eval_dir / "MBLE_cam1.csv"
     mble = parse_frame_metric_csv(mble_csv, t_pref, "Frame_MBLE_mm")
@@ -457,7 +495,7 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
     pd_m = (old_m - mpjpe)*100/old_m if (old_m != float('inf') and mpjpe != float('inf')) else 0.0
     pd_pa = (old_pa - pa_mpjpe)*100/old_pa if (old_pa != float('inf') and pa_mpjpe != float('inf')) else 0.0
     b1, b2, occluded_master, occluded_slave = extract_local_belief(
-        Path(config["paths"]["fused_output_dir"]) / "metadata"
+        metadata_dir
     )
     
     joint_metrics = {f"MPJPE_{k}": v for k, v in m_jts.items()}
@@ -475,7 +513,9 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
 
     return {
         "set": current_set, "master": camA_id, "supplement": camB_id,
+        "fusion_method": config["fusion"].get("method", "proposed"),
         "alpha": belief_cfg["alpha"], "beta": belief_cfg["beta"], "mpjpe": mpjpe,
+        "occ_mpjpe": occ_mpjpe, "vis_mpjpe": vis_mpjpe,
         "global_belief": belief_cfg["global"], "local_method": belief_cfg["local_method"],
         "kinematic_constraints": config["fusion"]["optimization"]["use_kinematic_constraints"],
         "loss_type": config["fusion"]["optimization"]["loss_type"],
@@ -584,6 +624,7 @@ def _evaluate_camera_pair(camA, camB, base_cfg, gt_dir, workspace, seg_name: str
         
         print(f"[{current_time}] Kết quả {camA['id']}-{camB['id']}: "
               f"MPJPE={res['mpjpe']:.2f} (Δ {d_mpjpe:+.2f}%), "
+              f"Occ={res['occ_mpjpe']:.2f}, Vis={res['vis_mpjpe']:.2f}, "
               f"PA-MPJPE={res['pa_mpjpe']:.2f} (Δ {d_pa_mpjpe:+.2f}%), "
               f"MBLE={mble:.2f}, Accel={accel:.2f}",
               f"LE MPJPE={le_mpjpe} (LE PA-MPJPE {le_pa_mpjpe}), "
@@ -669,29 +710,32 @@ def get_spreadsheet_name_input(default_name: str = "Brute_Force_Report_Pipeline 
     print(f"\n[+] Đã ghi nhận tên file tùy chỉnh: '{user_input}'")
     return user_input
 
-def _process_segment(seg, existing, base_cfg, ws_dir, sh_name, ws_title, all_res, current_idx, total_pairs):
+def _process_segment(seg, existing, base_cfg, fusion_methods, ws_dir, sh_name, ws_title, all_res, current_idx, total_pairs):
     seg_name, cameras = seg["name"], seg.get("cameras", [])
-    seg_total_pairs = len(cameras) * (len(cameras) - 1)
+    seg_total_pairs = len(cameras) * (len(cameras) - 1) * len(fusion_methods)
     print(f"\n=== Bắt đầu vét cạn cho Segment: {seg_name} ({seg_total_pairs} cặp) ===")
     
     results = []
     last_update_time = time.time()
     
-    for cA, cB in itertools.permutations(cameras, 2):
+    for (cA, cB), fusion_method in itertools.product(itertools.permutations(cameras, 2), fusion_methods):
         current_idx += 1
-        print(f"\n--- [Tiến trình: {current_idx}/{total_pairs}] Master={cA['id']} | Supplement={cB['id']} ---")
+        print(f"\n--- [Tiến trình: {current_idx}/{total_pairs}] Method={fusion_method} | Master={cA['id']} | Supplement={cB['id']} ---")
 
-        if (seg_name, cA["id"], cB["id"]) in existing:
-            res = existing[(seg_name, cA["id"], cB["id"])]
+        result_key = (seg_name, cA["id"], cB["id"], fusion_method)
+        if result_key in existing:
+            res = existing[result_key]
             if res.get("mpjpe", float('inf')) != float('inf'):
                 print(f"[Bỏ qua] Cặp {cA['id']}-{cB['id']} của {seg_name} đã chạy xong trước đó (MPJPE={res.get('mpjpe')}). Giữ kết quả cũ.")
-                res.update({"set": res.get("set", extract_set_name(cA["pkl"])), "master": cA["id"], "supplement": cB["id"]})
+                res.update({"set": res.get("set", extract_set_name(cA["pkl"])), "master": cA["id"], "supplement": cB["id"], "fusion_method": fusion_method})
                 results.append(res)
                 continue
             else:
                 print(f"[Thử lại] Cặp {cA['id']}-{cB['id']} từng bị lỗi ở lần chạy trước. Đang tiến hành chạy lại...")
         
-        res = _evaluate_camera_pair(cA, cB, base_cfg, str(ws_dir / seg["ground_truth_dir"]), ws_dir, seg_name)
+        method_cfg = dict(base_cfg)
+        method_cfg["fusion"] = dict(base_cfg["fusion"], method=fusion_method)
+        res = _evaluate_camera_pair(cA, cB, method_cfg, str(ws_dir / seg["ground_truth_dir"]), ws_dir, seg_name)
         if res is not None:
             results.append(res)
         
@@ -731,6 +775,10 @@ def run_brute_force():
 
     # Gọi hàm load_config sau khi env vars đã sẵn sàng
     base_cfg = load_config(WS_DIR / "configs/pipeline.yml")
+    fusion_methods = brute_cfg.get("fusion_methods", [base_cfg["fusion"].get("method", "proposed")])
+    allowed_methods = {"proposed", "aligned_averaging", "higher_belief_selection"}
+    if not fusion_methods or any(method not in allowed_methods for method in fusion_methods):
+        raise ValueError(f"fusion_methods must contain only: {', '.join(sorted(allowed_methods))}")
     # Kiểm tra xem file config đã nhận đúng giá trị chưa
     print("Alpha trong config:", base_cfg['fusion']['belief']['alpha'])
     print("Beta trong config:", base_cfg['fusion']['belief']['beta'])
@@ -786,13 +834,13 @@ def run_brute_force():
         ws_title = new_ws_title
 
     all_res = {}
-    for (s_name, master, supplement), res in existing.items():
+    for (s_name, master, supplement, fusion_method), res in existing.items():
         if s_name not in all_res:
             all_res[s_name] = []
         all_res[s_name].append(res)
 
     total_pairs = sum(
-        len(seg.get("cameras", [])) * (len(seg.get("cameras", [])) - 1)
+        len(seg.get("cameras", [])) * (len(seg.get("cameras", [])) - 1) * len(fusion_methods)
         for seg in brute_cfg.get("segments", [])
         if len(seg.get("cameras", [])) >= 2
     )
@@ -802,7 +850,7 @@ def run_brute_force():
         if len(seg.get("cameras", [])) < 2: continue
         
         sorted_res, current_pair_idx = _process_segment(
-            seg, existing, base_cfg, WS_DIR, sh_name, ws_title, all_res, current_pair_idx, total_pairs
+            seg, existing, base_cfg, fusion_methods, WS_DIR, sh_name, ws_title, all_res, current_pair_idx, total_pairs
         )
         all_res[seg["name"]] = sorted_res
         

@@ -155,6 +155,27 @@ def apply_root_relative(point, source_pose, target_pose, transform):
     return _pose_root(target_pose) + apply_similarity(relative, transform)
 
 
+def fuse_aligned_poses(cam1, cam2, h1, h2, t12, t21, method, root_relative=False):
+    """Fuse two poses after expressing each pose in the other camera's frame."""
+    if method not in ("aligned_averaging", "higher_belief_selection"):
+        raise ValueError(f"Unknown aligned fusion method: {method}")
+
+    fused1, fused2 = {}, {}
+    for name in cam1:
+        cam1_in_2 = apply_root_relative(cam1[name], cam1, cam2, t12) if root_relative else apply_similarity(cam1[name], t12)
+        cam2_in_1 = apply_root_relative(cam2[name], cam2, cam1, t21) if root_relative else apply_similarity(cam2[name], t21)
+        if method == "aligned_averaging":
+            fused1[name] = 0.5 * (as_xyz(cam1[name]) + cam2_in_1)
+            fused2[name] = 0.5 * (as_xyz(cam2[name]) + cam1_in_2)
+        elif float(h1.get(name, 0.0)) >= float(h2.get(name, 0.0)):
+            fused1[name] = as_xyz(cam1[name])
+            fused2[name] = cam1_in_2
+        else:
+            fused1[name] = cam2_in_1
+            fused2[name] = as_xyz(cam2[name])
+    return fused1, fused2
+
+
 def _correction_alpha(name, source_confidence, target_confidence, blend_mode):
     if blend_mode == "hard":
         return 1.0

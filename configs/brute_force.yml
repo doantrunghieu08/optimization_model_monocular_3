@@ -1,3 +1,8 @@
+fusion_methods:
+- proposed
+- aligned_averaging
+- higher_belief_selection
+
 segments:
 - name: seg_1
   ground_truth_dir: input/Seq1/GT
