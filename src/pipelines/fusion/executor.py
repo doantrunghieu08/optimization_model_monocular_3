@@ -199,6 +199,9 @@ def run_phase3_pipeline(
     max_bone_angle_deg=DEFAULT_MAX_BONE_ANGLE_DEG,
     fusion_method="proposed",
 ):
+    # Proposed starts from Aligned Averaging, then optionally runs SLSQP.
+    is_proposed = fusion_method == "proposed"
+    effective_fusion_method = "aligned_averaging" if is_proposed else fusion_method
     raw_cam1 = {k: as_xyz(v) for k, v in data_in["camera1"].items()}
     raw_cam2 = {k: as_xyz(v) for k, v in data_in["camera2"].items()}
     source = data_in.get("shared_body_pose") if shared_body_pose_enabled else data_in
@@ -283,10 +286,10 @@ def run_phase3_pipeline(
 
     # Fix #3: l_list Minimum Size Guard — kiểm tra đủ joint trước khi gọi RANSAC
     identity = (1.0, np.eye(3), np.zeros(3))
-    needs_transform = fusion_method != "proposed" or effective_correction or orientation_correction_enabled or effective_optimization
+    needs_transform = effective_fusion_method != "proposed" or effective_correction or orientation_correction_enabled or effective_optimization
     if precomputed_transforms is not None:
         t12, t21 = precomputed_transforms
-        a_list = l_list
+        a_list = [] if is_proposed else l_list
     elif needs_transform:
         if len(l_list) < MIN_LLIST_FOR_RANSAC:
             # l_list quá nhỏ → RANSAC sẽ cho transform không ổn định → dùng identity
@@ -307,14 +310,15 @@ def run_phase3_pipeline(
     else:
         t12, t21, a_list = identity, identity, l_list
 
-    if fusion_method != "proposed":
+    if effective_fusion_method != "proposed":
         cam1_corr, cam2_corr = fuse_aligned_poses(
-            cam1, cam2, H1_all, H2_all, t12, t21, fusion_method,
+            cam1, cam2, H1_all, H2_all, t12, t21, effective_fusion_method,
             root_relative=root_relative_correction,
         )
         applied_k1, applied_k2 = set(), set()
         effective_correction = False
-        effective_optimization = False
+        if not is_proposed:
+            effective_optimization = False
     elif effective_correction:  # Fix #4: dùng effective_correction thay vì confidence_correction_enabled
         if correction_selector == "limb_winner":
             cam1_corr, cam2_corr, applied_k1, applied_k2 = apply_limb_winner_corrections(
@@ -334,7 +338,7 @@ def run_phase3_pipeline(
     else:
         cam1_corr, cam2_corr = dict(cam1), dict(cam2)
         applied_k1, applied_k2 = set(), set()
-    if fusion_method == "proposed" and orientation_correction_enabled:
+    if effective_fusion_method == "proposed" and orientation_correction_enabled:
         cam1_corr, cam2_corr = apply_rotation_mismatch_corrections(
             cam1_corr,
             cam2_corr,
@@ -353,10 +357,15 @@ def run_phase3_pipeline(
     else:
         orientation_applied = set()
 
-    a_new = sorted(set(a_list) | applied_k1 | applied_k2 | orientation_applied | NON_REPLACEABLE_ANCHORS)
-    skipped_corrections = (k1_set | k2_set) - applied_k1 - applied_k2
+    if is_proposed:
+        a_new = sorted(set(names) & NON_REPLACEABLE_ANCHORS)
+        skipped_corrections = set()
+    else:
+        a_new = sorted(set(a_list) | applied_k1 | applied_k2 | orientation_applied | NON_REPLACEABLE_ANCHORS)
+        skipped_corrections = (k1_set | k2_set) - applied_k1 - applied_k2
     f_list = [n for n in names if n not in set(a_new) | skipped_corrections]
     before_stats = calculate_stats(cam1_corr, cam2_corr, f_list, a_new, conf1=H1_all, conf2=H2_all, vis1=vis1, vis2=vis2, f_weights=all_weights, loss_type=loss_type)
+    mismatches_before_optimization = _orientation_mismatches(cam1_corr, cam2_corr, names)
     if effective_optimization:  # Fix #4 & #5: dùng effective_optimization thay vì optimization_enabled
         optimized_data, _ = optimize_f_points(
             {"camera1": cam1_corr, "camera2": cam2_corr},
@@ -380,10 +389,10 @@ def run_phase3_pipeline(
         optimized_data = {"camera1": dict(cam1_corr), "camera2": dict(cam2_corr)}
 
     m_after = _orientation_mismatches(optimized_data["camera1"], optimized_data["camera2"], names)
-    rejected_mismatches = sorted(m_after - m_set) if fusion_method == "proposed" and reject_new_mismatches else []
+    rejected_mismatches = sorted(m_after - mismatches_before_optimization) if is_proposed and reject_new_mismatches else []
     for name in rejected_mismatches:
-        optimized_data["camera1"][name] = cam1[name]
-        optimized_data["camera2"][name] = cam2[name]
+        optimized_data["camera1"][name] = cam1_corr[name]
+        optimized_data["camera2"][name] = cam2_corr[name]
     if rejected_mismatches:
         m_after = _orientation_mismatches(optimized_data["camera1"], optimized_data["camera2"], names)
     after_stats = calculate_stats(optimized_data["camera1"], optimized_data["camera2"], f_list, a_new, conf1=H1_all, conf2=H2_all, vis1=vis1, vis2=vis2, f_weights=all_weights, loss_type=loss_type)
@@ -473,7 +482,10 @@ def run_fusion(config: dict) -> None:
     sequence_alignment = None
     fusion_method = fusion_cfg.get("method", "proposed")
     if alignment_mode == "sequence_root" and (
-        fusion_method != "proposed" or correction_cfg.get("enabled", False) or correction_cfg.get("orientation_enabled", False)
+        fusion_method != "proposed"
+        or correction_cfg.get("enabled", False)
+        or correction_cfg.get("orientation_enabled", False)
+        or opt_cfg.get("enabled", False)
     ):
         alignment_joints = ("neck", "left_shoulder", "right_shoulder", "left_hip", "right_hip")
         t12, t21, sequence_alignment = estimate_sequence_root_similarity(

@@ -48,6 +48,8 @@ File báo cáo này tổng hợp kết quả chạy thực nghiệm vét cạn (
 | **`LE Accel Error`** | `mm/f²` | Sai số gia tốc chuyển động của giai đoạn Learnable Extra. |
 | **`Old Accel Error`** | `mm/f²` | Sai số gia tốc chuyển động của dữ liệu thô (Raw Pose baseline). |
 | **`LE MPJPE Master`** | `mm` | Sai số MPJPE của mô hình Learnable Extra trên camera chính. |
+| **`LE Occ. MPJPE Master`** | `mm` | Sai số MPJPE của Learnable Extra trên các joint bị che khuất của camera chính. |
+| **`LE Vis. MPJPE Master`** | `mm` | Sai số MPJPE của Learnable Extra trên các joint nhìn thấy của camera chính. |
 | **`LE PA-MPJPE Master`** | `mm` | Sai số PA-MPJPE của mô hình Learnable Extra trên camera chính. |
 
 ### 1.4. Thống Kê Che Khuất & Độ Tin Cậy (Diagnostics & Belief)
@@ -64,6 +66,8 @@ File báo cáo này tổng hợp kết quả chạy thực nghiệm vét cạn (
 | Tên Cột | Mô Tả Chi Tiết |
 | :--- | :--- |
 | **`Old MPJPE`** | Sai số MPJPE ban đầu của dữ liệu thô (Raw Pose Baseline). |
+| **`Baseline Occ. MPJPE`** | Sai số MPJPE của Raw Pose Baseline trên các joint bị che khuất của camera chính. |
+| **`Baseline Vis. MPJPE`** | Sai số MPJPE của Raw Pose Baseline trên các joint nhìn thấy của camera chính. |
 | **`Old PA-MPJPE`** | Sai số PA-MPJPE ban đầu của dữ liệu thô (Raw Pose Baseline). |
 | **`% Δ_MPJPE`** | Tỷ lệ % cải thiện MPJPE so với thô ($\Delta > 0$ là giảm sai số/tốt hơn). |
 | **`% Δ_PA-MPJPE`** | Tỷ lệ % cải thiện PA-MPJPE so với thô ($\Delta > 0$ là giảm sai số/tốt hơn). |

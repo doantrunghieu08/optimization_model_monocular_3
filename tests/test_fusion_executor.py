@@ -83,7 +83,14 @@ class FusionExecutorTest(unittest.TestCase):
     @patch("src.pipelines.fusion.executor.optimize_f_points")
     @patch("src.pipelines.fusion.executor.apply_rotation_mismatch_corrections")
     @patch("src.pipelines.fusion.executor.calculate_stats", return_value=(0, 0, 0, 0, 0))
-    @patch("src.pipelines.fusion.executor.estimate_bidirectional_similarity", return_value=((1, None, None), (1, None, None), ["head", "neck", "pelvis"]))
+    @patch(
+        "src.pipelines.fusion.executor.estimate_bidirectional_similarity",
+        return_value=(
+            (1, np.eye(3), np.zeros(3)),
+            (1, np.eye(3), np.zeros(3)),
+            ["head", "neck", "pelvis"],
+        ),
+    )
     @patch("src.pipelines.fusion.executor.apply_confidence_corrections")
     @patch("src.pipelines.fusion.executor.detect_cross_view_errors")
     def test_disabled_regressive_stages_are_skipped(
@@ -120,8 +127,40 @@ class FusionExecutorTest(unittest.TestCase):
         optimizer.assert_not_called()
         self.assertEqual(result["F_optimized"], [])
         self.assertEqual(stats.call_args_list[0].args[2], result["F"])
-        self.assertEqual(result["rejected_new_mismatches"], ["right_elbow"])
+        self.assertEqual(result["rejected_new_mismatches"], [])
         self.assertEqual(result["optimized"]["camera1"]["right_elbow"], camera["right_elbow"])
+
+    def test_proposed_matches_aligned_averaging_without_optimizer(self):
+        names = [
+            "head", "neck", "right_shoulder", "right_elbow", "right_wrist",
+            "left_shoulder", "left_elbow", "left_wrist", "pelvis", "right_hip",
+            "right_knee", "right_ankle", "left_hip", "left_knee", "left_ankle",
+            "left_toe", "left_foot", "right_toe", "right_foot", "left_hand", "right_hand",
+        ]
+        cam1 = {name: [float(i), float(i % 3), 2.0] for i, name in enumerate(names)}
+        cam2 = {name: [float(i) + 0.2, float((i + 1) % 4), 2.1] for i, name in enumerate(names)}
+        identity = (1.0, np.eye(3), np.zeros(3))
+        kwargs = dict(
+            data_in={"camera1": cam1, "camera2": cam2},
+            map_path="configs/keypoints3D_map.yml", occlusion_tau=0.01,
+            regularization=True, regularization_lambda=1.0, temporal_lambda=2.0,
+            max_iter=10, ransac_threshold=0.05, ransac_max_combos=10,
+            belief_alpha=0.001, belief_beta=0.8,
+            confidence_correction_enabled=True, optimization_enabled=False,
+            precomputed_transforms=(identity, identity),
+        )
+
+        proposed = run_phase3_pipeline(**kwargs, fusion_method="proposed")
+        aligned = run_phase3_pipeline(**kwargs, fusion_method="aligned_averaging")
+
+        for camera in ("camera1", "camera2"):
+            for name in names:
+                np.testing.assert_allclose(
+                    proposed["optimized"][camera][name], aligned["optimized"][camera][name]
+                )
+        self.assertEqual(proposed["fusion_method"], "proposed")
+        self.assertFalse(proposed["confidence_correction_enabled"])
+        self.assertEqual(proposed["F_optimized"], [])
 
     @patch("src.pipelines.fusion.executor._orientation_mismatches", return_value=set())
     @patch("src.pipelines.fusion.executor.optimize_f_points")
@@ -129,7 +168,7 @@ class FusionExecutorTest(unittest.TestCase):
     @patch("src.pipelines.fusion.executor.estimate_bidirectional_similarity")
     @patch("src.pipelines.fusion.executor.apply_confidence_corrections")
     @patch("src.pipelines.fusion.executor.detect_cross_view_errors")
-    def test_optimizer_ignores_rejected_corrections_and_keeps_fixed_anchors(
+    def test_proposed_optimizes_non_anchor_joints_after_aligned_average(
         self, detect, correction, similarity, _stats, optimizer, _mismatches
     ):
         names = [
@@ -139,6 +178,7 @@ class FusionExecutorTest(unittest.TestCase):
             "left_toe", "left_foot", "right_toe", "right_foot", "left_hand", "right_hand",
         ]
         camera = {name: [float(index), float(index % 3), 2.0] for index, name in enumerate(names)}
+        camera2 = {name: [value[0] + 2.0, value[1], value[2]] for name, value in camera.items()}
         detect.return_value = {
             "M": set(), "K1": {"right_elbow"}, "K2": set(),
             "L": [name for name in names if name != "right_elbow"],
@@ -151,7 +191,7 @@ class FusionExecutorTest(unittest.TestCase):
         optimizer.return_value = ({"camera1": camera, "camera2": camera}, None)
 
         result = run_phase3_pipeline(
-            {"camera1": camera, "camera2": camera},
+            {"camera1": camera, "camera2": camera2},
             map_path="configs/keypoints3D_map.yml", occlusion_tau=0.01,
             regularization=True, regularization_lambda=1.0, temporal_lambda=2.0,
             max_iter=10, ransac_threshold=0.05, ransac_max_combos=10,
@@ -159,10 +199,18 @@ class FusionExecutorTest(unittest.TestCase):
             confidence_correction_enabled=True, optimization_enabled=True,
         )
 
-        self.assertNotIn("right_elbow", result["F"])
+        self.assertIn("right_elbow", result["F"])
         self.assertNotIn("right_elbow", result["A_new"])
-        self.assertEqual(result["corrections_skipped"], ["right_elbow"])
+        self.assertEqual(result["corrections_skipped"], [])
         self.assertTrue({"left_hip", "right_hip", "left_shoulder", "right_shoulder"} <= set(result["A_new"]))
+        correction.assert_not_called()
+        optimizer.assert_called_once()
+        self.assertEqual(set(optimizer.call_args.args[1]), set(result["A_new"]))
+        self.assertEqual(optimizer.call_args.args[2], result["F"])
+        np.testing.assert_allclose(
+            optimizer.call_args.args[0]["camera1"]["right_elbow"],
+            0.5 * (np.asarray(camera["right_elbow"]) + np.asarray(camera2["right_elbow"])),
+        )
 
     def test_authoritative_source_index_does_not_fall_back_to_wrong_frame(self):
         profile = {"0": {"joint": [1, 2, 0.9]}}

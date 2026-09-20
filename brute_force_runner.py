@@ -227,10 +227,10 @@ def _get_header_indices(header: list) -> dict:
         'Accel Error (mm/frame^2)', 'GT Accel Error (mm/frame^2)',
         'Fusion Accel Error (mm/frame^2)', 'LE Accel Error (mm/frame^2)',
         'Old Accel Error (mm/frame^2)',
-        'LE MPJPE Master', 'LE PA-MPJPE Master',
+        'LE MPJPE Master', 'LE Occ. MPJPE Master', 'LE Vis. MPJPE Master', 'LE PA-MPJPE Master',
         'belief Master', 'belief Slave', 'Occluded Joint-Frames Master',
         'Occluded Joint-Frames Slave',
-        'Old MPJPE', 'Old PA-MPJPE', '% Δ_MPJPE', '% Δ_PA-MPJPE', 
+        'Old MPJPE', 'Baseline Occ. MPJPE', 'Baseline Vis. MPJPE', 'Old PA-MPJPE', '% Δ_MPJPE', '% Δ_PA-MPJPE',
         'OS Version', 'Username', 'Timestamp'
     ]
     for k in keys:
@@ -281,12 +281,17 @@ def _parse_history_row(row: list, idx: dict) -> tuple:
         "le_accel_error": sf('LE Accel Error (mm/frame^2)'),
         "old_accel_error": sf('Old Accel Error (mm/frame^2)'),
         "le_mpjpe_master": get_val('LE MPJPE Master', "N/A"),
+        "le_occ_mpjpe_master": sf('LE Occ. MPJPE Master'),
+        "le_vis_mpjpe_master": sf('LE Vis. MPJPE Master'),
         "le_pa_mpjpe_master": get_val('LE PA-MPJPE Master', "N/A"),
         "belief_master": get_val('belief Master', "[]"),
         "belief_slave": get_val('belief Slave', "[]"),
         "occluded_joint_frames_master": sf('Occluded Joint-Frames Master'),
         "occluded_joint_frames_slave": sf('Occluded Joint-Frames Slave'),
-        "old_mpjpe": sf('Old MPJPE'), "old_pa_mpjpe": sf('Old PA-MPJPE'),
+        "old_mpjpe": sf('Old MPJPE'),
+        "baseline_occ_mpjpe": sf('Baseline Occ. MPJPE'),
+        "baseline_vis_mpjpe": sf('Baseline Vis. MPJPE'),
+        "old_pa_mpjpe": sf('Old PA-MPJPE'),
         "% delta_mpjpe": sf('% Δ_MPJPE') if sf('% Δ_MPJPE') != float('inf') else 0.0,
         "% delta_pa_mpjpe": sf('% Δ_PA-MPJPE') if sf('% Δ_PA-MPJPE') != float('inf') else 0.0,
         "os_version": get_val('OS Version'), "username": get_val('Username'), "timestamp": get_val('Timestamp'),
@@ -306,6 +311,8 @@ def load_existing_spreadsheet_results(sheet_name: str) -> tuple[dict, str | None
         'Fusion MBLE', 'LE MBLE', 'Old MBLE', 'GT Accel Error (mm/frame^2)',
         'Fusion Accel Error (mm/frame^2)', 'LE Accel Error (mm/frame^2)',
         'Old Accel Error (mm/frame^2)',
+        'LE Occ. MPJPE Master', 'LE Vis. MPJPE Master',
+        'Baseline Occ. MPJPE', 'Baseline Vis. MPJPE',
         'Occluded Joint-Frames Master', 'Occluded Joint-Frames Slave',
     )
     if any(idx[column] == -1 for column in required): return existing, None, has_end_marker
@@ -326,7 +333,12 @@ def load_existing_csv_results(csv_path: Path) -> tuple[dict, bool]:
             header = reader[0]
             rows = reader[1:]
             idx = _get_header_indices(header)
-            if idx['Occ. MPJPE'] == -1 or idx['Vis. MPJPE'] == -1:
+            visibility_columns = (
+                'Occ. MPJPE', 'Vis. MPJPE',
+                'LE Occ. MPJPE Master', 'LE Vis. MPJPE Master',
+                'Baseline Occ. MPJPE', 'Baseline Vis. MPJPE',
+            )
+            if any(idx[column] == -1 for column in visibility_columns):
                 return existing, False
             has_end_marker = any(row and row[0] == "End" for row in rows)
             for row in rows:
@@ -346,10 +358,10 @@ def _build_report_rows(all_results: dict, joint_keys: list = None) -> list:
               'Fusion MBLE', 'LE MBLE', 'Old MBLE',
               'GT Accel Error (mm/frame^2)', 'Fusion Accel Error (mm/frame^2)',
               'LE Accel Error (mm/frame^2)', 'Old Accel Error (mm/frame^2)',
-              'LE MPJPE Master', 'LE PA-MPJPE Master', 
+              'LE MPJPE Master', 'LE Occ. MPJPE Master', 'LE Vis. MPJPE Master', 'LE PA-MPJPE Master',
               'belief Master', 'belief Slave', 'Occluded Joint-Frames Master',
               'Occluded Joint-Frames Slave', 'Old MPJPE',
-              'Old PA-MPJPE', '% Δ_MPJPE', '% Δ_PA-MPJPE', 
+              'Baseline Occ. MPJPE', 'Baseline Vis. MPJPE', 'Old PA-MPJPE', '% Δ_MPJPE', '% Δ_PA-MPJPE',
               'OS Version', 'Username', 'Timestamp']
     rows = [header]
     
@@ -379,11 +391,17 @@ def _build_report_rows(all_results: dict, joint_keys: list = None) -> list:
                 fmt(res.get('fusion_accel_error', float('inf'))),
                 fmt(res.get('le_accel_error', float('inf'))),
                 fmt(res.get('old_accel_error', float('inf'))),
-                res.get('le_mpjpe_master', 'N/A'), res.get('le_pa_mpjpe_master', 'N/A'),
+                res.get('le_mpjpe_master', 'N/A'),
+                fmt(res.get('le_occ_mpjpe_master', float('inf'))),
+                fmt(res.get('le_vis_mpjpe_master', float('inf'))),
+                res.get('le_pa_mpjpe_master', 'N/A'),
                 res.get('belief_master', "[]"), res.get('belief_slave', "[]"),
                 fmt(res.get('occluded_joint_frames_master', float('inf'))),
                 fmt(res.get('occluded_joint_frames_slave', float('inf'))),
-                fmt(res.get('old_mpjpe', float('inf'))), fmt(res.get('old_pa_mpjpe', float('inf'))), 
+                fmt(res.get('old_mpjpe', float('inf'))),
+                fmt(res.get('baseline_occ_mpjpe', float('inf'))),
+                fmt(res.get('baseline_vis_mpjpe', float('inf'))),
+                fmt(res.get('old_pa_mpjpe', float('inf'))),
                 fmt(res.get('% delta_mpjpe', 0.0)), fmt(res.get('% delta_pa_mpjpe', 0.0)), 
                 res.get('os_version', 'N/A'), res.get('username', 'N/A'), res.get('timestamp', 'N/A')
             ]
@@ -476,6 +494,12 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
     mpjpe, m_jts = parse_detailed_csv(eval_dir / "MPJPE_cam1.csv", t_pref)
     metadata_dir = Path(config["paths"]["fused_output_dir"]) / "metadata"
     occ_mpjpe, vis_mpjpe = parse_visibility_mpjpe(eval_dir / "MPJPE_cam1.csv", t_pref, metadata_dir)
+    baseline_occ_mpjpe, baseline_vis_mpjpe = parse_visibility_mpjpe(
+        eval_dir / "MPJPE_cam1.csv", "posed", metadata_dir
+    )
+    le_occ_mpjpe, le_vis_mpjpe = parse_visibility_mpjpe(
+        eval_dir / "MPJPE_cam1.csv", "only_learnable", metadata_dir
+    )
     pa_mpjpe, pa_jts = parse_detailed_csv(eval_dir / "PA-MPJPE_cam1.csv", t_pref)
     mble_csv = eval_dir / "MBLE_cam1.csv"
     mble = parse_frame_metric_csv(mble_csv, t_pref, "Frame_MBLE_mm")
@@ -532,12 +556,18 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
         "fusion_mble": fusion_mble, "le_mble": le_mble, "old_mble": old_mble,
         "gt_accel_error": gt_accel_error, "fusion_accel_error": fusion_accel_error,
         "le_accel_error": le_accel_error, "old_accel_error": old_accel_error,
-        "le_mpjpe_master": le_mpjpe, "le_pa_mpjpe_master": le_pa_mpjpe,
+        "le_mpjpe_master": le_mpjpe,
+        "le_occ_mpjpe_master": le_occ_mpjpe,
+        "le_vis_mpjpe_master": le_vis_mpjpe,
+        "le_pa_mpjpe_master": le_pa_mpjpe,
         "belief_master": b1,
         "belief_slave": b2,
         "occluded_joint_frames_master": occluded_master,
         "occluded_joint_frames_slave": occluded_slave,
-        "old_mpjpe": old_m, "old_pa_mpjpe": old_pa,
+        "old_mpjpe": old_m,
+        "baseline_occ_mpjpe": baseline_occ_mpjpe,
+        "baseline_vis_mpjpe": baseline_vis_mpjpe,
+        "old_pa_mpjpe": old_pa,
         "% delta_mpjpe": pd_m, "% delta_pa_mpjpe": pd_pa, "joints": joint_metrics,
         "os_version": os_v, "username": usr, "timestamp": ts
     }
