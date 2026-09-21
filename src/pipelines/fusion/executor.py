@@ -360,8 +360,9 @@ def run_phase3_pipeline(
     f_list = [n for n in names if n not in set(a_new) | skipped_corrections]
 
     if fusion_method == "proposed" and pre_fuse_f_points:
-        for name in f_list:
-            if vis1.get(name, True) and vis2.get(name, True):
+        pre_fuse_names = set(l_list) | set(f_list)
+        for name in pre_fuse_names:
+            if vis1.get(name, True) and vis2.get(name, True) and name not in (applied_k1 | applied_k2):
                 h1_v = float(H1_all.get(name, 0.5))
                 h2_v = float(H2_all.get(name, 0.5))
                 w1 = h1_v / max(h1_v + h2_v, 1e-12)

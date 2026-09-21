@@ -48,7 +48,8 @@ def run_benchmark():
     
     base_cfg = load_config(WORKSPACE / "configs/pipeline.yml")
     base_cfg["runtime"]["clean_output"] = True
-    base_cfg["learnable_extra"]["enabled"] = True
+    base_cfg["learnable"]["enabled"] = False
+    base_cfg["learnable_extra"]["enabled"] = False
 
     configs_to_test = [
         ("aligned_averaging", {"method": "aligned_averaging"}),
