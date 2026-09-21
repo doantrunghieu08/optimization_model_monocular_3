@@ -191,6 +191,11 @@ class FusionExecutorTest(unittest.TestCase):
 
         self.assertIn("right_elbow", result["F"])
         self.assertNotIn("right_elbow", result["A_new"])
+        self.assertEqual(
+            set(result["A_new"]),
+            {"left_hip", "right_hip", "left_shoulder", "right_shoulder"},
+        )
+        self.assertEqual(len(result["F_optimized"]), 17)
         self.assertEqual(result["corrections_skipped"], [])
         self.assertTrue({"left_hip", "right_hip", "left_shoulder", "right_shoulder"} <= set(result["A_new"]))
         detect.assert_called_once()
@@ -205,6 +210,7 @@ class FusionExecutorTest(unittest.TestCase):
         self.assertTrue(optimizer.call_args.kwargs["use_kinematic_constraints"])
         self.assertEqual(optimizer.call_args.kwargs["loss_type"], "huber")
         self.assertTrue(optimizer.call_args.kwargs["regularization"])
+        self.assertFalse(optimizer.call_args.kwargs["root_relative"])
 
     def test_authoritative_source_index_does_not_fall_back_to_wrong_frame(self):
         profile = {"0": {"joint": [1, 2, 0.9]}}

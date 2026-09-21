@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from brute_force_runner import _build_report_rows, _get_header_indices, _matches_active_config, _parse_history_row, parse_visibility_mpjpe
+from brute_force_runner import _active_config_signature, _build_report_rows, _get_header_indices, _matches_active_config, _parse_history_row, parse_visibility_mpjpe
 from src.core.config_loader import load_config
 
 
@@ -54,6 +54,7 @@ class BruteForceResumeTest(unittest.TestCase):
     def test_resume_requires_the_same_full_config(self):
         config = load_config("configs/pipeline.yml")
         result = {
+            "config_signature": _active_config_signature(config),
             "fusion_method": "higher_belief_selection",
             "alpha": config["fusion"]["belief"]["alpha"],
             "beta": config["fusion"]["belief"]["beta"],
@@ -70,6 +71,9 @@ class BruteForceResumeTest(unittest.TestCase):
         changed = copy.deepcopy(config)
         changed["fusion"]["belief"]["local_method"] = "naive_distance_belief"
         self.assertFalse(_matches_active_config(result, changed))
+        changed = copy.deepcopy(config)
+        changed["fusion"]["correction"]["selector"] = "belief"
+        self.assertFalse(_matches_active_config(result, changed))
 
         header, row = _build_report_rows({"segment": [{"master": "m", **result}]})
         self.assertEqual(len(header), len(row))
@@ -78,6 +82,7 @@ class BruteForceResumeTest(unittest.TestCase):
             [column for column in (
                 "Method", "All MPJPE", "Occ. MPJPE", "Vis. MPJPE",
                 "PA-MPJPE", "MBLE", "Accel Error (mm/frame^2)",
+                "Config Signature",
             ) if column not in header],
             [],
         )

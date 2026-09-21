@@ -8,7 +8,7 @@ from src.pipelines.fusion.config import RIGID_BONES_RATIO
 from src.pipelines.fusion.config import HEIGHT
 from src.pipelines.fusion.config import HUBER_DELTA
 from src.pipelines.fusion.config import TORSO_HEIGHT_RATIO
-from src.pipelines.fusion.correction import apply_similarity
+from src.pipelines.fusion.correction import apply_root_relative, apply_similarity
 
 
 def get_diff_f(f_name, anchors, cam1, cam2, conf1=None, conf2=None, vis1=None, vis2=None, occluded_factor=DEFAULT_OCCLUDED_FACTOR):
@@ -90,7 +90,7 @@ def _pose_root(pose):
 
 
 
-def optimize_f_points(data, anchors, f_list, conf1=None, conf2=None, vis1=None, vis2=None, occluded_factor=DEFAULT_OCCLUDED_FACTOR, regularization=False, regularization_lambda=1.0, prev_data=None, prev_prev_data=None, temporal_lambda=1.0, accel_lambda=3.0, max_iter=1000, use_kinematic_constraints=True, loss_type="huber", t12=None, t21=None, cross_view_lambda=0.0):
+def optimize_f_points(data, anchors, f_list, conf1=None, conf2=None, vis1=None, vis2=None, occluded_factor=DEFAULT_OCCLUDED_FACTOR, regularization=False, regularization_lambda=1.0, prev_data=None, prev_prev_data=None, temporal_lambda=1.0, accel_lambda=3.0, max_iter=1000, use_kinematic_constraints=True, loss_type="huber", t12=None, t21=None, cross_view_lambda=0.0, root_relative=False):
     cam1 = {k: as_xyz(v) for k, v in data["camera1"].items()}
     cam2 = {k: as_xyz(v) for k, v in data["camera2"].items()}
     f_weights = {}
@@ -122,7 +122,7 @@ def optimize_f_points(data, anchors, f_list, conf1=None, conf2=None, vis1=None, 
         for i, name in enumerate(f_list):
             p1 = x[i * 3 : i * 3 + 3]
             p2 = x[(num_f + i) * 3 : (num_f + i) * 3 + 3]
-            p2_in_1 = apply_similarity(p2, t21)
+            p2_in_1 = apply_root_relative(p2, cam2, cam1, t21) if root_relative else apply_similarity(p2, t21)
             w = f_weights.get(f_list[i], 1.0)
             penalty += w * float(np.sum((p1 - p2_in_1) ** 2))
         return penalty

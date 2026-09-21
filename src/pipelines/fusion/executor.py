@@ -355,8 +355,12 @@ def run_phase3_pipeline(
     else:
         orientation_applied = set()
 
-    a_new = sorted(set(a_list) | applied_k1 | applied_k2 | orientation_applied | NON_REPLACEABLE_ANCHORS)
-    skipped_corrections = (k1_set | k2_set) - applied_k1 - applied_k2 if fusion_method == "proposed" else set()
+    if fusion_method == "proposed":
+        a_new = sorted(set(names) & NON_REPLACEABLE_ANCHORS)
+        skipped_corrections = set()
+    else:
+        a_new = sorted(set(a_list) | applied_k1 | applied_k2 | orientation_applied | NON_REPLACEABLE_ANCHORS)
+        skipped_corrections = set()
     f_list = [n for n in names if n not in set(a_new) | skipped_corrections]
 
     if fusion_method == "proposed" and pre_fuse_f_points:
@@ -395,6 +399,7 @@ def run_phase3_pipeline(
             t12=t12,
             t21=t21,
             cross_view_lambda=cross_view_lambda,
+            root_relative=root_relative_correction,
         )
     else:
         optimized_data = {"camera1": dict(cam1_corr), "camera2": dict(cam2_corr)}

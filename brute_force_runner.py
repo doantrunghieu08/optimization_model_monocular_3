@@ -231,7 +231,7 @@ def _get_header_indices(header: list) -> dict:
         'belief Master', 'belief Slave', 'Occluded Joint-Frames Master',
         'Occluded Joint-Frames Slave',
         'Old MPJPE', 'Baseline Occ. MPJPE', 'Baseline Vis. MPJPE', 'Old PA-MPJPE', '% Δ_MPJPE', '% Δ_PA-MPJPE',
-        'OS Version', 'Username', 'Timestamp'
+        'Config Signature', 'OS Version', 'Username', 'Timestamp'
     ]
     for k in keys:
         if k in header:
@@ -276,6 +276,7 @@ def _parse_history_row(row: list, idx: dict) -> tuple:
         "kinematic_constraints": get_val('Kinematic Constraints'),
         "loss_type": get_val('Loss Type'),
         "optimization_enabled": get_val('Optimization Enabled'),
+        "config_signature": get_val('Config Signature'),
         "learnable_enabled": get_val('Learnable'),
         "learnable_extra_enabled": get_val('Learnable Extra'),
         "mpjpe": sf('All MPJPE'), "occ_mpjpe": sf('Occ. MPJPE'), "vis_mpjpe": sf('Vis. MPJPE'),
@@ -373,7 +374,7 @@ def _build_report_rows(all_results: dict, joint_keys: list = None) -> list:
               'belief Master', 'belief Slave', 'Occluded Joint-Frames Master',
               'Occluded Joint-Frames Slave', 'Old MPJPE',
               'Baseline Occ. MPJPE', 'Baseline Vis. MPJPE', 'Old PA-MPJPE', '% Δ_MPJPE', '% Δ_PA-MPJPE',
-              'OS Version', 'Username', 'Timestamp']
+              'Config Signature', 'OS Version', 'Username', 'Timestamp']
     rows = [header]
     
     def fmt(v): return round(float(v), 2) if v != float('inf') else "N/A"
@@ -415,7 +416,8 @@ def _build_report_rows(all_results: dict, joint_keys: list = None) -> list:
                 fmt(res.get('baseline_occ_mpjpe', float('inf'))),
                 fmt(res.get('baseline_vis_mpjpe', float('inf'))),
                 fmt(res.get('old_pa_mpjpe', float('inf'))),
-                fmt(res.get('% delta_mpjpe', 0.0)), fmt(res.get('% delta_pa_mpjpe', 0.0)), 
+                fmt(res.get('% delta_mpjpe', 0.0)), fmt(res.get('% delta_pa_mpjpe', 0.0)),
+                res.get('config_signature', 'N/A'),
                 res.get('os_version', 'N/A'), res.get('username', 'N/A'), res.get('timestamp', 'N/A')
             ]
             rows.append(row)
@@ -593,6 +595,7 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
         "baseline_vis_mpjpe": baseline_vis_mpjpe,
         "old_pa_mpjpe": old_pa,
         "% delta_mpjpe": pd_m, "% delta_pa_mpjpe": pd_pa, "joints": joint_metrics,
+        "config_signature": _active_config_signature(config),
         "os_version": os_v, "username": usr, "timestamp": ts
     }
 
@@ -702,6 +705,9 @@ def _get_timed_input(timeout: int) -> str | None:
 
 
 def _matches_active_config(result: dict, config: dict) -> bool:
+    if result.get("config_signature", "N/A") != _active_config_signature(config):
+        return False
+
     def as_bool(value):
         if isinstance(value, bool):
             return value
@@ -731,6 +737,13 @@ def _matches_active_config(result: dict, config: dict) -> bool:
         and as_bool(result.get("learnable_enabled")) == config["learnable"]["enabled"]
         and as_bool(result.get("learnable_extra_enabled")) == config["learnable_extra"]["enabled"]
     )
+
+def _active_config_signature(config: dict) -> str:
+    return json.dumps({
+        "fusion": config["fusion"],
+        "learnable": config["learnable"]["enabled"],
+        "learnable_extra": config["learnable_extra"]["enabled"],
+    }, sort_keys=True, separators=(",", ":"))
 
 def _archive_old_spreadsheet(default_name: str):
     print(f"\n[+] Đang kiểm tra và lưu trữ file mặc định cũ '{default_name}'...")

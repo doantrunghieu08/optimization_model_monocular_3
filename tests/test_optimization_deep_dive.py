@@ -1,4 +1,7 @@
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
+
 import numpy as np
 from scipy.optimize import minimize
 from src.pipelines.fusion.optimization import optimize_f_points, calculate_stats
@@ -102,6 +105,32 @@ class OptimizationDeepDiveTest(unittest.TestCase):
         
         self.assertLess(dist_smoothed, dist_raw)
         print(f"\n[Test] Temporal smoothing reduced jitter: {dist_raw:.4f}m -> {dist_smoothed:.4f}m from prev frame")
+
+    def test_cross_view_penalty_respects_root_relative_alignment(self):
+        cam1 = {k: np.array(v) for k, v in self.base_pose.items()}
+        offset = np.array([5.0, -2.0, 3.0])
+        cam2 = {k: np.array(v) + offset for k, v in self.base_pose.items()}
+        identity = (1.0, np.eye(3), np.zeros(3))
+        objectives = []
+
+        def capture(objective, x0, **_kwargs):
+            objectives.append(objective(x0))
+            return SimpleNamespace(success=True, x=x0, message="")
+
+        with patch("src.pipelines.fusion.optimization.minimize", side_effect=capture):
+            for root_relative in (True, False):
+                optimize_f_points(
+                    {"camera1": cam1, "camera2": cam2},
+                    self.anchors,
+                    self.f_list,
+                    t21=identity,
+                    cross_view_lambda=1.0,
+                    root_relative=root_relative,
+                    use_kinematic_constraints=False,
+                )
+
+        self.assertAlmostEqual(objectives[0], 0.0, places=12)
+        self.assertGreater(objectives[1], 1.0)
 
 if __name__ == "__main__":
     unittest.main()
