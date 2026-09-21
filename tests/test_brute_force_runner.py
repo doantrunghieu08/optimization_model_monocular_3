@@ -54,6 +54,7 @@ class BruteForceResumeTest(unittest.TestCase):
     def test_resume_requires_the_same_full_config(self):
         config = load_config("configs/pipeline.yml")
         result = {
+            "fusion_method": "higher_belief_selection",
             "alpha": config["fusion"]["belief"]["alpha"],
             "beta": config["fusion"]["belief"]["beta"],
             "global_belief": str(config["fusion"]["belief"]["global"]),
@@ -73,8 +74,17 @@ class BruteForceResumeTest(unittest.TestCase):
         header, row = _build_report_rows({"segment": [{"master": "m", **result}]})
         self.assertEqual(len(header), len(row))
         self.assertIn("Optimization Enabled", header)
+        self.assertEqual(
+            [column for column in (
+                "Method", "All MPJPE", "Occ. MPJPE", "Vis. MPJPE",
+                "PA-MPJPE", "MBLE", "Accel Error (mm/frame^2)",
+            ) if column not in header],
+            [],
+        )
 
         visibility_metrics = {
+            "fusion_occ_mpjpe": 42.0,
+            "fusion_vis_mpjpe": 22.0,
             "le_occ_mpjpe_master": 41.0,
             "le_vis_mpjpe_master": 21.0,
             "baseline_occ_mpjpe": 51.0,
@@ -82,8 +92,8 @@ class BruteForceResumeTest(unittest.TestCase):
         }
         header, row = _build_report_rows({
             "segment": [{
-                "master": "m", "supplement": "s", "fusion_method": "aligned_averaging",
-                **result, **visibility_metrics,
+                "master": "m", "supplement": "s", **result,
+                "fusion_method": "aligned_averaging", **visibility_metrics,
             }]
         })
         key, parsed = _parse_history_row(row, _get_header_indices(header))

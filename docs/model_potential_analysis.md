@@ -38,4 +38,4 @@ Dù **không sử dụng mạng Neural Network (Learnable)**, mô hình Fusion t
 2. **Cửa sổ thời gian đa khung hình (Multi-Frame Window SLSQP Optimization)**:
    - Chạy SLSQP trên một cửa sổ $7 - 15$ frames đồng thời với các hàm phạt vận tốc $\dot{x}$ và gia tốc $\ddot{x}$ liên tục để làm mịn chuyển động hoàn toàn tự nhiên (Accel Error $< 8\text{ mm/f}^2$).
 3. **Fusion Đa Camera (3+ Views Consensus RANSAC)**:
-   - Mở rộng thuật toán từ 2 camera lên 3 hoặc 4 camera. RANSAC 3D multi-view sẽ tự động loại bỏ các điểm bị che khuất (Occlusion) từ góc nhìn phụ mà không cần mạng dự đoán confidence phức tạp.
+   - Mở rộng thuật toán từ 2 camera lên 3 hoặc 4 camera. RANSAC 3D multi-view sẽ tự động loại bỏ các điểm bị che khuất (Occlusion) từ góc nhìn phụ mà không cần mạng dự đoán belief phức tạp.

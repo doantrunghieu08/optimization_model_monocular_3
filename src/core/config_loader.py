@@ -245,12 +245,13 @@ def validate_config(config):
             raise ValueError("Missing config input: inputs.{}".format(key))
 
     fusion_cfg = config.get("fusion", {})
-    for key in ("enabled", "belief", "occlusion", "ransac", "correction", "optimization"):
+    for key in ("enabled", "occlusion", "ransac", "correction", "optimization"):
         if key not in fusion_cfg:
             raise ValueError("Missing config section: fusion.{}".format(key))
     if not isinstance(fusion_cfg["enabled"], bool):
         raise ValueError("fusion.enabled must be a boolean")
-    if fusion_cfg.get("method", "proposed") not in ("proposed", "aligned_averaging", "higher_belief_selection"):
+    fusion_method = fusion_cfg.get("method", "proposed")
+    if fusion_method not in ("proposed", "aligned_averaging", "higher_belief_selection"):
         raise ValueError("fusion.method must be proposed, aligned_averaging, or higher_belief_selection")
     max_fallback_ratio = fusion_cfg.get("max_fallback_ratio", 0.0)
     if not isinstance(max_fallback_ratio, (int, float)) or isinstance(max_fallback_ratio, bool) or not 0 <= max_fallback_ratio <= 1:
@@ -284,19 +285,20 @@ def validate_config(config):
         if key not in visualization_cfg:
             raise ValueError("Missing config visualization parameter: visualization.{}".format(key))
 
-    belief_cfg = fusion_cfg["belief"]
-    for key in ("alpha", "beta", "global", "local_method"):
-        if key not in belief_cfg or belief_cfg[key] is None:
-            raise ValueError("Missing config fusion belief parameter: fusion.belief.{}".format(key))
-    alpha, beta = belief_cfg["alpha"], belief_cfg["beta"]
-    if not isinstance(alpha, (int, float)) or isinstance(alpha, bool) or alpha < 0:
-        raise ValueError("fusion.belief.alpha must be a non-negative number")
-    if not isinstance(beta, (int, float)) or isinstance(beta, bool) or not 0 < beta <= 1:
-        raise ValueError("fusion.belief.beta must be a number greater than 0 and at most 1")
-    if not isinstance(belief_cfg["global"], bool):
-        raise ValueError("fusion.belief.global must be a boolean")
-    if belief_cfg["local_method"] not in ("naive_distance_belief", "optical_aware_belief"):
-        raise ValueError("fusion.belief.local_method must be naive_distance_belief or optical_aware_belief")
+    belief_cfg = fusion_cfg.get("belief", {})
+    if fusion_method in ("proposed", "higher_belief_selection"):
+        for key in ("alpha", "beta", "global", "local_method"):
+            if key not in belief_cfg or belief_cfg[key] is None:
+                raise ValueError("Missing config fusion belief parameter: fusion.belief.{}".format(key))
+        alpha, beta = belief_cfg["alpha"], belief_cfg["beta"]
+        if not isinstance(alpha, (int, float)) or isinstance(alpha, bool) or alpha < 0:
+            raise ValueError("fusion.belief.alpha must be a non-negative number")
+        if not isinstance(beta, (int, float)) or isinstance(beta, bool) or not 0 < beta <= 1:
+            raise ValueError("fusion.belief.beta must be a number greater than 0 and at most 1")
+        if not isinstance(belief_cfg["global"], bool):
+            raise ValueError("fusion.belief.global must be a boolean")
+        if belief_cfg["local_method"] not in ("naive_distance_belief", "optical_aware_belief"):
+            raise ValueError("fusion.belief.local_method must be naive_distance_belief or optical_aware_belief")
 
     occlusion_cfg = fusion_cfg["occlusion"]
     for key in ("enabled", "tau"):
@@ -311,15 +313,15 @@ def validate_config(config):
     for key in ("enabled", "orientation_enabled", "reject_new_mismatches"):
         if not isinstance(correction_cfg.get(key), bool):
             raise ValueError(f"fusion.correction.{key} must be a boolean")
-    confidence_delta_cap = correction_cfg.get("confidence_delta_cap", 0.05)
-    if not isinstance(confidence_delta_cap, (int, float)) or isinstance(confidence_delta_cap, bool) or confidence_delta_cap < 0:
-        raise ValueError("fusion.correction.confidence_delta_cap must be a non-negative number")
-    if correction_cfg.get("blend_mode", "confidence") not in ("hard", "confidence"):
-        raise ValueError("fusion.correction.blend_mode must be hard or confidence")
+    belief_delta_cap = correction_cfg.get("belief_delta_cap", 0.05)
+    if not isinstance(belief_delta_cap, (int, float)) or isinstance(belief_delta_cap, bool) or belief_delta_cap < 0:
+        raise ValueError("fusion.correction.belief_delta_cap must be a non-negative number")
+    if correction_cfg.get("blend_mode", "belief") not in ("hard", "belief"):
+        raise ValueError("fusion.correction.blend_mode must be hard or belief")
     if correction_cfg.get("alignment_mode", "frame") not in ("frame", "sequence_root"):
         raise ValueError("fusion.correction.alignment_mode must be frame or sequence_root")
-    if correction_cfg.get("selector", "confidence") not in ("confidence", "occlusion", "limb_winner"):
-        raise ValueError("fusion.correction.selector must be confidence, occlusion, or limb_winner")
+    if correction_cfg.get("selector", "belief") not in ("belief", "occlusion", "limb_winner"):
+        raise ValueError("fusion.correction.selector must be belief, occlusion, or limb_winner")
     max_bone_angle_deg = correction_cfg.get("max_bone_angle_deg", 60.0)
     if not isinstance(max_bone_angle_deg, (int, float)) or isinstance(max_bone_angle_deg, bool) or max_bone_angle_deg <= 0:
         raise ValueError("fusion.correction.max_bone_angle_deg must be a positive number")

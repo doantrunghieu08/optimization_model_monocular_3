@@ -45,6 +45,18 @@ class EvaluationInputsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "between 0 and 1"):
             validate_config(config)
 
+    def test_aligned_does_not_require_belief_but_higher_and_proposed_do(self):
+        config = copy.deepcopy(load_config("configs/pipeline.yml"))
+        del config["fusion"]["belief"]
+        config["fusion"]["method"] = "aligned_averaging"
+        validate_config(config)
+
+        for method in ("higher_belief_selection", "proposed"):
+            with self.subTest(method=method):
+                config["fusion"]["method"] = method
+                with self.assertRaisesRegex(ValueError, "fusion.belief.alpha"):
+                    validate_config(config)
+
     def test_regressive_fusion_stage_flags_are_booleans(self):
         config = copy.deepcopy(load_config("configs/pipeline.yml"))
         config["fusion"]["optimization"]["enabled"] = "false"
@@ -54,8 +66,8 @@ class EvaluationInputsTest(unittest.TestCase):
 
     def test_correction_controls_are_validated(self):
         config = copy.deepcopy(load_config("configs/pipeline.yml"))
-        config["fusion"]["correction"]["confidence_delta_cap"] = -1
-        with self.assertRaisesRegex(ValueError, "confidence_delta_cap"):
+        config["fusion"]["correction"]["belief_delta_cap"] = -1
+        with self.assertRaisesRegex(ValueError, "belief_delta_cap"):
             validate_config(config)
 
         config = copy.deepcopy(load_config("configs/pipeline.yml"))

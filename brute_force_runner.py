@@ -182,7 +182,7 @@ def extract_local_belief(metadata_dir: Path) -> tuple[str, str, int, int]:
         try:
             with open(meta_file, 'r', encoding='utf-8') as f:
                 metadata = json.load(f)
-                conf = metadata.get("joint_confidence", {})
+                conf = metadata.get("joint_belief", {})
                 c1, c2 = conf.get("camera1", {}), conf.get("camera2", {})
                 if isinstance(c1, list): c1 = {str(i): v for i, v in enumerate(c1)}
                 if isinstance(c2, list): c2 = {str(i): v for i, v in enumerate(c2)}
@@ -219,11 +219,11 @@ def _get_sheet_data(sheet_name: str) -> tuple[list, list, str | None, bool]:
 def _get_header_indices(header: list) -> dict:
     idx = {}
     keys = [
-        'Set', 'Segment', 'Cam Master', 'Cam Slave', 'Fusion Method', 'Alpha', 'Beta',
+        'Set', 'Segment', 'Cam Master', 'Cam Slave', 'Method', 'Alpha', 'Beta',
         'Global Belief', 'Local Method', 'Kinematic Constraints', 'Loss Type',
         'Optimization Enabled', 'Learnable', 'Learnable Extra',
-        'MPJPE', 'Occ. MPJPE', 'Vis. MPJPE', 'PA-MPJPE', 'MBLE',
-        'Fusion MBLE', 'LE MBLE', 'Old MBLE',
+        'All MPJPE', 'Occ. MPJPE', 'Vis. MPJPE', 'PA-MPJPE', 'MBLE',
+        'Fusion Occ. MPJPE', 'Fusion Vis. MPJPE', 'Fusion MBLE', 'LE MBLE', 'Old MBLE',
         'Accel Error (mm/frame^2)', 'GT Accel Error (mm/frame^2)',
         'Fusion Accel Error (mm/frame^2)', 'LE Accel Error (mm/frame^2)',
         'Old Accel Error (mm/frame^2)',
@@ -236,6 +236,10 @@ def _get_header_indices(header: list) -> dict:
     for k in keys:
         if k in header:
             idx[k] = header.index(k)
+        elif k == 'Method' and 'Fusion Method' in header:
+            idx[k] = header.index('Fusion Method')
+        elif k == 'All MPJPE' and 'MPJPE' in header:
+            idx[k] = header.index('MPJPE')
         elif k == '% Δ_MPJPE' and '% d_MPJPE%' in header:
             idx[k] = header.index('% d_MPJPE%')
         elif k == '% Δ_PA-MPJPE' and 'd_PA-MPJPE' in header:
@@ -257,13 +261,16 @@ def _parse_history_row(row: list, idx: dict) -> tuple:
         v = row[idx[col_name]] if idx.get(col_name, -1) != -1 else "N/A"
         v = str(v).strip().replace(',', '.')
         return float(v) if v not in ("N/A", "") else float('inf')
+    def config_number(col_name):
+        value = get_val(col_name)
+        return float(str(value).replace(',', '.')) if value not in ("N/A", "") else "N/A"
     
-    method = get_val('Fusion Method', 'proposed')
+    method = get_val('Method', 'proposed')
     key = (row[idx['Segment']], row[idx['Cam Master']], row[idx['Cam Slave']], method)
     res = {
         "set": get_val('Set', "Unknown_Set"), "master": key[1], "supplement": key[2],
         "fusion_method": method,
-        "alpha": sf('Alpha'), "beta": sf('Beta'),
+        "alpha": config_number('Alpha'), "beta": config_number('Beta'),
         "global_belief": get_val('Global Belief'),
         "local_method": get_val('Local Method'),
         "kinematic_constraints": get_val('Kinematic Constraints'),
@@ -271,9 +278,11 @@ def _parse_history_row(row: list, idx: dict) -> tuple:
         "optimization_enabled": get_val('Optimization Enabled'),
         "learnable_enabled": get_val('Learnable'),
         "learnable_extra_enabled": get_val('Learnable Extra'),
-        "mpjpe": sf('MPJPE'), "occ_mpjpe": sf('Occ. MPJPE'), "vis_mpjpe": sf('Vis. MPJPE'),
+        "mpjpe": sf('All MPJPE'), "occ_mpjpe": sf('Occ. MPJPE'), "vis_mpjpe": sf('Vis. MPJPE'),
         "pa_mpjpe": sf('PA-MPJPE'),
         "mble": sf('MBLE'), "accel": sf('Accel Error (mm/frame^2)'),
+        "fusion_occ_mpjpe": sf('Fusion Occ. MPJPE'),
+        "fusion_vis_mpjpe": sf('Fusion Vis. MPJPE'),
         "fusion_mble": sf('Fusion MBLE'), "le_mble": sf('LE MBLE'),
         "old_mble": sf('Old MBLE'),
         "gt_accel_error": sf('GT Accel Error (mm/frame^2)'),
@@ -308,6 +317,7 @@ def load_existing_spreadsheet_results(sheet_name: str) -> tuple[dict, str | None
         'Segment', 'Alpha', 'Beta', 'Global Belief', 'Local Method',
         'Kinematic Constraints', 'Loss Type', 'Occ. MPJPE', 'Vis. MPJPE', 'MBLE', 'Accel Error (mm/frame^2)',
         'Optimization Enabled', 'Learnable', 'Learnable Extra',
+        'Fusion Occ. MPJPE', 'Fusion Vis. MPJPE',
         'Fusion MBLE', 'LE MBLE', 'Old MBLE', 'GT Accel Error (mm/frame^2)',
         'Fusion Accel Error (mm/frame^2)', 'LE Accel Error (mm/frame^2)',
         'Old Accel Error (mm/frame^2)',
@@ -335,6 +345,7 @@ def load_existing_csv_results(csv_path: Path) -> tuple[dict, bool]:
             idx = _get_header_indices(header)
             visibility_columns = (
                 'Occ. MPJPE', 'Vis. MPJPE',
+                'Fusion Occ. MPJPE', 'Fusion Vis. MPJPE',
                 'LE Occ. MPJPE Master', 'LE Vis. MPJPE Master',
                 'Baseline Occ. MPJPE', 'Baseline Vis. MPJPE',
             )
@@ -351,11 +362,11 @@ def load_existing_csv_results(csv_path: Path) -> tuple[dict, bool]:
         return existing, False
 
 def _build_report_rows(all_results: dict, joint_keys: list = None) -> list:
-    header = ['Set', 'Segment', 'Cam Master', 'Cam Slave', 'Fusion Method', 'Alpha', 'Beta',
+    header = ['Set', 'Segment', 'Cam Master', 'Cam Slave', 'Method', 'Alpha', 'Beta',
               'Global Belief', 'Local Method', 'Kinematic Constraints', 'Loss Type',
               'Optimization Enabled', 'Learnable', 'Learnable Extra',
-              'MPJPE', 'Occ. MPJPE', 'Vis. MPJPE', 'PA-MPJPE', 'MBLE', 'Accel Error (mm/frame^2)',
-              'Fusion MBLE', 'LE MBLE', 'Old MBLE',
+              'All MPJPE', 'Occ. MPJPE', 'Vis. MPJPE', 'PA-MPJPE', 'MBLE', 'Accel Error (mm/frame^2)',
+              'Fusion Occ. MPJPE', 'Fusion Vis. MPJPE', 'Fusion MBLE', 'LE MBLE', 'Old MBLE',
               'GT Accel Error (mm/frame^2)', 'Fusion Accel Error (mm/frame^2)',
               'LE Accel Error (mm/frame^2)', 'Old Accel Error (mm/frame^2)',
               'LE MPJPE Master', 'LE Occ. MPJPE Master', 'LE Vis. MPJPE Master', 'LE PA-MPJPE Master',
@@ -369,7 +380,7 @@ def _build_report_rows(all_results: dict, joint_keys: list = None) -> list:
     
     for seg_name, results in all_results.items():
         for res in results:
-            if not res or res.get('alpha') is None or res.get('alpha') == 'N/A':
+            if not res:
                 continue
             row = [
                 res.get('set', 'Unknown_Set'), seg_name, res['master'], res.get('supplement', 'N/A'),
@@ -385,6 +396,8 @@ def _build_report_rows(all_results: dict, joint_keys: list = None) -> list:
                 fmt(res.get('occ_mpjpe', float('inf'))), fmt(res.get('vis_mpjpe', float('inf'))),
                 fmt(res.get('pa_mpjpe', float('inf'))),
                 fmt(res.get('mble', float('inf'))), fmt(res.get('accel', float('inf'))),
+                fmt(res.get('fusion_occ_mpjpe', float('inf'))),
+                fmt(res.get('fusion_vis_mpjpe', float('inf'))),
                 fmt(res.get('fusion_mble', float('inf'))), fmt(res.get('le_mble', float('inf'))),
                 fmt(res.get('old_mble', float('inf'))),
                 fmt(res.get('gt_accel_error', float('inf'))),
@@ -490,10 +503,16 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
     t_pref = "fusion-learnable" if config.get("learnable", {}).get("enabled", True) else "fused"
     belief_cfg = config["fusion"]["belief"]
     correction_cfg = config["fusion"]["correction"]
+    fusion_method = config["fusion"].get("method", "proposed")
+    uses_belief = fusion_method != "aligned_averaging"
+    is_proposed = fusion_method == "proposed"
     
     mpjpe, m_jts = parse_detailed_csv(eval_dir / "MPJPE_cam1.csv", t_pref)
     metadata_dir = Path(config["paths"]["fused_output_dir"]) / "metadata"
     occ_mpjpe, vis_mpjpe = parse_visibility_mpjpe(eval_dir / "MPJPE_cam1.csv", t_pref, metadata_dir)
+    fusion_occ_mpjpe, fusion_vis_mpjpe = parse_visibility_mpjpe(
+        eval_dir / "MPJPE_cam1.csv", "fused", metadata_dir
+    )
     baseline_occ_mpjpe, baseline_vis_mpjpe = parse_visibility_mpjpe(
         eval_dir / "MPJPE_cam1.csv", "posed", metadata_dir
     )
@@ -521,6 +540,8 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
     b1, b2, occluded_master, occluded_slave = extract_local_belief(
         metadata_dir
     )
+    if not uses_belief:
+        b1 = b2 = "[]"
     
     joint_metrics = {f"MPJPE_{k}": v for k, v in m_jts.items()}
     joint_metrics.update({f"PA-MPJPE_{k}": v for k, v in pa_jts.items()})
@@ -537,22 +558,25 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
 
     return {
         "set": current_set, "master": camA_id, "supplement": camB_id,
-        "fusion_method": config["fusion"].get("method", "proposed"),
-        "alpha": belief_cfg["alpha"], "beta": belief_cfg["beta"], "mpjpe": mpjpe,
+        "fusion_method": fusion_method,
+        "alpha": belief_cfg["alpha"] if uses_belief else "N/A",
+        "beta": belief_cfg["beta"] if uses_belief else "N/A", "mpjpe": mpjpe,
         "occ_mpjpe": occ_mpjpe, "vis_mpjpe": vis_mpjpe,
-        "global_belief": belief_cfg["global"], "local_method": belief_cfg["local_method"],
-        "kinematic_constraints": config["fusion"]["optimization"]["use_kinematic_constraints"],
-        "loss_type": config["fusion"]["optimization"]["loss_type"],
-        "optimization_enabled": config["fusion"]["optimization"]["enabled"],
-        "confidence_correction": correction_cfg["enabled"],
+        "global_belief": belief_cfg["global"] if uses_belief else "N/A",
+        "local_method": belief_cfg["local_method"] if uses_belief else "N/A",
+        "kinematic_constraints": config["fusion"]["optimization"]["use_kinematic_constraints"] if is_proposed else "N/A",
+        "loss_type": config["fusion"]["optimization"]["loss_type"] if is_proposed else "N/A",
+        "optimization_enabled": config["fusion"]["optimization"]["enabled"] if is_proposed else False,
+        "belief_correction": correction_cfg["enabled"],
         "orientation_correction": correction_cfg["orientation_enabled"],
         "correction_blend": correction_cfg["blend_mode"],
         "alignment_mode": correction_cfg["alignment_mode"],
         "correction_selector": correction_cfg["selector"],
-        "confidence_delta_cap": correction_cfg["confidence_delta_cap"],
+        "belief_delta_cap": correction_cfg["belief_delta_cap"],
         "learnable_enabled": config["learnable"]["enabled"],
         "learnable_extra_enabled": config["learnable_extra"]["enabled"],
         "pa_mpjpe": pa_mpjpe, "mble": mble, "accel": accel,
+        "fusion_occ_mpjpe": fusion_occ_mpjpe, "fusion_vis_mpjpe": fusion_vis_mpjpe,
         "fusion_mble": fusion_mble, "le_mble": le_mble, "old_mble": old_mble,
         "gt_accel_error": gt_accel_error, "fusion_accel_error": fusion_accel_error,
         "le_accel_error": le_accel_error, "old_accel_error": old_accel_error,
@@ -686,16 +710,24 @@ def _matches_active_config(result: dict, config: dict) -> bool:
         return None
 
     belief = config["fusion"]["belief"]
-    optimization = config["fusion"]["optimization"]
-    correction = config["fusion"]["correction"]
+    method = result.get("fusion_method", "proposed")
+    method_matches = True
+    if method in ("proposed", "higher_belief_selection"):
+        method_matches = (
+            result.get("alpha") == belief["alpha"]
+            and result.get("beta") == belief["beta"]
+            and as_bool(result.get("global_belief")) == belief["global"]
+            and result.get("local_method") == belief["local_method"]
+        )
+        if method == "proposed":
+            optimization = config["fusion"]["optimization"]
+            method_matches = method_matches and (
+                as_bool(result.get("kinematic_constraints")) == optimization["use_kinematic_constraints"]
+                and result.get("loss_type") == optimization["loss_type"]
+                and as_bool(result.get("optimization_enabled")) == optimization["enabled"]
+            )
     return (
-        result.get("alpha") == belief["alpha"]
-        and result.get("beta") == belief["beta"]
-        and as_bool(result.get("global_belief")) == belief["global"]
-        and result.get("local_method") == belief["local_method"]
-        and as_bool(result.get("kinematic_constraints")) == optimization["use_kinematic_constraints"]
-        and result.get("loss_type") == optimization["loss_type"]
-        and as_bool(result.get("optimization_enabled")) == optimization["enabled"]
+        method_matches
         and as_bool(result.get("learnable_enabled")) == config["learnable"]["enabled"]
         and as_bool(result.get("learnable_extra_enabled")) == config["learnable_extra"]["enabled"]
     )
@@ -810,14 +842,13 @@ def run_brute_force():
     if not fusion_methods or any(method not in allowed_methods for method in fusion_methods):
         raise ValueError(f"fusion_methods must contain only: {', '.join(sorted(allowed_methods))}")
     # Kiểm tra xem file config đã nhận đúng giá trị chưa
-    print("Alpha trong config:", base_cfg['fusion']['belief']['alpha'])
-    print("Beta trong config:", base_cfg['fusion']['belief']['beta'])
-    print("Global belief trong config:", base_cfg['fusion']['belief']['global'])
-    print("Local method trong config:", base_cfg['fusion']['belief']['local_method'])
-    print("Kinematic constraints trong config:", base_cfg['fusion']['optimization']['use_kinematic_constraints'])
-    print("Loss type trong config:", base_cfg['fusion']['optimization']['loss_type'])
-    print("Optimization enabled trong config:", base_cfg['fusion']['optimization']['enabled'])
-    print("Orientation correction trong config:", base_cfg['fusion']['correction']['orientation_enabled'])
+    if any(method != "aligned_averaging" for method in fusion_methods):
+        print("Belief alpha trong config:", base_cfg['fusion']['belief']['alpha'])
+        print("Belief beta trong config:", base_cfg['fusion']['belief']['beta'])
+        print("Global belief trong config:", base_cfg['fusion']['belief']['global'])
+        print("Local method trong config:", base_cfg['fusion']['belief']['local_method'])
+    if "proposed" in fusion_methods:
+        print("Proposed: fusion 2 camera + Optical/Local + Global + Kinematic + Huber")
     print("Learnable trong config:", base_cfg['learnable']['enabled'])
     print("Learnable extra trong config:", base_cfg['learnable_extra']['enabled'])
     

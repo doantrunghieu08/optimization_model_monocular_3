@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 
 from src.pipelines.fusion.correction import (
-    apply_confidence_corrections,
+    apply_belief_corrections,
     apply_root_relative,
     estimate_sequence_root_similarity,
     estimate_umeyama,
@@ -34,12 +34,12 @@ class FusionCorrectionTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "non-collinear"):
             estimate_umeyama(points, points)
 
-    def test_confidence_correction_rejects_large_jump(self):
+    def test_belief_correction_rejects_large_jump(self):
         cam1 = {"near": [0.0, 0.0, 0.0], "far": [0.0, 0.0, 0.0]}
         cam2 = {"near": [0.04, 0.0, 0.0], "far": [1.0, 0.0, 0.0]}
         identity = (1.0, np.eye(3), np.zeros(3))
 
-        _, corrected, applied, _ = apply_confidence_corrections(
+        _, corrected, applied, _ = apply_belief_corrections(
             cam1, cam2, {"near", "far"}, set(), identity, identity, max_displacement=0.05,
             return_applied=True,
         )
@@ -48,12 +48,12 @@ class FusionCorrectionTest(unittest.TestCase):
         np.testing.assert_array_equal(corrected["far"], cam2["far"])
         self.assertEqual(applied, {"near"})
 
-    def test_confidence_correction_blends_by_source_reliability(self):
+    def test_belief_correction_blends_by_source_reliability(self):
         cam1 = {"joint": [0.0, 0.0, 0.0]}
         cam2 = {"joint": [0.04, 0.0, 0.0]}
         identity = (1.0, np.eye(3), np.zeros(3))
 
-        _, corrected = apply_confidence_corrections(
+        _, corrected = apply_belief_corrections(
             cam1,
             cam2,
             {"joint"},
@@ -63,7 +63,7 @@ class FusionCorrectionTest(unittest.TestCase):
             max_displacement=0.05,
             h1={"joint": 0.8},
             h2={"joint": 0.2},
-            blend_mode="confidence",
+            blend_mode="belief",
         )
 
         np.testing.assert_allclose(corrected["joint"], [0.008, 0.0, 0.0])
@@ -92,7 +92,7 @@ class FusionCorrectionTest(unittest.TestCase):
         np.testing.assert_allclose(candidate, frames[0]["camera2"]["neck"], atol=1e-8)
         self.assertEqual(diagnostics["inliers"], diagnostics["observations"])
 
-    def test_aligned_baselines_average_or_select_higher_belief(self):
+    def test_aligned_averages_and_higher_belief_selects_joint(self):
         cam1 = {"joint": np.array([0.0, 0.0, 0.0])}
         cam2 = {"joint": np.array([2.0, 0.0, 0.0])}
         identity = (1.0, np.eye(3), np.zeros(3))

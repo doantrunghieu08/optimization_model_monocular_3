@@ -32,10 +32,10 @@ paths:
 
 fusion:
   enabled: true
-  method: proposed # proposed = Aligned Averaging + optimizer; baseline: aligned_averaging, higher_belief_selection.
+  method: proposed # aligned_averaging = transform + mean; higher_belief_selection = chọn joint belief cao hơn; proposed = fusion đầy đủ.
   shared_body_pose_enabled: false # Fusion local SMPL rotations; không cần camera calibration.
   max_fallback_ratio: 0.0 # Fail nếu có bất kỳ frame nào không fusion được.
-  belief:
+  belief: # Dùng cho Higher-Belief và Proposed; Aligned không dùng.
     alpha: ${ALPHA:-0.001} # alpha: hệ số phạt theo khoảng cách 3D của joint, càng lớn thì joint xa camera càng bị giảm tin cậy mạnh hơn.
     beta: ${BETA:-0.8} # beta: hệ số trộn tin cậy của láng giềng xương trong harmonic mean, càng lớn thì belief càng chịu ảnh hưởng bởi skeleton lân cận.
     global: ${GLOBAL:-true} # true: hòa belief của joint với các joint xương lân cận.
@@ -52,13 +52,13 @@ fusion:
 
   # Cấu hình tối ưu hóa cho nhóm điểm F trong fusion.
   correction:
-    enabled: true # Enabled soft confidence blending & sequence root alignment
+    enabled: true # Hiệu chỉnh belief cho Proposed; baseline không dùng.
     orientation_enabled: false # Disabled after the 20-pair ablation showed regression.
     reject_new_mismatches: true
-    confidence_delta_cap: 0.05 # Giảm ngưỡng delta cap xuống 0.05 để giải phóng tập điểm F cho SLSQP tối ưu hóa
-    blend_mode: confidence # Trộn theo belief liên tục thay vì hard replace
+    belief_delta_cap: 0.05 # Giảm ngưỡng delta cap xuống 0.05 để giải phóng tập điểm F cho SLSQP tối ưu hóa
+    blend_mode: belief # Trộn theo belief liên tục thay vì hard replace
     alignment_mode: sequence_root # Tự ước lượng scale/rotation từ cả sequence, không cần camera calibration.
-    selector: limb_winner # Thay cả chuỗi tay/chân khi một camera tin cậy hơn; giữ confidence/occlusion để A/B.
+    selector: limb_winner # Thay cả chuỗi tay/chân khi một camera tin cậy hơn; giữ belief/occlusion để A/B.
     max_bone_angle_deg: 25.0 # Bỏ qua chain nếu hướng xương đổi > 25° (giới hạn biến dạng hình dạng PA).
 
   optimization:

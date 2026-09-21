@@ -16,7 +16,7 @@ Mô hình gốc đã xây dựng một pipeline hoàn chỉnh gồm:
 
 Đóng góp của phiên bản cải tiến **không nằm ở việc thay thế backbone** (như WHAM, SMPL hay `NetBody25`), mà tập trung giải quyết 3 vấn đề cốt lõi trong giai đoạn Fusion:
 1. **Nhận biết che khuất góc nhìn (Occlusion Detection)** bằng Ray-Casting 3D.
-2. **Mô hình hóa độ tin cậy thích nghi (Adaptive Belief Score)** kết hợp hình học và 2D confidence.
+2. **Mô hình hóa độ tin cậy thích nghi (Adaptive Belief Score)** kết hợp hình học và belief 2D.
 3. **Kiểm soát sai số & hiệu chỉnh an toàn (Robust Cross-View Correction)** giữa 2 camera.
 
 ---
@@ -71,7 +71,7 @@ $$B_j = (1 - \beta) P_j + \beta \cdot \mathrm{mean}_{k \in \mathcal{N}(j)}(P_k)$
 > [!NOTE]
 > Các khớp láng giềng bị che khuất ($P_k = 0$) sẽ tự động bị loại khỏi phép tính trung bình $B_j$, giúp tránh hiện tượng một khớp visible bị giảm tin cậy oan do láng giềng bị che.
 
-Belief hình học sau đó tiếp tục được kết hợp với điểm tin cậy 2D (từ OpenPose/YOLO/AlphaPose nếu có), đảm bảo việc chọn khớp từ camera nào được cân nhắc toàn diện: khoảng cách 3D, che khuất, 2D confidence và tính nhất quán của chuỗi xương.
+Belief hình học sau đó tiếp tục được kết hợp với belief 2D (từ OpenPose/YOLO/AlphaPose nếu có), đảm bảo việc chọn khớp từ camera nào được cân nhắc toàn diện: khoảng cách 3D, che khuất, belief 2D và tính nhất quán của chuỗi xương.
 
 ---
 
@@ -80,14 +80,14 @@ Belief hình học sau đó tiếp tục được kết hợp với điểm tin 
 Khung RANSAC–Umeyama và bộ giải SLSQP được nâng cấp thêm các cơ chế bảo vệ an toàn nghiêm ngặt:
 
 1. **Điều kiện RANSAC tối thiểu:** Phép biến đổi đồng dạng (similarity transform) chỉ được tính toán khi có **ít nhất 3 điểm anchor không thẳng hàng** và tọa độ hợp lệ (không chứa `NaN`/`Inf`).
-2. **Ngưỡng dịch chuyển tối đa (Confidence Correction Guard):** Một khớp chỉ được trộn với vị trí dự đoán từ camera đối diện khi khoảng cách dịch chuyển không vượt quá ngưỡng RANSAC (`threshold`). Tỷ lệ trộn $\alpha$ lấy trực tiếp theo tỷ lệ belief tương đối giữa 2 quan sát.
+2. **Ngưỡng dịch chuyển tối đa (Belief Correction Guard):** Một khớp chỉ được trộn với vị trí dự đoán từ camera đối diện khi khoảng cách dịch chuyển không vượt quá ngưỡng RANSAC (`threshold`). Tỷ lệ trộn $\alpha$ lấy trực tiếp theo tỷ lệ belief tương đối giữa 2 quan sát.
 3. **Quản lý lệch hướng (Orientation Correction):** Hiệu chỉnh mismatch hướng xoay có thể bật/tắt độc lập. Các mismatch mới xuất hiện sau hiệu chỉnh sẽ tự động bị từ chối và khôi phục về pose ban đầu (`reject_new_mismatches`).
 4. **Cơ chế Limb-Winner (Thay thế theo chuỗi chi):** Cho phép thay thế toàn bộ chuỗi khớp tay/chân khi một camera có độ tin cậy vượt trội, đồng thời giới hạn góc quay tối đa của xương (`max_bone_angle_deg`) để tránh biến dạng hình học.
 5. **Bộ giải SLSQP linh hoạt:** Hỗ trợ bật/tắt các ràng buộc độ dài xương (`use_kinematic_constraints`), tùy chọn hàm mất mát giữa **Huber loss** (kháng nhiễu ngoại lai) và **MSE loss** (đối chứng).
 6. **Kiểm soát Fallback:** Khi 1 frame bị lỗi dữ liệu, hệ thống chuyển sang chế độ fallback an toàn. Nếu tỷ lệ frame fallback vượt quá `max_fallback_ratio`, pipeline sẽ dừng và cảnh báo thay vì xuất kết quả lỗi.
 
 > [!IMPORTANT]
-> Các tính năng hiệu chỉnh (Confidence correction, Orientation correction, SLSQP optimizer) mặc định tắt trên held-out benchmark trừ khi được chứng minh cải thiện qua các bài thí nghiệm Ablation.
+> Các tính năng hiệu chỉnh (Belief correction, Orientation correction, SLSQP optimizer) mặc định tắt trên held-out benchmark trừ khi được chứng minh cải thiện qua các bài thí nghiệm Ablation.
 
 ---
 
@@ -133,7 +133,7 @@ Hệ thống đánh giá (`evaluation`) được nâng cấp toàn diện:
 | **Nguồn dữ liệu Mesh** | Phụ thuộc trường `verts_cam` từ WHAM | Mesh camera-space được khởi tạo và đồng bộ từ bước Pose |
 | **Belief cục bộ** | Hàm suy giảm khoảng cách đơn giản | Hỗ trợ đối chứng giữa `naive` và `optical_aware` |
 | **Belief toàn cục** | Luôn lan truyền qua skeleton | Cấu hình bật/tắt linh hoạt cho Ablation Study |
-| **Hiệu chỉnh Cross-View** | Thay thế cứng theo confidence | Trộn theo belief liên tục, giới hạn dịch chuyển, có RANSAC guard & Limb-Winner |
+| **Hiệu chỉnh Cross-View** | Thay thế cứng theo belief | Trộn theo belief liên tục, giới hạn dịch chuyển, có RANSAC guard & Limb-Winner |
 | **Tối ưu hóa SLSQP** | Cố định Huber loss và kinematic constraints | Linh hoạt bật/tắt optimizer, chọn Huber/MSE, tùy chỉnh temporal/accel loss |
 | **Xử lý lỗi Pipeline** | Fallback ẩn theo từng frame | Giám sát tỷ lệ fallback thực tế (`max_fallback_ratio`) |
 | **Chỉ số đánh giá** | MPJPE, PA-MPJPE, PCK (chưa chuẩn) | PCK chuẩn ngưỡng mm, bổ sung MBLE (sai số xương) và Acceleration Error |
@@ -141,4 +141,3 @@ Hệ thống đánh giá (`evaluation`) được nâng cấp toàn diện:
 
 > [!NOTE]
 > Các cải tiến trên giúp hệ thống Fusion phản ánh chính xác điều kiện quan sát vật lý của camera và đem lại quy trình đánh giá chuẩn xác, có thể tái lập. Mức độ cải thiện định lượng (MPJPE / PA-MPJPE / MBLE / Acceleration) được kiểm chứng minh bạch trên từng tập dataset đối chứng.
-

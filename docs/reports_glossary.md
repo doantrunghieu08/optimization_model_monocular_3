@@ -17,18 +17,19 @@ File báo cáo này tổng hợp kết quả chạy thực nghiệm vét cạn (
 | **`Segment`** | Phân đoạn video đang thực hiện thử nghiệm | `seg_1`, `seg_2`, `seg_5` |
 | **`Cam Master`** | ID camera chính được dùng làm góc nhìn tham chiếu (Camera 1) | `cam2`, `cam0` |
 | **`Cam Slave`** | ID camera phụ bổ trợ quan sát (Camera 2) | `cam5`, `cam8` |
+| **`Method`** | Phương pháp được đánh giá | `aligned_averaging`, `higher_belief_selection`, `proposed` |
 
 ### 1.2. Tham Số Cấu Hình Thử Nghiệm (Pipeline Configurations)
 
 | Tên Cột | Cấu Hình Tương Ứng | Mô Tả Chi Tiết |
 | :--- | :--- | :--- |
-| **`Alpha`** | `fusion.belief.alpha` | Hệ số phạt theo khoảng cách 3D trong hàm tin cậy Belief score. |
-| **`Beta`** | `fusion.belief.beta` | Hệ số lan truyền độ tin cậy qua cấu trúc xương (skeleton). |
-| **`Global Belief`** | `fusion.belief.global` | Bật (`true`) / Tắt (`false`) hòa trộn belief với các khớp láng giềng kề nhau. |
-| **`Local Method`** | `fusion.belief.local_method` | Phương pháp tính belief cục bộ (`naive_distance_belief` hoặc `optical_aware_belief`). |
-| **`Kinematic Constraints`** | `optimization.use_kinematic_constraints` | Bật/tắt ràng buộc bảo toàn độ dài xương trong bộ giải SLSQP. |
-| **`Loss Type`** | `optimization.loss_type` | Hàm mất mát tối ưu hóa trong SLSQP (`huber` kháng outlier hoặc `mse`). |
-| **`Optimization Enabled`** | `optimization.enabled` | Trạng thái bật/tắt bộ tối ưu hóa SLSQP. |
+| **`Alpha`** | `fusion.belief.alpha` | Dùng cho **Higher-Belief** và **Proposed**; `N/A` với Aligned. |
+| **`Beta`** | `fusion.belief.beta` | Dùng cho **Higher-Belief** và **Proposed**; `N/A` với Aligned. |
+| **`Global Belief`** | `fusion.belief.global` | Bật/tắt belief toàn cục cho Higher-Belief và Proposed. |
+| **`Local Method`** | `fusion.belief.local_method` | Belief local (`naive_distance_belief` hoặc `optical_aware_belief`). |
+| **`Kinematic Constraints`** | `fusion.optimization.use_kinematic_constraints` | Ràng buộc động học của **Proposed**. |
+| **`Loss Type`** | `fusion.optimization.loss_type` | Loss của **Proposed** (`huber` hoặc `mse`). |
+| **`Optimization Enabled`** | `fusion.optimization.enabled` | Bộ tối ưu chỉ chạy trong **Proposed**. |
 | **`Learnable`** | `learnable.enabled` | Trạng thái bật/tắt module học máy hậu xử lý SMPLify. |
 | **`Learnable Extra`** | `learnable_extra.enabled` | Trạng thái bật/tắt module Learnable Extra. |
 
@@ -36,10 +37,14 @@ File báo cáo này tổng hợp kết quả chạy thực nghiệm vét cạn (
 
 | Tên Cột | Đơn Vị | Mô Tả Chi Tiết |
 | :--- | :---: | :--- |
-| **`MPJPE`** | `mm` | Sai số vị trí 3D trung bình các khớp của mô hình đề xuất **Fused**. *(Càng nhỏ càng tốt)* |
+| **`All MPJPE`** | `mm` | MPJPE trên toàn bộ joint, gồm cả visible và occluded. *(Càng nhỏ càng tốt)* |
+| **`Occ. MPJPE`** | `mm` | MPJPE trên các joint bị che khuất của camera chính. |
+| **`Vis. MPJPE`** | `mm` | MPJPE trên các joint nhìn thấy của camera chính. |
 | **`PA-MPJPE`** | `mm` | Sai số MPJPE sau khi đã xoay chỉnh hình dạng Procrustes. *(Càng nhỏ càng tốt)* |
 | **`MBLE`** | `mm` | Sai số độ dài xương trung bình so với ground truth (Mean Bone Length Error). |
 | **`Accel Error (mm/frame^2)`** | `mm/f²` | Sai số gia tốc khung hình của mô hình Fused (đo độ mượt chuyển động). |
+| **`Fusion Occ. MPJPE`** | `mm` | Sai số MPJPE của output fusion thuần trên các joint bị che khuất của camera chính. |
+| **`Fusion Vis. MPJPE`** | `mm` | Sai số MPJPE của output fusion thuần trên các joint nhìn thấy của camera chính. |
 | **`Fusion MBLE`** | `mm` | Sai số độ dài xương tính riêng cho giai đoạn Fused. |
 | **`LE MBLE`** | `mm` | Sai số độ dài xương tính riêng cho giai đoạn Learnable Extra. |
 | **`Old MBLE`** | `mm` | Sai số độ dài xương ban đầu của dữ liệu thô (Raw Pose baseline). |

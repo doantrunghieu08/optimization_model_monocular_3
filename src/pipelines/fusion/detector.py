@@ -6,7 +6,7 @@ from src.pipelines.fusion.config import HARMONIC_EPSILON
 from src.pipelines.fusion.config import ORIENTATION_EPSILON
 from src.pipelines.fusion.config import RIGID_BONES_RATIO
 from src.pipelines.fusion.config import OCCLUSION_CHECK_JOINTS
-from src.pipelines.fusion.config import CONFIDENCE_DELTA_CAP
+from src.pipelines.fusion.config import BELIEF_DELTA_CAP
 from src.pipelines.fusion.config import JOINT_TO_SMPL_PART_ID
 from src.pipelines.fusion.config import JOINT_EXCLUDED_PART_IDS
 
@@ -204,10 +204,10 @@ def compute_harmonic_precision(
     return weights, H1, H2
 
 
-def _confidence_value(confidence_by_joint, name):
-    if not confidence_by_joint or name not in confidence_by_joint:
+def _belief_value(belief_by_joint, name):
+    if not belief_by_joint or name not in belief_by_joint:
         return None
-    value = confidence_by_joint[name]
+    value = belief_by_joint[name]
     if isinstance(value, (list, tuple, np.ndarray)):
         if len(value) < 3:
             return None
@@ -221,17 +221,17 @@ def _confidence_value(confidence_by_joint, name):
     return max(0.0, value)
 
 
-def _harmonic_blend(base_confidence, external_confidence, epsilon=HARMONIC_EPSILON):
-    if external_confidence is None:
-        return float(base_confidence)
-    base_confidence = max(0.0, float(base_confidence))
-    external_confidence = max(0.0, float(external_confidence))
-    return float((2.0 * base_confidence * external_confidence) / (base_confidence + external_confidence + epsilon))
+def _harmonic_blend(base_belief, external_belief, epsilon=HARMONIC_EPSILON):
+    if external_belief is None:
+        return float(base_belief)
+    base_belief = max(0.0, float(base_belief))
+    external_belief = max(0.0, float(external_belief))
+    return float((2.0 * base_belief * external_belief) / (base_belief + external_belief + epsilon))
 
 
-def _blend_detector_confidences(joint_names, base_confidences, external_confidences):
+def _blend_detector_beliefs(joint_names, base_beliefs, external_beliefs):
     return {
-        name: _harmonic_blend(base_confidences[name], _confidence_value(external_confidences, name))
+        name: _harmonic_blend(base_beliefs[name], _belief_value(external_beliefs, name))
         for name in joint_names
     }
 
@@ -244,11 +244,11 @@ def detect_cross_view_errors(
     vis2,
     alpha,
     beta,
-    confidence2d1=None,
-    confidence2d2=None,
+    belief2d1=None,
+    belief2d2=None,
     global_belief=True,
     local_method="naive_distance_belief",
-    confidence_delta_cap=CONFIDENCE_DELTA_CAP,
+    belief_delta_cap=BELIEF_DELTA_CAP,
 ):
     flags1 = get_orientation_flag(cam1)
     flags2 = get_orientation_flag(cam2)
@@ -263,13 +263,13 @@ def detect_cross_view_errors(
         cam1, cam2, names, vis1, vis2, alpha=alpha, beta=beta,
         global_belief=global_belief, local_method=local_method,
     )
-    H1_all = _blend_detector_confidences(names, H1_old, confidence2d1)
-    H2_all = _blend_detector_confidences(names, H2_old, confidence2d2)
+    H1_all = _blend_detector_beliefs(names, H1_old, belief2d1)
+    H2_all = _blend_detector_beliefs(names, H2_old, belief2d2)
     all_weights = {name: (H1_all[name] + H2_all[name]) / 2.0 for name in names}
     abs_diffs = [abs(H1_all[n] - H2_all[n]) for n in names]
-    if confidence_delta_cap < 0:
-        raise ValueError("fusion.correction.confidence_delta_cap must be non-negative")
-    delta = min(float(np.percentile(abs_diffs, 75)) if abs_diffs else 0.0, confidence_delta_cap)
+    if belief_delta_cap < 0:
+        raise ValueError("fusion.correction.belief_delta_cap must be non-negative")
+    delta = min(float(np.percentile(abs_diffs, 75)) if abs_diffs else 0.0, belief_delta_cap)
     k1_set = {n for n in names if H1_all[n] > H2_all[n] + delta}
     k2_set = {n for n in names if H2_all[n] > H1_all[n] + delta}
     k1_set.difference_update(NON_REPLACEABLE_ANCHORS)
@@ -317,7 +317,7 @@ def make_raw_judgement_fallback(data, index, error=None):
         "after_stats": stats,
         "optimized": data,
         "fallback_reason": str(error),
-        "joint_confidence": {"camera1": {j: 1.0 for j in common}, "camera2": {j: 1.0 for j in common}},
+        "joint_belief": {"camera1": {j: 1.0 for j in common}, "camera2": {j: 1.0 for j in common}},
         "vis1": {j: True for j in common},
         "vis2": {j: True for j in common},
     }

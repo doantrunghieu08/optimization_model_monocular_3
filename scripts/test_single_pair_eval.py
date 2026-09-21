@@ -63,7 +63,7 @@ def run_test(target_pair_str=None):
     print("=" * 80)
     print(f"🎲 CHẠY THỰC NGHIỆM ĐÁNH GIÁ NGẪU NHIÊN: Segment={seg_name} | {camA['id']} -> {camB['id']}")
     print("Config selector =", base_cfg["fusion"]["correction"]["selector"])
-    print("Config confidence_delta_cap =", base_cfg["fusion"]["correction"]["confidence_delta_cap"])
+    print("Config belief_delta_cap =", base_cfg["fusion"]["correction"]["belief_delta_cap"])
     print("=" * 80)
 
     res = _evaluate_camera_pair(camA, camB, base_cfg, gt_dir, WORKSPACE, seg_name)

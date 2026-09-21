@@ -176,17 +176,17 @@ def fuse_aligned_poses(cam1, cam2, h1, h2, t12, t21, method, root_relative=False
     return fused1, fused2
 
 
-def _correction_alpha(name, source_confidence, target_confidence, blend_mode):
+def _correction_alpha(name, source_belief, target_belief, blend_mode):
     if blend_mode == "hard":
         return 1.0
-    if blend_mode != "confidence":
-        raise ValueError("fusion.correction.blend_mode must be hard or confidence")
-    source = max(0.0, float(source_confidence.get(name, 0.0)))
-    target = max(0.0, float(target_confidence.get(name, 0.0)))
+    if blend_mode != "belief":
+        raise ValueError("fusion.correction.blend_mode must be hard or belief")
+    source = max(0.0, float(source_belief.get(name, 0.0)))
+    target = max(0.0, float(target_belief.get(name, 0.0)))
     return source / max(source + target, 1e-12)
 
 
-def apply_confidence_corrections(
+def apply_belief_corrections(
     cam1,
     cam2,
     k1_set,

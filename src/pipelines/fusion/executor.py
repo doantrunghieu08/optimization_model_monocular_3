@@ -21,7 +21,7 @@ from src.pipelines.fusion.detector import load_torso_faces
 from src.pipelines.fusion.detector import as_xyz
 from src.pipelines.fusion.detector import make_raw_judgement_fallback
 from src.pipelines.fusion.correction import apply_rotation_mismatch_corrections
-from src.pipelines.fusion.correction import apply_confidence_corrections
+from src.pipelines.fusion.correction import apply_belief_corrections
 from src.pipelines.fusion.correction import apply_limb_winner_corrections
 from src.pipelines.fusion.correction import select_limb_winner_sets
 from src.pipelines.fusion.config import DEFAULT_MAX_BONE_ANGLE_DEG
@@ -92,16 +92,16 @@ def _load_2d_profile(config: dict, cam_id: str):
     preprocess_dir = Path(resolve_preprocess_output_dir(config))
     profile_path = preprocess_dir / f"data_{cam_id}.json"
     if not profile_path.exists():
-        print(f"[Fusion] 2D confidence not found: {profile_path}")
+        print(f"[Fusion] 2D belief not found: {profile_path}")
         return None
     profile = read_json(profile_path)
     payload = profile.get(f"2D_camera_{cam_id}")
     if not isinstance(payload, dict):
-        print(f"[Fusion] 2D confidence missing in {profile_path.name}")
+        print(f"[Fusion] 2D belief missing in {profile_path.name}")
         return None
     keypoints = payload.get("keypoints")
     if not isinstance(keypoints, dict):
-        print(f"[Fusion] 2D confidence keypoints missing in {profile_path.name}")
+        print(f"[Fusion] 2D belief keypoints missing in {profile_path.name}")
         return None
     return keypoints
 
@@ -113,7 +113,7 @@ def _load_2d_profiles(config: dict) -> dict:
     }
 
 
-def _frame_confidence_from_profile(profile, source_idx, frame_idx: int):
+def _frame_belief_from_profile(profile, source_idx, frame_idx: int):
     if not profile:
         return None
     if source_idx is not None:
@@ -127,11 +127,11 @@ def _frame_confidence_from_profile(profile, source_idx, frame_idx: int):
     return None
 
 
-def _confidence2d_for_frame(data: dict, frame_idx: int, profiles: dict) -> dict:
+def _belief2d_for_frame(data: dict, frame_idx: int, profiles: dict) -> dict:
     source_indices = data.get("metadata", {}).get("source_frame_indices", {})
     return {
-        "camera1": _frame_confidence_from_profile(profiles.get("camera1"), source_indices.get("camera1"), frame_idx),
-        "camera2": _frame_confidence_from_profile(profiles.get("camera2"), source_indices.get("camera2"), frame_idx),
+        "camera1": _frame_belief_from_profile(profiles.get("camera1"), source_indices.get("camera1"), frame_idx),
+        "camera2": _frame_belief_from_profile(profiles.get("camera2"), source_indices.get("camera2"), frame_idx),
     }
 
 
@@ -172,15 +172,15 @@ def run_phase3_pipeline(
     max_iter,
     ransac_threshold,
     ransac_max_combos,
-    belief_alpha,
-    belief_beta,
+    belief_alpha=None,
+    belief_beta=None,
     verts_by_cam=None,
     torso_faces=None,
     vertex_parts=None,
     frame_idx=None,
     prev_optimized_data=None,
     prev_prev_optimized_data=None,
-    confidence2d_by_cam=None,
+    belief2d_by_cam=None,
     accel_lambda=3.0,
     orientation_correction_enabled=False,
     optimization_enabled=False,
@@ -189,19 +189,18 @@ def run_phase3_pipeline(
     local_method="naive_distance_belief",
     use_kinematic_constraints=True,
     loss_type="huber",
-    confidence_delta_cap=0.05,
-    correction_blend_mode="confidence",
-    confidence_correction_enabled=True,
+    belief_delta_cap=0.05,
+    correction_blend_mode="belief",
+    belief_correction_enabled=True,
     precomputed_transforms=None,
     root_relative_correction=False,
-    correction_selector="confidence",
+    correction_selector="belief",
     shared_body_pose_enabled=False,
     max_bone_angle_deg=DEFAULT_MAX_BONE_ANGLE_DEG,
     fusion_method="proposed",
 ):
-    # Proposed starts from Aligned Averaging, then optionally runs SLSQP.
-    is_proposed = fusion_method == "proposed"
-    effective_fusion_method = "aligned_averaging" if is_proposed else fusion_method
+    if fusion_method not in ("aligned_averaging", "higher_belief_selection", "proposed"):
+        raise ValueError(f"Unknown fusion method: {fusion_method}")
     raw_cam1 = {k: as_xyz(v) for k, v in data_in["camera1"].items()}
     raw_cam2 = {k: as_xyz(v) for k, v in data_in["camera2"].items()}
     source = data_in.get("shared_body_pose") if shared_body_pose_enabled else data_in
@@ -219,7 +218,7 @@ def run_phase3_pipeline(
     cam1 = {k: cam1[k] for k in names}
     cam2 = {k: cam2[k] for k in names}
 
-    if verts_by_cam is not None:
+    if fusion_method != "aligned_averaging" and verts_by_cam is not None:
         if torso_faces is None:
             raise ValueError("torso_faces is required when verts_by_cam is provided")
         vis1 = compute_visibility_from_mesh_vertices(cam1, verts_by_cam["camera1"], torso_faces, occlusion_tau, vertex_parts=vertex_parts)
@@ -228,98 +227,102 @@ def run_phase3_pipeline(
         vis1 = {n: True for n in names}
         vis2 = {n: True for n in names}
 
-    confidence2d_by_cam = confidence2d_by_cam or {}
-    if belief_alpha is None or belief_beta is None:
-        raise ValueError("fusion.belief.alpha and fusion.belief.beta must be provided in config")
-    detected = detect_cross_view_errors(
-        cam1,
-        cam2,
-        names,
-        vis1,
-        vis2,
-        confidence2d1=confidence2d_by_cam.get("camera1"),
-        confidence2d2=confidence2d_by_cam.get("camera2"),
-        alpha=belief_alpha,
-        beta=belief_beta,
-        global_belief=global_belief,
-        local_method=local_method,
-        confidence_delta_cap=confidence_delta_cap,
-    )
-    m_set = detected["M"]
-    k1_set = detected["K1"]
-    k2_set = detected["K2"]
-    l_list = detected["L"]
-    all_weights = detected["weights"]
-    H1_all = detected["H1"]
-    H2_all = detected["H2"]
-    limb_decisions = []
-    if correction_selector == "occlusion":
-        k1_set = {name for name in names if vis1[name] and not vis2[name]} - NON_REPLACEABLE_ANCHORS
-        k2_set = {name for name in names if vis2[name] and not vis1[name]} - NON_REPLACEABLE_ANCHORS
-        l_list = [name for name in names if name not in (m_set | k1_set | k2_set)]
-    elif correction_selector == "limb_winner":
-        k1_set, k2_set, limb_decisions = select_limb_winner_sets(
-            H1_all, H2_all, vis1, vis2, confidence_delta_cap
-        )
-        l_list = [name for name in names if name not in (m_set | k1_set | k2_set)]
-    elif correction_selector != "confidence":
-        raise ValueError("fusion.correction.selector must be confidence, occlusion, or limb_winner")
-
-    # Fix #4: Fusion Rejection Guard — nếu slave belief quá thấp thì bỏ qua correction
-    # để tránh áp similarity transform kém chất lượng lên dữ liệu (gây regression)
-    slave_mean_belief = float(np.mean(list(H2_all.values()))) if H2_all else 0.0
-    slave_belief_sufficient = (
-        correction_selector == "limb_winner"
-        or slave_mean_belief >= MIN_SLAVE_BELIEF_THRESHOLD
-    )
-    if not slave_belief_sufficient:
-        import warnings
-        warnings.warn(
-            f"[Fusion] Slave mean belief={slave_mean_belief:.4f} < threshold={MIN_SLAVE_BELIEF_THRESHOLD}. "
-            "Bỏ qua confidence correction và optimization để tránh áp transform kém."
-        )
-        effective_correction = False
-        effective_optimization = False
+    belief2d_by_cam = belief2d_by_cam or {}
+    if fusion_method == "aligned_averaging":
+        m_set = k1_set = k2_set = set()
+        l_list = names
+        all_weights = H1_all = H2_all = dict.fromkeys(names, 1.0)
     else:
-        effective_correction = confidence_correction_enabled
-        effective_optimization = optimization_enabled
+        if belief_alpha is None or belief_beta is None:
+            raise ValueError("fusion.belief.alpha and fusion.belief.beta are required for Higher-Belief and Proposed")
+        detected = detect_cross_view_errors(
+            cam1,
+            cam2,
+            names,
+            vis1,
+            vis2,
+            belief2d1=belief2d_by_cam.get("camera1"),
+            belief2d2=belief2d_by_cam.get("camera2"),
+            alpha=belief_alpha,
+            beta=belief_beta,
+            global_belief=global_belief,
+            local_method=local_method,
+            belief_delta_cap=belief_delta_cap,
+        )
+        m_set, k1_set, k2_set = detected["M"], detected["K1"], detected["K2"]
+        l_list, H1_all, H2_all = detected["L"], detected["H1"], detected["H2"]
+        all_weights = detected["weights"]
 
-    # Fix #3: l_list Minimum Size Guard — kiểm tra đủ joint trước khi gọi RANSAC
-    identity = (1.0, np.eye(3), np.zeros(3))
-    needs_transform = effective_fusion_method != "proposed" or effective_correction or orientation_correction_enabled or effective_optimization
-    if precomputed_transforms is not None:
-        t12, t21 = precomputed_transforms
-        a_list = [] if is_proposed else l_list
-    elif needs_transform:
-        if len(l_list) < MIN_LLIST_FOR_RANSAC:
-            # l_list quá nhỏ → RANSAC sẽ cho transform không ổn định → dùng identity
+    limb_decisions = []
+    if fusion_method == "proposed":
+        if correction_selector == "occlusion":
+            k1_set = {name for name in names if vis1[name] and not vis2[name]} - NON_REPLACEABLE_ANCHORS
+            k2_set = {name for name in names if vis2[name] and not vis1[name]} - NON_REPLACEABLE_ANCHORS
+            l_list = [name for name in names if name not in (m_set | k1_set | k2_set)]
+        elif correction_selector == "limb_winner":
+            k1_set, k2_set, limb_decisions = select_limb_winner_sets(
+                H1_all, H2_all, vis1, vis2, belief_delta_cap
+            )
+            l_list = [name for name in names if name not in (m_set | k1_set | k2_set)]
+        elif correction_selector != "belief":
+            raise ValueError("fusion.correction.selector must be belief, occlusion, or limb_winner")
+
+        slave_mean_belief = float(np.mean(list(H2_all.values()))) if H2_all else 0.0
+        slave_belief_sufficient = (
+            correction_selector == "limb_winner"
+            or slave_mean_belief >= MIN_SLAVE_BELIEF_THRESHOLD
+        )
+        if not slave_belief_sufficient:
             import warnings
             warnings.warn(
-                f"[Fusion] l_list chỉ có {len(l_list)} joint (< {MIN_LLIST_FOR_RANSAC} tối thiểu). "
+                f"[Fusion] Slave mean belief={slave_mean_belief:.4f} < threshold={MIN_SLAVE_BELIEF_THRESHOLD}. "
+                "Bỏ qua belief correction và optimization để tránh áp transform kém."
+            )
+            effective_correction = False
+            effective_optimization = False
+        else:
+            effective_correction = belief_correction_enabled
+            effective_optimization = optimization_enabled
+    else:
+        effective_correction = effective_optimization = False
+
+    identity = (1.0, np.eye(3), np.zeros(3))
+    needs_transform = (
+        fusion_method in ("aligned_averaging", "higher_belief_selection")
+        or effective_correction
+        or orientation_correction_enabled
+        or effective_optimization
+    )
+    transform_names = names if fusion_method == "aligned_averaging" else l_list
+    if precomputed_transforms is not None:
+        t12, t21 = precomputed_transforms
+        a_list = transform_names
+    elif needs_transform:
+        if len(transform_names) < MIN_LLIST_FOR_RANSAC:
+            import warnings
+            warnings.warn(
+                f"[Fusion] Chỉ có {len(transform_names)} joint (< {MIN_LLIST_FOR_RANSAC} tối thiểu). "
                 "Dùng identity transform thay vì RANSAC để tránh transform kém."
             )
-            t12, t21, a_list = identity, identity, l_list
+            t12, t21, a_list = identity, identity, transform_names
         else:
             t12, t21, a_list = estimate_bidirectional_similarity(
                 cam1,
                 cam2,
-                l_list,
+                transform_names,
                 threshold=ransac_threshold,
                 max_combos=ransac_max_combos,
             )
     else:
-        t12, t21, a_list = identity, identity, l_list
+        t12, t21, a_list = identity, identity, transform_names
 
-    if effective_fusion_method != "proposed":
+    if fusion_method in ("aligned_averaging", "higher_belief_selection"):
         cam1_corr, cam2_corr = fuse_aligned_poses(
-            cam1, cam2, H1_all, H2_all, t12, t21, effective_fusion_method,
+            cam1, cam2, H1_all, H2_all, t12, t21, fusion_method,
             root_relative=root_relative_correction,
         )
         applied_k1, applied_k2 = set(), set()
-        effective_correction = False
-        if not is_proposed:
-            effective_optimization = False
-    elif effective_correction:  # Fix #4: dùng effective_correction thay vì confidence_correction_enabled
+    elif effective_correction:
         if correction_selector == "limb_winner":
             cam1_corr, cam2_corr, applied_k1, applied_k2 = apply_limb_winner_corrections(
                 cam1, cam2, k1_set, k2_set, t12, t21,
@@ -329,7 +332,7 @@ def run_phase3_pipeline(
                 decisions=limb_decisions,
             )
         else:
-            cam1_corr, cam2_corr, applied_k1, applied_k2 = apply_confidence_corrections(
+            cam1_corr, cam2_corr, applied_k1, applied_k2 = apply_belief_corrections(
                 cam1, cam2, k1_set, k2_set, t12, t21, max_displacement=ransac_threshold,
                 h1=H1_all, h2=H2_all, blend_mode=correction_blend_mode,
                 root_relative=root_relative_correction,
@@ -338,35 +341,22 @@ def run_phase3_pipeline(
     else:
         cam1_corr, cam2_corr = dict(cam1), dict(cam2)
         applied_k1, applied_k2 = set(), set()
-    if effective_fusion_method == "proposed" and orientation_correction_enabled:
+
+    if fusion_method == "proposed" and orientation_correction_enabled:
         cam1_corr, cam2_corr = apply_rotation_mismatch_corrections(
-            cam1_corr,
-            cam2_corr,
-            cam1,
-            cam2,
-            m_set,
-            applied_k1,
-            applied_k2,
-            H1_all,
-            H2_all,
-            t12,
-            t21,
-            root_relative=root_relative_correction,
+            cam1_corr, cam2_corr, cam1, cam2, m_set, applied_k1, applied_k2,
+            H1_all, H2_all, t12, t21, root_relative=root_relative_correction,
         )
         orientation_applied = m_set - applied_k1 - applied_k2
     else:
         orientation_applied = set()
 
-    if is_proposed:
-        a_new = sorted(set(names) & NON_REPLACEABLE_ANCHORS)
-        skipped_corrections = set()
-    else:
-        a_new = sorted(set(a_list) | applied_k1 | applied_k2 | orientation_applied | NON_REPLACEABLE_ANCHORS)
-        skipped_corrections = (k1_set | k2_set) - applied_k1 - applied_k2
+    a_new = sorted(set(a_list) | applied_k1 | applied_k2 | orientation_applied | NON_REPLACEABLE_ANCHORS)
+    skipped_corrections = (k1_set | k2_set) - applied_k1 - applied_k2 if fusion_method == "proposed" else set()
     f_list = [n for n in names if n not in set(a_new) | skipped_corrections]
     before_stats = calculate_stats(cam1_corr, cam2_corr, f_list, a_new, conf1=H1_all, conf2=H2_all, vis1=vis1, vis2=vis2, f_weights=all_weights, loss_type=loss_type)
     mismatches_before_optimization = _orientation_mismatches(cam1_corr, cam2_corr, names)
-    if effective_optimization:  # Fix #4 & #5: dùng effective_optimization thay vì optimization_enabled
+    if effective_optimization:
         optimized_data, _ = optimize_f_points(
             {"camera1": cam1_corr, "camera2": cam2_corr},
             a_new,
@@ -389,7 +379,7 @@ def run_phase3_pipeline(
         optimized_data = {"camera1": dict(cam1_corr), "camera2": dict(cam2_corr)}
 
     m_after = _orientation_mismatches(optimized_data["camera1"], optimized_data["camera2"], names)
-    rejected_mismatches = sorted(m_after - mismatches_before_optimization) if is_proposed and reject_new_mismatches else []
+    rejected_mismatches = sorted(m_after - mismatches_before_optimization) if fusion_method == "proposed" and reject_new_mismatches else []
     for name in rejected_mismatches:
         optimized_data["camera1"][name] = cam1_corr[name]
         optimized_data["camera2"][name] = cam2_corr[name]
@@ -412,10 +402,10 @@ def run_phase3_pipeline(
         "corrections_skipped": sorted(skipped_corrections),
         "A_new": a_new,
         "F": f_list,
-        "F_optimized": f_list if effective_optimization else [],  # Fix #4/#5
+        "F_optimized": f_list if effective_optimization else [],
         "orientation_correction_enabled": bool(orientation_correction_enabled),
         "orientation_applied": sorted(orientation_applied),
-        "confidence_correction_enabled": bool(effective_correction),  # Fix #4: phản ánh trạng thái thực tế
+        "belief_correction_enabled": bool(effective_correction),
         "alignment_mode": "sequence_root" if root_relative_correction else "frame",
         "correction_selector": correction_selector,
         "fusion_method": fusion_method,
@@ -426,7 +416,7 @@ def run_phase3_pipeline(
         "before_stats": before_stats,
         "after_stats": after_stats,
         "optimized": {"camera1": {k: list(v) for k, v in optimized_data["camera1"].items()}, "camera2": {k: list(v) for k, v in optimized_data["camera2"].items()}},
-        "joint_confidence": {"camera1": H1_all, "camera2": H2_all},
+        "joint_belief": {"camera1": H1_all, "camera2": H2_all},
         "vis1": {k: bool(v) for k, v in vis1.items()},
         "vis2": {k: bool(v) for k, v in vis2.items()},
     }
@@ -453,12 +443,17 @@ def run_fusion(config: dict) -> None:
     else:
         output_dir.mkdir(parents=True, exist_ok=True)
 
+    fusion_method = fusion_cfg.get("method", "proposed")
     occlusion_cfg = fusion_cfg["occlusion"]
-    belief_cfg = fusion_cfg["belief"]
-    occlusion_enabled = occlusion_cfg["enabled"]
+    belief_cfg = fusion_cfg.get("belief", {})
+    occlusion_enabled = occlusion_cfg["enabled"] and fusion_method != "aligned_averaging"
     mesh_loaded, verts_cam1, verts_cam2, faces, vertex_parts, mesh_frame_count = _load_pose_meshes(paths, occlusion_enabled)
     torso_faces = load_torso_faces(vertex_parts, faces) if mesh_loaded else None
-    confidence2d_profiles = _load_2d_profiles(config)
+    belief2d_profiles = (
+        _load_2d_profiles(config)
+        if fusion_method != "aligned_averaging"
+        else {"camera1": None, "camera2": None}
+    )
 
     keypoints_dir = input_dir / "keypoints3d"
     metadata_dir = input_dir / "metadata"
@@ -480,9 +475,8 @@ def run_fusion(config: dict) -> None:
     loaded_frames = [(path, _load_pose_frame(path, metadata_dir=metadata_dir)) for path in file_paths]
     sequence_transforms = None
     sequence_alignment = None
-    fusion_method = fusion_cfg.get("method", "proposed")
     if alignment_mode == "sequence_root" and (
-        fusion_method != "proposed"
+        fusion_method in ("aligned_averaging", "higher_belief_selection")
         or correction_cfg.get("enabled", False)
         or correction_cfg.get("orientation_enabled", False)
         or opt_cfg.get("enabled", False)
@@ -516,7 +510,7 @@ def run_fusion(config: dict) -> None:
         try:
             prev_opt = prev_result["optimized"] if prev_result and "optimized" in prev_result else None
             prev_prev_opt = prev_prev_result["optimized"] if prev_prev_result and "optimized" in prev_prev_result else None
-            confidence2d_by_cam = _confidence2d_for_frame(data, frame_idx, confidence2d_profiles)
+            belief2d_by_cam = _belief2d_for_frame(data, frame_idx, belief2d_profiles)
             result = run_phase3_pipeline(
                 data,
                 map_path=paths["keypoints3d_map"],
@@ -534,22 +528,22 @@ def run_fusion(config: dict) -> None:
                 frame_idx=frame_idx,
                 prev_optimized_data=prev_opt,
                 prev_prev_optimized_data=prev_prev_opt,
-                confidence2d_by_cam=confidence2d_by_cam,
-                belief_alpha=belief_cfg["alpha"],
-                belief_beta=belief_cfg["beta"],
-                global_belief=belief_cfg["global"],
-                local_method=belief_cfg["local_method"],
+                belief2d_by_cam=belief2d_by_cam,
+                belief_alpha=belief_cfg.get("alpha") if fusion_method != "aligned_averaging" else None,
+                belief_beta=belief_cfg.get("beta") if fusion_method != "aligned_averaging" else None,
+                global_belief=belief_cfg.get("global", True),
+                local_method=belief_cfg.get("local_method", "naive_distance_belief"),
                 orientation_correction_enabled=correction_cfg.get("orientation_enabled", False),
                 optimization_enabled=opt_cfg.get("enabled", False),
                 use_kinematic_constraints=opt_cfg["use_kinematic_constraints"],
                 loss_type=opt_cfg["loss_type"],
                 reject_new_mismatches=correction_cfg.get("reject_new_mismatches", True),
-                confidence_delta_cap=correction_cfg.get("confidence_delta_cap", 0.05),
-                correction_blend_mode=correction_cfg.get("blend_mode", "confidence"),
-                confidence_correction_enabled=correction_cfg.get("enabled", False),
+                belief_delta_cap=correction_cfg.get("belief_delta_cap", 0.05),
+                correction_blend_mode=correction_cfg.get("blend_mode", "belief"),
+                belief_correction_enabled=correction_cfg.get("enabled", False),
                 precomputed_transforms=sequence_transforms,
                 root_relative_correction=alignment_mode == "sequence_root",
-                correction_selector=correction_cfg.get("selector", "confidence"),
+                correction_selector=correction_cfg.get("selector", "belief"),
                 shared_body_pose_enabled=fusion_cfg.get("shared_body_pose_enabled", False),
                 max_bone_angle_deg=correction_cfg.get("max_bone_angle_deg", DEFAULT_MAX_BONE_ANGLE_DEG),
                 fusion_method=fusion_method,

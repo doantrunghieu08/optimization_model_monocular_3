@@ -10,7 +10,7 @@ import numpy as np
 from src.pipelines.fusion.detector import compute_harmonic_precision
 from src.pipelines.fusion.detector import detect_cross_view_errors
 from src.pipelines.fusion.executor import (
-    _frame_confidence_from_profile,
+    _frame_belief_from_profile,
     _load_pose_frame,
     run_phase3_pipeline,
     run_fusion,
@@ -81,7 +81,6 @@ class FusionExecutorTest(unittest.TestCase):
         self.assertAlmostEqual(abs(midpoint[0, 2]), np.pi, places=6)
     @patch("src.pipelines.fusion.executor._orientation_mismatches", side_effect=[{"right_elbow"}, set()])
     @patch("src.pipelines.fusion.executor.optimize_f_points")
-    @patch("src.pipelines.fusion.executor.apply_rotation_mismatch_corrections")
     @patch("src.pipelines.fusion.executor.calculate_stats", return_value=(0, 0, 0, 0, 0))
     @patch(
         "src.pipelines.fusion.executor.estimate_bidirectional_similarity",
@@ -91,10 +90,9 @@ class FusionExecutorTest(unittest.TestCase):
             ["head", "neck", "pelvis"],
         ),
     )
-    @patch("src.pipelines.fusion.executor.apply_confidence_corrections")
     @patch("src.pipelines.fusion.executor.detect_cross_view_errors")
-    def test_disabled_regressive_stages_are_skipped(
-        self, detect, confidence_correction, _similarity, stats, orientation_correction, optimizer, _mismatches
+    def test_aligned_skips_belief_correction_and_optimizer(
+        self, detect, _similarity, stats, optimizer, _mismatches
     ):
         names = [
             "head", "neck", "right_shoulder", "right_elbow", "right_wrist",
@@ -108,29 +106,26 @@ class FusionExecutorTest(unittest.TestCase):
             "weights": {name: 1.0 for name in names},
             "H1": {name: 1.0 for name in names}, "H2": {name: 1.0 for name in names},
         }
-        corrected = {name: list(value) for name, value in camera.items()}
-        corrected["right_elbow"] = [999.0, 999.0, 999.0]
-        confidence_correction.return_value = (corrected, corrected)
-
         result = run_phase3_pipeline(
             {"camera1": camera, "camera2": camera},
             map_path="configs/keypoints3D_map.yml", occlusion_tau=0.01,
             regularization=True, regularization_lambda=1.0, temporal_lambda=2.0,
             max_iter=10, ransac_threshold=0.05, ransac_max_combos=10,
             belief_alpha=0.001, belief_beta=0.8,
-            confidence_correction_enabled=False,
+            belief_correction_enabled=False,
             orientation_correction_enabled=False, optimization_enabled=False,
+            fusion_method="aligned_averaging",
+            precomputed_transforms=((1, np.eye(3), np.zeros(3)), (1, np.eye(3), np.zeros(3))),
         )
 
-        confidence_correction.assert_not_called()
-        orientation_correction.assert_not_called()
+        detect.assert_not_called()
         optimizer.assert_not_called()
         self.assertEqual(result["F_optimized"], [])
         self.assertEqual(stats.call_args_list[0].args[2], result["F"])
         self.assertEqual(result["rejected_new_mismatches"], [])
         self.assertEqual(result["optimized"]["camera1"]["right_elbow"], camera["right_elbow"])
 
-    def test_proposed_matches_aligned_averaging_without_optimizer(self):
+    def test_aligned_is_transform_then_mean_without_alpha_or_beta(self):
         names = [
             "head", "neck", "right_shoulder", "right_elbow", "right_wrist",
             "left_shoulder", "left_elbow", "left_wrist", "pelvis", "right_hip",
@@ -145,31 +140,28 @@ class FusionExecutorTest(unittest.TestCase):
             map_path="configs/keypoints3D_map.yml", occlusion_tau=0.01,
             regularization=True, regularization_lambda=1.0, temporal_lambda=2.0,
             max_iter=10, ransac_threshold=0.05, ransac_max_combos=10,
-            belief_alpha=0.001, belief_beta=0.8,
-            confidence_correction_enabled=True, optimization_enabled=False,
+            belief_correction_enabled=True, optimization_enabled=False,
             precomputed_transforms=(identity, identity),
         )
 
-        proposed = run_phase3_pipeline(**kwargs, fusion_method="proposed")
         aligned = run_phase3_pipeline(**kwargs, fusion_method="aligned_averaging")
 
         for camera in ("camera1", "camera2"):
             for name in names:
                 np.testing.assert_allclose(
-                    proposed["optimized"][camera][name], aligned["optimized"][camera][name]
+                    aligned["optimized"][camera][name],
+                    0.5 * (np.asarray(cam1[name]) + np.asarray(cam2[name])),
                 )
-        self.assertEqual(proposed["fusion_method"], "proposed")
-        self.assertFalse(proposed["confidence_correction_enabled"])
-        self.assertEqual(proposed["F_optimized"], [])
+        self.assertEqual(aligned["fusion_method"], "aligned_averaging")
+        self.assertEqual(aligned["F_optimized"], [])
 
     @patch("src.pipelines.fusion.executor._orientation_mismatches", return_value=set())
     @patch("src.pipelines.fusion.executor.optimize_f_points")
     @patch("src.pipelines.fusion.executor.calculate_stats", return_value=(0, 0, 0, 0, 0))
     @patch("src.pipelines.fusion.executor.estimate_bidirectional_similarity")
-    @patch("src.pipelines.fusion.executor.apply_confidence_corrections")
     @patch("src.pipelines.fusion.executor.detect_cross_view_errors")
-    def test_proposed_optimizes_non_anchor_joints_after_aligned_average(
-        self, detect, correction, similarity, _stats, optimizer, _mismatches
+    def test_proposed_runs_belief_correction_and_configured_optimizer(
+        self, detect, similarity, _stats, optimizer, _mismatches
     ):
         names = [
             "head", "neck", "right_shoulder", "right_elbow", "right_wrist",
@@ -180,14 +172,12 @@ class FusionExecutorTest(unittest.TestCase):
         camera = {name: [float(index), float(index % 3), 2.0] for index, name in enumerate(names)}
         camera2 = {name: [value[0] + 2.0, value[1], value[2]] for name, value in camera.items()}
         detect.return_value = {
-            "M": set(), "K1": {"right_elbow"}, "K2": set(),
-            "L": [name for name in names if name != "right_elbow"],
+            "M": set(), "K1": set(), "K2": set(), "L": names,
             "weights": {name: 1.0 for name in names},
             "H1": {name: 1.0 for name in names}, "H2": {name: 1.0 for name in names},
         }
         identity = (1.0, np.eye(3), np.zeros(3))
         similarity.return_value = (identity, identity, ["head", "neck", "pelvis"])
-        correction.return_value = (camera, camera, set(), set())
         optimizer.return_value = ({"camera1": camera, "camera2": camera}, None)
 
         result = run_phase3_pipeline(
@@ -196,26 +186,30 @@ class FusionExecutorTest(unittest.TestCase):
             regularization=True, regularization_lambda=1.0, temporal_lambda=2.0,
             max_iter=10, ransac_threshold=0.05, ransac_max_combos=10,
             belief_alpha=0.001, belief_beta=0.8,
-            confidence_correction_enabled=True, optimization_enabled=True,
+            belief_correction_enabled=True, optimization_enabled=True,
         )
 
         self.assertIn("right_elbow", result["F"])
         self.assertNotIn("right_elbow", result["A_new"])
         self.assertEqual(result["corrections_skipped"], [])
         self.assertTrue({"left_hip", "right_hip", "left_shoulder", "right_shoulder"} <= set(result["A_new"]))
-        correction.assert_not_called()
+        detect.assert_called_once()
+        similarity.assert_called_once()
         optimizer.assert_called_once()
         self.assertEqual(set(optimizer.call_args.args[1]), set(result["A_new"]))
         self.assertEqual(optimizer.call_args.args[2], result["F"])
         np.testing.assert_allclose(
             optimizer.call_args.args[0]["camera1"]["right_elbow"],
-            0.5 * (np.asarray(camera["right_elbow"]) + np.asarray(camera2["right_elbow"])),
+            camera["right_elbow"],
         )
+        self.assertTrue(optimizer.call_args.kwargs["use_kinematic_constraints"])
+        self.assertEqual(optimizer.call_args.kwargs["loss_type"], "huber")
+        self.assertTrue(optimizer.call_args.kwargs["regularization"])
 
     def test_authoritative_source_index_does_not_fall_back_to_wrong_frame(self):
         profile = {"0": {"joint": [1, 2, 0.9]}}
 
-        self.assertIsNone(_frame_confidence_from_profile(profile, source_idx=9, frame_idx=1))
+        self.assertIsNone(_frame_belief_from_profile(profile, source_idx=9, frame_idx=1))
 
     def test_pose_frame_requires_matching_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -322,23 +316,23 @@ class FusionExecutorTest(unittest.TestCase):
         for name in names:
             self.assertAlmostEqual(global_[name], local[name], places=6)
 
-    def test_confidence_delta_cap_controls_correction_coverage(self):
+    def test_belief_delta_cap_controls_correction_coverage(self):
         names = ["left_elbow", "left_wrist", "right_elbow"]
         cam1 = {name: [0.0, 0.0, 2.0] for name in names}
         cam2 = {name: [0.0, 0.0, 2.0] for name in names}
         visible = dict.fromkeys(names, True)
-        confidence1 = {name: [0.0, 0.0, value] for name, value in zip(names, (0.9, 0.8, 0.7))}
-        confidence2 = {name: [0.0, 0.0, 0.6] for name in names}
+        belief1 = {name: [0.0, 0.0, value] for name, value in zip(names, (0.9, 0.8, 0.7))}
+        belief2 = {name: [0.0, 0.0, 0.6] for name in names}
 
         low = detect_cross_view_errors(
             cam1, cam2, names, visible, visible, alpha=0.0, beta=1.0,
-            confidence2d1=confidence1, confidence2d2=confidence2,
-            global_belief=False, confidence_delta_cap=0.01,
+            belief2d1=belief1, belief2d2=belief2,
+            global_belief=False, belief_delta_cap=0.01,
         )
         high = detect_cross_view_errors(
             cam1, cam2, names, visible, visible, alpha=0.0, beta=1.0,
-            confidence2d1=confidence1, confidence2d2=confidence2,
-            global_belief=False, confidence_delta_cap=1.0,
+            belief2d1=belief1, belief2d2=belief2,
+            global_belief=False, belief_delta_cap=1.0,
         )
 
         self.assertGreater(len(low["K1"]), len(high["K1"]))
