@@ -132,5 +132,27 @@ class OptimizationDeepDiveTest(unittest.TestCase):
         self.assertAlmostEqual(objectives[0], 0.0, places=12)
         self.assertGreater(objectives[1], 1.0)
 
+    @patch("src.pipelines.fusion.optimization.minimize")
+    def test_failed_slsqp_keeps_pre_optimization_pose(self, minimize_mock):
+        cam1 = {k: np.array(v) for k, v in self.base_pose.items()}
+        cam2 = {k: np.array(v) for k, v in self.base_pose.items()}
+        minimize_mock.return_value = SimpleNamespace(
+            success=False,
+            x=np.full(len(self.f_list) * 6, 999.0),
+            message="iteration limit",
+        )
+
+        result, solver_result = optimize_f_points(
+            {"camera1": cam1, "camera2": cam2},
+            self.anchors,
+            self.f_list,
+            use_kinematic_constraints=False,
+        )
+
+        self.assertFalse(solver_result.success)
+        for camera_name, original in (("camera1", cam1), ("camera2", cam2)):
+            for joint in self.f_list:
+                np.testing.assert_allclose(result[camera_name][joint], original[joint])
+
 if __name__ == "__main__":
     unittest.main()

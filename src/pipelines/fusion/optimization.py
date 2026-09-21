@@ -265,11 +265,13 @@ def optimize_f_points(data, anchors, f_list, conf1=None, conf2=None, vis1=None, 
         x0.extend(cam2[name])
 
     res = minimize(objective, np.array(x0, dtype=float), constraints=constraints, method="SLSQP", options={"maxiter": max_iter})
-    if not res.success:
-        print(f"[Optimization] SLSQP info ({res.message}); using best-fit result")
+    use_result = bool(res.success) and np.isfinite(res.x).all()
+    if not use_result:
+        print(f"[Optimization] SLSQP info ({res.message}); keeping pre-optimization pose")
+    solution = res.x if use_result else np.asarray(x0, dtype=float)
 
     p1_opt, p2_opt = dict(cam1), dict(cam2)
     for i, name in enumerate(f_list):
-        p1_opt[name] = res.x[i * 3:i * 3 + 3].tolist()
-        p2_opt[name] = res.x[(num_f + i) * 3:(num_f + i) * 3 + 3].tolist()
+        p1_opt[name] = solution[i * 3:i * 3 + 3].tolist()
+        p2_opt[name] = solution[(num_f + i) * 3:(num_f + i) * 3 + 3].tolist()
     return {"camera1": p1_opt, "camera2": p2_opt}, res

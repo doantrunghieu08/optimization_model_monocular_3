@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import numpy as np
 
+from src.core.keypoints_map import load_keypoints3d_map
 from src.pipelines.fusion.detector import compute_harmonic_precision
 from src.pipelines.fusion.detector import detect_cross_view_errors
 from src.pipelines.fusion.executor import (
@@ -196,6 +197,7 @@ class FusionExecutorTest(unittest.TestCase):
             max_iter=10, ransac_threshold=0.05, ransac_max_combos=10,
             belief_alpha=0.001, belief_beta=0.8,
             belief_correction_enabled=True, optimization_enabled=True,
+            pre_fuse_f_points=True,
         )
 
         self.assertIn("right_elbow", result["F"])
@@ -214,12 +216,42 @@ class FusionExecutorTest(unittest.TestCase):
         self.assertEqual(optimizer.call_args.args[2], result["F"])
         np.testing.assert_allclose(
             optimizer.call_args.args[0]["camera1"]["right_elbow"],
-            camera["right_elbow"],
+            0.5 * (np.asarray(camera["right_elbow"]) + np.asarray(camera2["right_elbow"])),
+        )
+        np.testing.assert_allclose(
+            optimizer.call_args.args[0]["camera1"]["left_hip"],
+            camera["left_hip"],
         )
         self.assertTrue(optimizer.call_args.kwargs["use_kinematic_constraints"])
         self.assertEqual(optimizer.call_args.kwargs["loss_type"], "huber")
         self.assertTrue(optimizer.call_args.kwargs["regularization"])
         self.assertFalse(optimizer.call_args.kwargs["root_relative"])
+
+    @patch("src.pipelines.fusion.executor.optimize_f_points")
+    @patch("src.pipelines.fusion.executor.detect_cross_view_errors")
+    def test_proposed_rejects_zero_belief_slave(self, detect, optimizer):
+        names = [kp["name"] for kp in load_keypoints3d_map("configs/keypoints3D_map.yml")["keypoints"]]
+        camera = {name: [float(index), float(index % 3), 2.0] for index, name in enumerate(names)}
+        detect.return_value = {
+            "M": set(), "K1": set(), "K2": set(), "L": names,
+            "weights": dict.fromkeys(names, 0.5),
+            "H1": dict.fromkeys(names, 1.0), "H2": dict.fromkeys(names, 0.0),
+        }
+
+        with self.assertWarnsRegex(UserWarning, "Slave mean belief"):
+            result = run_phase3_pipeline(
+                {"camera1": camera, "camera2": camera},
+                map_path="configs/keypoints3D_map.yml", occlusion_tau=0.01,
+                regularization=True, regularization_lambda=1.0, temporal_lambda=2.0,
+                max_iter=10, ransac_threshold=0.05, ransac_max_combos=10,
+                belief_alpha=0.001, belief_beta=0.8,
+                belief_correction_enabled=True, optimization_enabled=True,
+                correction_selector="limb_winner",
+            )
+
+        optimizer.assert_not_called()
+        self.assertFalse(result["belief_correction_enabled"])
+        self.assertEqual(result["F_optimized"], [])
 
     def test_authoritative_source_index_does_not_fall_back_to_wrong_frame(self):
         profile = {"0": {"joint": [1, 2, 0.9]}}

@@ -142,7 +142,7 @@ STRICT_EQUALITY_BONES = True
 
 # Fix #4: Ngưỡng belief tối thiểu của slave camera để fusion correction được phép kích hoạt.
 # Nếu mean belief slave < ngưỡng này, bỏ qua correction để tránh áp similarity transform kém lên dữ liệu.
-MIN_SLAVE_BELIEF_THRESHOLD = 0.0
+MIN_SLAVE_BELIEF_THRESHOLD = 0.06
 
 # Fix #3: Số joint tối thiểu trong l_list để RANSAC có thể ước lượng transform đáng tin cậy.
 # Dưới ngưỡng này, correction bị skip dù correction_enabled=True.

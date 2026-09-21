@@ -272,10 +272,7 @@ def run_phase3_pipeline(
             raise ValueError("fusion.correction.selector must be belief, occlusion, or limb_winner")
 
         slave_mean_belief = float(np.mean(list(H2_all.values()))) if H2_all else 0.0
-        slave_belief_sufficient = (
-            correction_selector == "limb_winner"
-            or slave_mean_belief >= MIN_SLAVE_BELIEF_THRESHOLD
-        )
+        slave_belief_sufficient = slave_mean_belief >= MIN_SLAVE_BELIEF_THRESHOLD
         if not slave_belief_sufficient:
             import warnings
             warnings.warn(
@@ -364,8 +361,7 @@ def run_phase3_pipeline(
     f_list = [n for n in names if n not in set(a_new) | skipped_corrections]
 
     if fusion_method == "proposed" and pre_fuse_f_points:
-        pre_fuse_names = set(l_list) | set(f_list)
-        for name in pre_fuse_names:
+        for name in f_list:
             if vis1.get(name, True) and vis2.get(name, True) and name not in (applied_k1 | applied_k2):
                 h1_v = float(H1_all.get(name, 0.5))
                 h2_v = float(H2_all.get(name, 0.5))
