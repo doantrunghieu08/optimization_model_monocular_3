@@ -222,7 +222,7 @@ def run_phase3_pipeline(
     cam1 = {k: cam1[k] for k in names}
     cam2 = {k: cam2[k] for k in names}
 
-    if fusion_method != "aligned_averaging" and verts_by_cam is not None:
+    if verts_by_cam is not None:
         if torso_faces is None:
             raise ValueError("torso_faces is required when verts_by_cam is provided")
         vis1 = compute_visibility_from_mesh_vertices(cam1, verts_by_cam["camera1"], torso_faces, occlusion_tau, vertex_parts=vertex_parts)
@@ -472,7 +472,7 @@ def run_fusion(config: dict) -> None:
     fusion_method = fusion_cfg.get("method", "proposed")
     occlusion_cfg = fusion_cfg["occlusion"]
     belief_cfg = fusion_cfg.get("belief", {})
-    occlusion_enabled = occlusion_cfg["enabled"] and fusion_method != "aligned_averaging"
+    occlusion_enabled = occlusion_cfg["enabled"]
     mesh_loaded, verts_cam1, verts_cam2, faces, vertex_parts, mesh_frame_count = _load_pose_meshes(paths, occlusion_enabled)
     torso_faces = load_torso_faces(vertex_parts, faces) if mesh_loaded else None
     belief2d_profiles = (

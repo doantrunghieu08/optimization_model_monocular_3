@@ -90,9 +90,10 @@ class FusionExecutorTest(unittest.TestCase):
             ["head", "neck", "pelvis"],
         ),
     )
+    @patch("src.pipelines.fusion.executor.compute_visibility_from_mesh_vertices")
     @patch("src.pipelines.fusion.executor.detect_cross_view_errors")
     def test_aligned_skips_belief_correction_and_optimizer(
-        self, detect, _similarity, stats, optimizer, _mismatches
+        self, detect, visibility, _similarity, stats, optimizer, _mismatches
     ):
         names = [
             "head", "neck", "right_shoulder", "right_elbow", "right_wrist",
@@ -106,6 +107,10 @@ class FusionExecutorTest(unittest.TestCase):
             "weights": {name: 1.0 for name in names},
             "H1": {name: 1.0 for name in names}, "H2": {name: 1.0 for name in names},
         }
+        visibility.side_effect = [
+            {name: name != "right_elbow" for name in names},
+            {name: True for name in names},
+        ]
         result = run_phase3_pipeline(
             {"camera1": camera, "camera2": camera},
             map_path="configs/keypoints3D_map.yml", occlusion_tau=0.01,
@@ -116,10 +121,14 @@ class FusionExecutorTest(unittest.TestCase):
             orientation_correction_enabled=False, optimization_enabled=False,
             fusion_method="aligned_averaging",
             precomputed_transforms=((1, np.eye(3), np.zeros(3)), (1, np.eye(3), np.zeros(3))),
+            verts_by_cam={"camera1": np.empty((0, 3)), "camera2": np.empty((0, 3))},
+            torso_faces=np.empty((0, 3), dtype=int),
         )
 
         detect.assert_not_called()
+        self.assertEqual(visibility.call_count, 2)
         optimizer.assert_not_called()
+        self.assertFalse(result["vis1"]["right_elbow"])
         self.assertEqual(result["F_optimized"], [])
         self.assertEqual(stats.call_args_list[0].args[2], result["F"])
         self.assertEqual(result["rejected_new_mismatches"], [])
