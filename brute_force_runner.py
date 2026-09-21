@@ -514,6 +514,7 @@ def _setup_pipeline_config(base_cfg, gt_dir, camA, camB, workspace):
     cfg["runtime"]["stage"] = "visualization"
     cfg.setdefault("learnable", {})["device"] = "cuda"
     cfg.setdefault("learnable_extra", {})["device"] = "cuda"
+    cfg["learnable_extra"]["enabled"] = True  # Bật để tính LE MPJPE.occ / LE MPJPE.vis
     return absolutize_config_paths(cfg, workspace)
 
 def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_id: str, seg_name: str) -> dict:
@@ -688,20 +689,25 @@ def _evaluate_camera_pair(camA, camB, base_cfg, gt_dir, workspace, seg_name: str
 
         d_mpjpe = res.get('% delta_mpjpe', 0.0)
         d_pa_mpjpe = res.get('% delta_pa_mpjpe', 0.0)
-        le_mpjpe = res.get('le_mpjpe_master', 0.0)
-        le_pa_mpjpe = res.get('le_pa_mpjpe_master', 0.0)
+        le_mpjpe = res.get('le_mpjpe_master', 'N/A')
+        le_pa_mpjpe = res.get('le_pa_mpjpe_master', 'N/A')
+        le_occ = res.get('le_occ_mpjpe_master', float('inf'))
+        le_vis = res.get('le_vis_mpjpe_master', float('inf'))
         mble = res.get('mble', float('inf'))
         accel = res.get('accel', float('inf'))
 
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        print(f"[{current_time}] Kết quả {camA['id']}-{camB['id']}: "
-              f"MPJPE={res['mpjpe']:.2f} (Δ {d_mpjpe:+.2f}%), "
-              f"Occ={res['occ_mpjpe']:.2f}, Vis={res['vis_mpjpe']:.2f}, "
-              f"PA-MPJPE={res['pa_mpjpe']:.2f} (Δ {d_pa_mpjpe:+.2f}%), "
-              f"MBLE={mble:.2f}, Accel={accel:.2f}",
-              f"LE MPJPE={le_mpjpe} (LE PA-MPJPE {le_pa_mpjpe}), "
-             )
+        le_occ_str = f"{le_occ:.2f}" if le_occ != float('inf') else "N/A"
+        le_vis_str = f"{le_vis:.2f}" if le_vis != float('inf') else "N/A"
+        print(
+            f"[{current_time}] Kết quả {camA['id']}-{camB['id']}: "
+            f"MPJPE={res['mpjpe']:.2f} (Δ {d_mpjpe:+.2f}%), "
+            f"Occ={res['occ_mpjpe']:.2f}, Vis={res['vis_mpjpe']:.2f}, "
+            f"PA-MPJPE={res['pa_mpjpe']:.2f} (Δ {d_pa_mpjpe:+.2f}%), "
+            f"MBLE={mble:.2f}, Accel={accel:.2f} | "
+            f"LE MPJPE={le_mpjpe} (LE PA-MPJPE={le_pa_mpjpe}), "
+            f"LE Occ={le_occ_str}, LE Vis={le_vis_str}"
+        )
         return res
     except Exception as e:
         import traceback
