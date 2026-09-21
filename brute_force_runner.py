@@ -192,6 +192,15 @@ def extract_local_belief(metadata_dir: Path) -> tuple[str, str, int, int]:
                     for k, v in c2.items(): c2_acc[k] = c2_acc.get(k, 0.0) + v
                 occluded_master += sum(visible is False for visible in metadata.get("vis1", {}).values())
                 occluded_slave += sum(visible is False for visible in metadata.get("vis2", {}).values())
+                c1, c2 = conf.get("camera1", {}), conf.get("camera2", {})
+                if isinstance(c1, list): c1 = {str(i): v for i, v in enumerate(c1)}
+                if isinstance(c2, list): c2 = {str(i): v for i, v in enumerate(c2)}
+                if c1:
+                    for k, v in c1.items(): c1_acc[k] = c1_acc.get(k, 0.0) + v
+                if c2:
+                    for k, v in c2.items(): c2_acc[k] = c2_acc.get(k, 0.0) + v
+                occluded_master += sum(visible is False for visible in metadata.get("vis1", {}).values())
+                occluded_slave += sum(visible is False for visible in metadata.get("vis2", {}).values())
             count += 1
         except Exception: pass
     if count == 0: return "[]", "[]", 0, 0
@@ -207,9 +216,16 @@ def _get_sheet_data(sheet_name: str) -> tuple[list, list, str | None, bool]:
         worksheets = sh.worksheets()
         if not worksheets:
             return [], [], None, False
-        latest_worksheet = worksheets[-1] 
-        data = latest_worksheet.get_all_values()
-        ws_title = latest_worksheet.title
+        target_ws = None
+        for ws in reversed(worksheets):
+            data = ws.get_all_values()
+            if data and len(data) >= 1 and "Segment" in data[0] and ("Cam Master" in data[0] or "Master" in data[0]):
+                target_ws = ws
+                break
+        if target_ws is None:
+            target_ws = worksheets[-1]
+        data = target_ws.get_all_values()
+        ws_title = target_ws.title
         if not data or len(data) < 2: return [], [], ws_title, False
         has_end_marker = any(row and row[0] == "End" for row in data[1:])
         return data[0], data[1:], ws_title, has_end_marker
