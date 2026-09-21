@@ -12,6 +12,8 @@ from src.core.config_loader import resolve_preprocess_output_dir
 from src.pipelines.fusion.correction import estimate_bidirectional_similarity
 from src.pipelines.fusion.correction import estimate_sequence_root_similarity
 from src.pipelines.fusion.correction import fuse_aligned_poses
+from src.pipelines.fusion.correction import apply_root_relative
+from src.pipelines.fusion.correction import apply_similarity
 from src.pipelines.fusion.detector import get_orientation_flag
 from src.pipelines.fusion.config import OUTPUT_SUBDIRS
 from src.pipelines.fusion.config import NON_REPLACEABLE_ANCHORS
@@ -198,6 +200,8 @@ def run_phase3_pipeline(
     shared_body_pose_enabled=False,
     max_bone_angle_deg=DEFAULT_MAX_BONE_ANGLE_DEG,
     fusion_method="proposed",
+    pre_fuse_f_points=False,
+    cross_view_lambda=1.0,
 ):
     if fusion_method not in ("aligned_averaging", "higher_belief_selection", "proposed"):
         raise ValueError(f"Unknown fusion method: {fusion_method}")
@@ -354,6 +358,19 @@ def run_phase3_pipeline(
     a_new = sorted(set(a_list) | applied_k1 | applied_k2 | orientation_applied | NON_REPLACEABLE_ANCHORS)
     skipped_corrections = (k1_set | k2_set) - applied_k1 - applied_k2 if fusion_method == "proposed" else set()
     f_list = [n for n in names if n not in set(a_new) | skipped_corrections]
+
+    if fusion_method == "proposed" and pre_fuse_f_points:
+        for name in f_list:
+            if vis1.get(name, True) and vis2.get(name, True):
+                h1_v = float(H1_all.get(name, 0.5))
+                h2_v = float(H2_all.get(name, 0.5))
+                w1 = h1_v / max(h1_v + h2_v, 1e-12)
+                w2 = 1.0 - w1
+                cam2_in_1 = apply_root_relative(cam2[name], cam2, cam1, t21) if root_relative_correction else apply_similarity(cam2[name], t21)
+                cam1_in_2 = apply_root_relative(cam1[name], cam1, cam2, t12) if root_relative_correction else apply_similarity(cam1[name], t12)
+                cam1_corr[name] = w1 * as_xyz(cam1[name]) + w2 * cam2_in_1
+                cam2_corr[name] = w2 * as_xyz(cam2[name]) + w1 * cam1_in_2
+
     before_stats = calculate_stats(cam1_corr, cam2_corr, f_list, a_new, conf1=H1_all, conf2=H2_all, vis1=vis1, vis2=vis2, f_weights=all_weights, loss_type=loss_type)
     mismatches_before_optimization = _orientation_mismatches(cam1_corr, cam2_corr, names)
     if effective_optimization:
@@ -374,6 +391,9 @@ def run_phase3_pipeline(
             max_iter=max_iter,
             use_kinematic_constraints=use_kinematic_constraints,
             loss_type=loss_type,
+            t12=t12,
+            t21=t21,
+            cross_view_lambda=cross_view_lambda,
         )
     else:
         optimized_data = {"camera1": dict(cam1_corr), "camera2": dict(cam2_corr)}
@@ -547,6 +567,8 @@ def run_fusion(config: dict) -> None:
                 shared_body_pose_enabled=fusion_cfg.get("shared_body_pose_enabled", False),
                 max_bone_angle_deg=correction_cfg.get("max_bone_angle_deg", DEFAULT_MAX_BONE_ANGLE_DEG),
                 fusion_method=fusion_method,
+                pre_fuse_f_points=opt_cfg.get("pre_fuse_f_points", True),
+                cross_view_lambda=opt_cfg.get("cross_view_lambda", 1.0),
             )
             occluded_cam1 = sorted(name for name, visible in result.get("vis1", {}).items() if not visible)
             occluded_cam2 = sorted(name for name, visible in result.get("vis2", {}).items() if not visible)

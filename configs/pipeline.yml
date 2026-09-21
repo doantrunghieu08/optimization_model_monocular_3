@@ -36,7 +36,7 @@ fusion:
   shared_body_pose_enabled: false # Fusion local SMPL rotations; không cần camera calibration.
   max_fallback_ratio: 0.0 # Fail nếu có bất kỳ frame nào không fusion được.
   belief: # Dùng cho Higher-Belief và Proposed; Aligned không dùng.
-    alpha: ${ALPHA:-0.001} # alpha: hệ số phạt theo khoảng cách 3D của joint, càng lớn thì joint xa camera càng bị giảm tin cậy mạnh hơn.
+    alpha: ${ALPHA:-0.01} # alpha: hệ số phạt theo khoảng cách 3D của joint, càng lớn thì joint xa camera càng bị giảm tin cậy mạnh hơn.
     beta: ${BETA:-0.8} # beta: hệ số trộn tin cậy của láng giềng xương trong harmonic mean, càng lớn thì belief càng chịu ảnh hưởng bởi skeleton lân cận.
     global: ${GLOBAL:-true} # true: hòa belief của joint với các joint xương lân cận.
     local_method: ${LOCAL_METHOD:-"optical_aware_belief"} # naive_distance_belief hoặc optical_aware_belief.
@@ -63,6 +63,8 @@ fusion:
 
   optimization:
     enabled: true # Enabled kinematic & temporal SLSQP optimizer
+    pre_fuse_f_points: true # Belief-weighted pre-fusion on F joints before SLSQP
+    cross_view_lambda: 1.0 # Cross-view 3D alignment penalty weight in SLSQP
     use_kinematic_constraints: ${KINEMATIC_CONSTRAINTS:-true}
     loss_type: ${LOSS_TYPE:-"huber"} # huber hoặc mse.
     regularization: true
