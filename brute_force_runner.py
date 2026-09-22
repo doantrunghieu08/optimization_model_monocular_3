@@ -216,21 +216,24 @@ def _get_sheet_data(sheet_name: str) -> tuple[list, list, str | None, bool]:
         worksheets = sh.worksheets()
         if not worksheets:
             return [], [], None, False
-        target_ws = None
+        latest_completed = None
         for ws in reversed(worksheets):
             data = ws.get_all_values()
             if data and len(data) >= 1 and "Segment" in data[0] and ("Cam Master" in data[0] or "Master" in data[0]):
-                target_ws = ws
-                break
-        if target_ws is None:
-            target_ws = worksheets[-1]
-        data = target_ws.get_all_values()
-        ws_title = target_ws.title
-        if not data or len(data) < 2: return [], [], ws_title, False
-        has_end_marker = any(row and row[0] == "End" for row in data[1:])
-        return data[0], data[1:], ws_title, has_end_marker
-    except Exception: 
+                has_end_marker = any(row and row[0] == "End" for row in data[1:])
+                report = (data[0], data[1:], ws.title, has_end_marker)
+                if not has_end_marker:
+                    return report
+                if latest_completed is None:
+                    latest_completed = report
+        if latest_completed is not None:
+            return latest_completed
+        data = worksheets[-1].get_all_values()
+        return (data[0], data[1:], worksheets[-1].title, False) if data else ([], [], worksheets[-1].title, False)
+    except gspread.exceptions.SpreadsheetNotFound:
         return [], [], None, False
+    except Exception as e:
+        raise RuntimeError(f"Không thể đọc Google Sheet '{sheet_name}'; dừng để tránh tạo sheet mới.") from e
 
 def _get_header_indices(header: list) -> dict:
     idx = {}
@@ -252,10 +255,14 @@ def _get_header_indices(header: list) -> dict:
     for k in keys:
         if k in header:
             idx[k] = header.index(k)
+        elif k == 'Cam Master' and 'Master' in header:
+            idx[k] = header.index('Master')
+        elif k == 'Cam Slave' and 'Slave' in header:
+            idx[k] = header.index('Slave')
         elif k == 'Method' and 'Fusion Method' in header:
             idx[k] = header.index('Fusion Method')
-        elif k == 'All MPJPE' and 'MPJPE' in header:
-            idx[k] = header.index('MPJPE')
+        elif k == 'All MPJPE' and ('MPJPE' in header or 'MPJPE (mm)' in header):
+            idx[k] = header.index('MPJPE' if 'MPJPE' in header else 'MPJPE (mm)')
         elif k == '% Δ_MPJPE' and '% d_MPJPE%' in header:
             idx[k] = header.index('% d_MPJPE%')
         elif k == '% Δ_PA-MPJPE' and 'd_PA-MPJPE' in header:
@@ -330,18 +337,7 @@ def load_existing_spreadsheet_results(sheet_name: str) -> tuple[dict, str | None
     header, rows, ws_title, has_end_marker = _get_sheet_data(sheet_name)
     if not header: return existing, ws_title, has_end_marker
     idx = _get_header_indices(header)
-    required = (
-        'Segment', 'Alpha', 'Beta', 'Global Belief', 'Local Method',
-        'Kinematic Constraints', 'Loss Type', 'Occ. MPJPE', 'Vis. MPJPE', 'MBLE', 'Accel Error (mm/frame^2)',
-        'Optimization Enabled', 'Learnable', 'Learnable Extra',
-        'Fusion Occ. MPJPE', 'Fusion Vis. MPJPE',
-        'Fusion MBLE', 'LE MBLE', 'Old MBLE', 'GT Accel Error (mm/frame^2)',
-        'Fusion Accel Error (mm/frame^2)', 'LE Accel Error (mm/frame^2)',
-        'Old Accel Error (mm/frame^2)',
-        'LE Occ. MPJPE Master', 'LE Vis. MPJPE Master',
-        'Baseline Occ. MPJPE', 'Baseline Vis. MPJPE',
-        'Occluded Joint-Frames Master', 'Occluded Joint-Frames Slave',
-    )
+    required = ('Segment', 'Cam Master', 'Cam Slave', 'All MPJPE')
     if any(idx[column] == -1 for column in required): return existing, None, has_end_marker
     for row in rows:
         key, res = _parse_history_row(row, idx)

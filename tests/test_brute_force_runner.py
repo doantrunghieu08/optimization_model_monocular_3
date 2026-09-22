@@ -7,11 +7,51 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from brute_force_runner import _active_config_signature, _build_report_rows, _get_header_indices, _matches_active_config, _parse_history_row, _process_segment, generate_spreadsheet_report_safe, load_existing_csv_results, parse_visibility_mpjpe
+from brute_force_runner import _active_config_signature, _build_report_rows, _get_header_indices, _get_sheet_data, _matches_active_config, _parse_history_row, _process_segment, generate_spreadsheet_report_safe, load_existing_csv_results, load_existing_spreadsheet_results, parse_visibility_mpjpe
 from src.core.config_loader import load_config
 
 
 class BruteForceResumeTest(unittest.TestCase):
+    def test_google_sheet_resume_prefers_unfinished_worksheet(self):
+        class Worksheet:
+            def __init__(self, title, rows):
+                self.title = title
+                self.rows = rows
+
+            def get_all_values(self):
+                return self.rows
+
+        class Spreadsheet:
+            def worksheets(self):
+                return [
+                    Worksheet("run_in_progress", [["Segment", "Cam Master"], ["seg_1", "cam0"]]),
+                    Worksheet("run_done", [["Segment", "Cam Master"], ["End", "End"]]),
+                ]
+
+        client = unittest.mock.Mock()
+        client.open.return_value = Spreadsheet()
+        with patch("brute_force_runner.get_gspread_client", return_value=client):
+            header, rows, title, has_end = _get_sheet_data("report")
+
+        self.assertEqual(header, ["Segment", "Cam Master"])
+        self.assertEqual(rows, [["seg_1", "cam0"]])
+        self.assertEqual(title, "run_in_progress")
+        self.assertFalse(has_end)
+
+    def test_google_sheet_resume_accepts_older_report_columns(self):
+        sheet_data = (
+            ["Segment", "Master", "Slave", "MPJPE (mm)"],
+            [["seg_1", "cam0", "cam1", "12.5"]],
+            "run_in_progress",
+            False,
+        )
+        with patch("brute_force_runner._get_sheet_data", return_value=sheet_data):
+            existing, title, has_end = load_existing_spreadsheet_results("report")
+
+        self.assertIn(("seg_1", "cam0", "cam1", "proposed"), existing)
+        self.assertEqual(title, "run_in_progress")
+        self.assertFalse(has_end)
+
     def test_visibility_mpjpe_splits_joint_frame_errors(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
