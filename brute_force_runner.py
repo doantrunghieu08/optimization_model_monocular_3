@@ -732,36 +732,53 @@ def _get_timed_input(timeout: int) -> str | None:
 
 def _matches_active_config(result: dict, config: dict) -> bool:
     method = result.get("fusion_method", "proposed")
-    if result.get("config_signature", "N/A") != _active_config_signature(config, method):
-        return False
 
+    # --- Primary check: config_signature (most reliable, always present in new sheets) ---
+    sig = result.get("config_signature")
+    if sig and sig not in ("N/A", ""):
+        return sig == _active_config_signature(config, method)
+
+    # --- Fallback: field-by-field comparison with N/A tolerance (older sheets) ---
+    # N/A / missing field → assume match (don't reject sheet based on unknown field)
     def as_bool(value):
-        if isinstance(value, bool):
-            return value
+        if isinstance(value, bool): return value
         if isinstance(value, str) and value.lower() in ("true", "false"):
             return value.lower() == "true"
         return None
+
+    def num_ok(result_val, config_val):
+        if result_val in ("N/A", "", None): return True
+        try: return float(str(result_val).replace(',', '.')) == float(config_val)
+        except (ValueError, TypeError): return True
+
+    def bool_ok(result_val, config_val):
+        parsed = as_bool(result_val)
+        return parsed is None or parsed == config_val
+
+    def str_ok(result_val, config_val):
+        if result_val in ("N/A", "", None): return True
+        return str(result_val) == str(config_val)
 
     belief = config["fusion"]["belief"]
     method_matches = True
     if method in ("proposed", "higher_belief_selection"):
         method_matches = (
-            result.get("alpha") == belief["alpha"]
-            and result.get("beta") == belief["beta"]
-            and as_bool(result.get("global_belief")) == belief["global"]
-            and result.get("local_method") == belief["local_method"]
+            num_ok(result.get("alpha"), belief["alpha"])
+            and num_ok(result.get("beta"), belief["beta"])
+            and bool_ok(result.get("global_belief"), belief["global"])
+            and str_ok(result.get("local_method"), belief["local_method"])
         )
         if method == "proposed":
             optimization = config["fusion"]["optimization"]
             method_matches = method_matches and (
-                as_bool(result.get("kinematic_constraints")) == optimization["use_kinematic_constraints"]
-                and result.get("loss_type") == optimization["loss_type"]
-                and as_bool(result.get("optimization_enabled")) == optimization["enabled"]
+                bool_ok(result.get("kinematic_constraints"), optimization["use_kinematic_constraints"])
+                and str_ok(result.get("loss_type"), optimization["loss_type"])
+                and bool_ok(result.get("optimization_enabled"), optimization["enabled"])
             )
     return (
         method_matches
-        and as_bool(result.get("learnable_enabled")) == config["learnable"]["enabled"]
-        and as_bool(result.get("learnable_extra_enabled")) == config["learnable_extra"]["enabled"]
+        and bool_ok(result.get("learnable_enabled"), config["learnable"]["enabled"])
+        and bool_ok(result.get("learnable_extra_enabled"), config["learnable_extra"]["enabled"])
     )
 
 def _active_config_signature(config: dict, fusion_method: str | None = None) -> str:
@@ -911,6 +928,15 @@ def run_brute_force():
                 print(f"[+] Tìm thấy file báo cáo CSV CHƯA HOÀN THÀNH '{report_file.name}' ({len(existing)} cặp đã chạy). Sẽ tiếp tục chạy nốt các cặp còn lại.")
             else:
                 print(f"[+] Khởi tạo file báo cáo mới: '{sh_name}.csv'")
+
+    # Kiểm tra config khớp để tránh trộn kết quả của các ablation khác nhau.
+    # Dùng config_signature (nếu có) hoặc fallback field-by-field với N/A tolerance.
+    completed = [r for r in existing.values() if r.get("mpjpe", float('inf')) != float('inf')]
+    if completed and not all(_matches_active_config(r, base_cfg) for r in completed):
+        print("[!] Config hiện tại khác sheet chưa hoàn thành → tạo sheet mới để tránh trộn kết quả.")
+        existing = {}
+        existing_ws_title = None
+        has_end_marker = False
 
     if has_end_marker:
         new_ws_title = f"Run_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
