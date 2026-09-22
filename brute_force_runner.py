@@ -921,8 +921,8 @@ def run_brute_force():
         ws_title = existing_ws_title
         print(f"[+] Báo cáo gần nhất '{ws_title}' chưa có dấu END. Tiếp tục ghi bổ sung vào báo cáo này.")
     else:
-        ws_title = f"Run_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
-        print(f"[+] Khởi tạo báo cáo mới: '{ws_title}'.")
+        ws_title = None
+        print(f"[+] Khởi tạo báo cáo mới trong file '{sh_name}'.")
 
     all_res = {}
     for (s_name, master, supplement, fusion_method), res in existing.items():
