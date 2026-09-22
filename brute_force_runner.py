@@ -482,8 +482,12 @@ def generate_spreadsheet_report_safe(all_results, sheet_name, worksheet_title=No
         output_dir.mkdir(parents=True, exist_ok=True)
         report_file = output_dir / f"{sheet_name}.csv"
         rows = _build_report_rows(all_results)
-        with open(report_file, "w", newline="", encoding="utf-8") as f:
+        if is_final and rows:
+            rows.append(["End"] * len(rows[0]))
+        temp_file = report_file.with_suffix(".csv.tmp")
+        with open(temp_file, "w", newline="", encoding="utf-8") as f:
             csv.writer(f).writerows(rows)
+        temp_file.replace(report_file)
         if not silent:
             print(f"\n[Local] Đã xuất báo cáo ra file CSV thành công!\n🔗 Lưu tại: {report_file}")
         return
@@ -727,7 +731,8 @@ def _get_timed_input(timeout: int) -> str | None:
 
 
 def _matches_active_config(result: dict, config: dict) -> bool:
-    if result.get("config_signature", "N/A") != _active_config_signature(config):
+    method = result.get("fusion_method", "proposed")
+    if result.get("config_signature", "N/A") != _active_config_signature(config, method):
         return False
 
     def as_bool(value):
@@ -738,7 +743,6 @@ def _matches_active_config(result: dict, config: dict) -> bool:
         return None
 
     belief = config["fusion"]["belief"]
-    method = result.get("fusion_method", "proposed")
     method_matches = True
     if method in ("proposed", "higher_belief_selection"):
         method_matches = (
@@ -760,9 +764,12 @@ def _matches_active_config(result: dict, config: dict) -> bool:
         and as_bool(result.get("learnable_extra_enabled")) == config["learnable_extra"]["enabled"]
     )
 
-def _active_config_signature(config: dict) -> str:
+def _active_config_signature(config: dict, fusion_method: str | None = None) -> str:
+    fusion = dict(config["fusion"])
+    if fusion_method is not None:
+        fusion["method"] = fusion_method
     return json.dumps({
-        "fusion": config["fusion"],
+        "fusion": fusion,
         "learnable": config["learnable"]["enabled"],
         "learnable_extra": config["learnable_extra"]["enabled"],
     }, sort_keys=True, separators=(",", ":"))
@@ -813,8 +820,6 @@ def _process_segment(seg, existing, base_cfg, fusion_methods, ws_dir, sh_name, w
     print(f"\n=== Bắt đầu vét cạn cho Segment: {seg_name} ({seg_total_pairs} cặp) ===")
     
     results = []
-    last_update_time = time.time()
-    
     for (cA, cB), fusion_method in itertools.product(itertools.permutations(cameras, 2), fusion_methods):
         current_idx += 1
         print(f"\n--- [Tiến trình: {current_idx}/{total_pairs}] Method={fusion_method} | Master={cA['id']} | Supplement={cB['id']} ---")
@@ -835,9 +840,6 @@ def _process_segment(seg, existing, base_cfg, fusion_methods, ws_dir, sh_name, w
         res = _evaluate_camera_pair(cA, cB, method_cfg, str(ws_dir / seg["ground_truth_dir"]), ws_dir, seg_name)
         if res is not None:
             results.append(res)
-        
-        current_time = time.time()
-        if current_time - last_update_time > 30:
             temp_res = dict(all_res)
             temp_res[seg_name] = sorted(
                 results, 
@@ -845,7 +847,6 @@ def _process_segment(seg, existing, base_cfg, fusion_methods, ws_dir, sh_name, w
                 reverse=True
             )
             generate_spreadsheet_report_safe(temp_res, sh_name, ws_title, silent=True)
-            last_update_time = current_time
 
     sorted_results = sorted(
         results, 
@@ -897,11 +898,12 @@ def run_brute_force():
         report_file = output_dir / f"{default_sh_name}.csv"
         existing, has_end_marker = load_existing_csv_results(report_file)
         if has_end_marker:
-            new_csv_name = f"{default_sh_name}_Run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            sh_name = new_csv_name
+            archive_name = f"{default_sh_name}_Run_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+            report_file.replace(output_dir / archive_name)
+            sh_name = default_sh_name
             existing = {}
             existing_ws_title = None
-            print(f"[+] File báo cáo CSV cũ '{report_file.name}' đã HOÀN TẤT (có dấu END). Khởi tạo file báo cáo mới: '{sh_name}.csv'")
+            print(f"[+] File báo cáo CSV cũ đã HOÀN TẤT và được lưu thành '{archive_name}'. Khởi tạo lại '{sh_name}.csv'.")
         else:
             sh_name = default_sh_name
             existing_ws_title = sh_name

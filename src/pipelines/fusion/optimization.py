@@ -8,7 +8,6 @@ from src.pipelines.fusion.config import RIGID_BONES_RATIO
 from src.pipelines.fusion.config import HEIGHT
 from src.pipelines.fusion.config import HUBER_DELTA
 from src.pipelines.fusion.config import TORSO_HEIGHT_RATIO
-from src.pipelines.fusion.correction import apply_root_relative, apply_similarity
 
 
 def get_diff_f(f_name, anchors, cam1, cam2, conf1=None, conf2=None, vis1=None, vis2=None, occluded_factor=DEFAULT_OCCLUDED_FACTOR):
@@ -104,171 +103,174 @@ def optimize_f_points(data, anchors, f_list, conf1=None, conf2=None, vis1=None, 
     num_f = len(f_list)
     if not f_list:
         return {"camera1": cam1, "camera2": cam2}, None
+    if loss_type not in ("huber", "mse"):
+        raise ValueError("loss_type must be huber or mse")
 
-    def proximity_penalty(x):
-        penalty = 0.0
-        for i, name in enumerate(f_list):
-            c1v = float(conf1.get(name, 1.0)) if conf1 else 1.0
-            c2v = float(conf2.get(name, 1.0)) if conf2 else 1.0
-            d1 = x[i * 3:i * 3 + 3] - cam1[name]
-            d2 = x[(num_f + i) * 3:(num_f + i) * 3 + 3] - cam2[name]
-            penalty += c1v * float(np.dot(d1, d1)) + c2v * float(np.dot(d2, d2))
-        return penalty
+    f_index = {name: index for index, name in enumerate(f_list)}
+    initial1 = np.asarray([cam1[name] for name in f_list], dtype=float)
+    initial2 = np.asarray([cam2[name] for name in f_list], dtype=float)
+    f_weight_values = np.asarray([f_weights[name] for name in f_list], dtype=float)
+    conf1_values = np.asarray([float(conf1.get(name, 1.0)) if conf1 else 1.0 for name in f_list])
+    conf2_values = np.asarray([float(conf2.get(name, 1.0)) if conf2 else 1.0 for name in f_list])
 
-    def cross_view_penalty(x):
-        if t21 is None:
-            return 0.0
-        penalty = 0.0
-        for i, name in enumerate(f_list):
-            p1 = x[i * 3 : i * 3 + 3]
-            p2 = x[(num_f + i) * 3 : (num_f + i) * 3 + 3]
-            p2_in_1 = apply_root_relative(p2, cam2, cam1, t21) if root_relative else apply_similarity(p2, t21)
-            w = f_weights.get(f_list[i], 1.0)
-            penalty += w * float(np.sum((p1 - p2_in_1) ** 2))
-        return penalty
+    def indexed_points(names, camera):
+        indices = np.asarray([f_index.get(name, -1) for name in names], dtype=int)
+        fixed = np.asarray([camera[name] for name in names], dtype=float).reshape(-1, 3)
+        return indices, fixed
 
-    def temporal_penalty(x):
-        if prev_data is None:
-            return 0.0
-        prev_cam1 = prev_data.get("camera1", {})
-        prev_cam2 = prev_data.get("camera2", {})
-        root1, root2 = _pose_root(cam1), _pose_root(cam2)
-        prev_root1, prev_root2 = _pose_root(prev_cam1), _pose_root(prev_cam2)
-        penalty = 0.0
-        for i, name in enumerate(f_list):
-            if name in prev_cam1:
-                p1_curr = x[i * 3:i * 3 + 3] - root1
-                p1_prev = as_xyz(prev_cam1[name]) - prev_root1
-                penalty += float(np.sum((p1_curr - p1_prev) ** 2))
-            if name in prev_cam2:
-                p2_curr = x[(num_f + i) * 3:(num_f + i) * 3 + 3] - root2
-                p2_prev = as_xyz(prev_cam2[name]) - prev_root2
-                penalty += float(np.sum((p2_curr - p2_prev) ** 2))
-        return penalty
+    def gather(points, indices, fixed):
+        result = fixed.copy()
+        dynamic = indices >= 0
+        result[dynamic] = points[indices[dynamic]]
+        return result
 
-    def accel_penalty(x):
-        if prev_data is None or prev_prev_data is None:
-            return 0.0
-        prev_cam1 = prev_data.get("camera1", {})
-        prev_cam2 = prev_data.get("camera2", {})
-        pprev_cam1 = prev_prev_data.get("camera1", {})
-        pprev_cam2 = prev_prev_data.get("camera2", {})
-        root1, root2 = _pose_root(cam1), _pose_root(cam2)
-        prev_root1, prev_root2 = _pose_root(prev_cam1), _pose_root(prev_cam2)
-        pprev_root1, pprev_root2 = _pose_root(pprev_cam1), _pose_root(pprev_cam2)
-        penalty = 0.0
-        for i, name in enumerate(f_list):
-            if name in prev_cam1 and name in pprev_cam1:
-                p1_curr = x[i * 3:i * 3 + 3] - root1
-                p1_prev = as_xyz(prev_cam1[name]) - prev_root1
-                p1_pprev = as_xyz(pprev_cam1[name]) - pprev_root1
-                acc1 = p1_curr - 2.0 * p1_prev + p1_pprev
-                penalty += float(np.sum(acc1 ** 2))
-            if name in prev_cam2 and name in pprev_cam2:
-                p2_curr = x[(num_f + i) * 3:(num_f + i) * 3 + 3] - root2
-                p2_prev = as_xyz(prev_cam2[name]) - prev_root2
-                p2_pprev = as_xyz(pprev_cam2[name]) - pprev_root2
-                acc2 = p2_curr - 2.0 * p2_prev + p2_pprev
-                penalty += float(np.sum(acc2 ** 2))
-        return penalty
+    anchor_indices, anchor1_fixed = indexed_points(anchors, cam1)
+    _, anchor2_fixed = indexed_points(anchors, cam2)
+    anchor_weights = np.asarray([
+        ((float(conf1.get(name, 1.0)) if conf1 else 1.0) + (float(conf2.get(name, 1.0)) if conf2 else 1.0))
+        / 2.0
+        * (1.0 if vis1 is None or vis1.get(name, True) else float(occluded_factor))
+        * (1.0 if vis2 is None or vis2.get(name, True) else float(occluded_factor))
+        for name in anchors
+    ])
+    anchor_weight_sum = max(float(anchor_weights.sum()), 1e-12)
+    root1, root2 = _pose_root(cam1), _pose_root(cam2)
 
-    dyn_scale_cam1 = compute_dynamic_scale(cam1, f_list, RIGID_BONES_RATIO)
-    dyn_scale_cam2 = compute_dynamic_scale(cam2, f_list, RIGID_BONES_RATIO)
+    def motion_target(history, previous_history=None):
+        targets1 = np.zeros_like(initial1)
+        targets2 = np.zeros_like(initial2)
+        masks1 = np.zeros(num_f, dtype=bool)
+        masks2 = np.zeros(num_f, dtype=bool)
+        if history is None:
+            return targets1, targets2, masks1, masks2
+        for camera_name, targets, masks, root in (
+            ("camera1", targets1, masks1, root1), ("camera2", targets2, masks2, root2)
+        ):
+            previous = history.get(camera_name, {})
+            older = previous_history.get(camera_name, {}) if previous_history is not None else None
+            previous_root = _pose_root(previous)
+            older_root = _pose_root(older) if older is not None else None
+            for index, name in enumerate(f_list):
+                if name not in previous or (older is not None and name not in older):
+                    continue
+                previous_relative = as_xyz(previous[name]) - previous_root
+                targets[index] = (
+                    2.0 * previous_relative - (as_xyz(older[name]) - older_root)
+                    if older is not None else previous_relative
+                ) + root
+                masks[index] = True
+        return targets1, targets2, masks1, masks2
 
-    def bone_length_penalty(p1, p2):
-        penalty = 0.0
-        for (child, parent), ratio in RIGID_BONES_RATIO.items():
-            if child not in p1 or parent not in p1 or (child not in f_list and parent not in f_list):
-                continue
-            t1 = ratio * dyn_scale_cam1
-            d1 = float(np.linalg.norm(p1[child] - p1[parent]))
-            penalty += ((d1 - t1) / max(t1, 1e-6)) ** 2
+    temporal1, temporal2, temporal_mask1, temporal_mask2 = motion_target(prev_data)
+    accel1, accel2, accel_mask1, accel_mask2 = motion_target(prev_data, prev_prev_data)
 
-            t2 = ratio * dyn_scale_cam2
-            d2 = float(np.linalg.norm(p2[child] - p2[parent]))
-            penalty += ((d2 - t2) / max(t2, 1e-6)) ** 2
-        return penalty
+    bone_specs = [
+        (child, parent, ratio)
+        for (child, parent), ratio in RIGID_BONES_RATIO.items()
+        if child in cam1 and parent in cam1 and (child in f_index or parent in f_index)
+    ]
+    bone_children = [child for child, _, _ in bone_specs]
+    bone_parents = [parent for _, parent, _ in bone_specs]
+    child_indices, child1_fixed = indexed_points(bone_children, cam1)
+    parent_indices, parent1_fixed = indexed_points(bone_parents, cam1)
+    _, child2_fixed = indexed_points(bone_children, cam2)
+    _, parent2_fixed = indexed_points(bone_parents, cam2)
+    bone_ratios = np.asarray([ratio for _, _, ratio in bone_specs], dtype=float)
+    target1 = bone_ratios * compute_dynamic_scale(cam1, f_list, RIGID_BONES_RATIO)
+    target2 = bone_ratios * compute_dynamic_scale(cam2, f_list, RIGID_BONES_RATIO)
+    lower1, upper1 = (BONE_LENGTH_MIN_SCALE * target1) ** 2, (BONE_LENGTH_MAX_SCALE * target1) ** 2
+    lower2, upper2 = (BONE_LENGTH_MIN_SCALE * target2) ** 2, (BONE_LENGTH_MAX_SCALE * target2) ** 2
+
+    def split_points(x):
+        points = np.asarray(x, dtype=float).reshape(2, num_f, 3)
+        return points[0], points[1]
+
+    def bone_vectors(points, child_fixed, parent_fixed):
+        return gather(points, child_indices, child_fixed) - gather(points, parent_indices, parent_fixed)
 
     def objective(x):
-        p1, p2 = dict(cam1), dict(cam2)
-        for i, name in enumerate(f_list):
-            p1[name] = x[i * 3:i * 3 + 3]
-            p2[name] = x[(num_f + i) * 3:(num_f + i) * 3 + 3]
-        _, _, _, _, data_loss = calculate_stats(p1, p2, f_list, anchors, conf1=conf1, conf2=conf2, vis1=vis1, vis2=vis2, occluded_factor=occluded_factor, f_weights=f_weights, huber_delta=HUBER_DELTA, loss_type=loss_type)
-        obj_val = data_loss
+        points1, points2 = split_points(x)
+        anchors1 = gather(points1, anchor_indices, anchor1_fixed)
+        anchors2 = gather(points2, anchor_indices, anchor2_fixed)
+        distances1 = np.linalg.norm(points1[:, None, :] - anchors1[None, :, :], axis=2)
+        distances2 = np.linalg.norm(points2[:, None, :] - anchors2[None, :, :], axis=2)
+        diffs = np.abs(distances1 - distances2) @ anchor_weights / anchor_weight_sum
+        loss = (
+            np.where(diffs <= HUBER_DELTA, 0.5 * diffs ** 2, HUBER_DELTA * (diffs - 0.5 * HUBER_DELTA))
+            if loss_type == "huber" else diffs ** 2
+        )
+        value = float(np.mean(loss * f_weight_values))
         if regularization:
-            obj_val += regularization_lambda * proximity_penalty(x)
+            value += regularization_lambda * float(
+                np.sum(conf1_values[:, None] * (points1 - initial1) ** 2)
+                + np.sum(conf2_values[:, None] * (points2 - initial2) ** 2)
+            )
         if cross_view_lambda > 0.0 and t21 is not None:
-            obj_val += cross_view_lambda * cross_view_penalty(x)
+            scale, rotation, translation = t21
+            source = points2 - root2 if root_relative else points2
+            points2_in_1 = scale * (source @ np.asarray(rotation).T) + np.asarray(translation)
+            if root_relative:
+                points2_in_1 += root1
+            value += cross_view_lambda * float(np.sum(f_weight_values[:, None] * (points1 - points2_in_1) ** 2))
         if prev_data is not None:
-            obj_val += temporal_lambda * temporal_penalty(x)
+            value += temporal_lambda * float(
+                np.sum((points1[temporal_mask1] - temporal1[temporal_mask1]) ** 2)
+                + np.sum((points2[temporal_mask2] - temporal2[temporal_mask2]) ** 2)
+            )
         if prev_data is not None and prev_prev_data is not None:
-            obj_val += accel_lambda * accel_penalty(x)
-        if use_kinematic_constraints:
-            obj_val += 15.0 * bone_length_penalty(p1, p2)
-        return obj_val
+            value += accel_lambda * float(
+                np.sum((points1[accel_mask1] - accel1[accel_mask1]) ** 2)
+                + np.sum((points2[accel_mask2] - accel2[accel_mask2]) ** 2)
+            )
+        if use_kinematic_constraints and bone_specs:
+            lengths1 = np.linalg.norm(bone_vectors(points1, child1_fixed, parent1_fixed), axis=1)
+            lengths2 = np.linalg.norm(bone_vectors(points2, child2_fixed, parent2_fixed), axis=1)
+            value += 15.0 * float(
+                np.sum(((lengths1 - target1) / np.maximum(target1, 1e-6)) ** 2)
+                + np.sum(((lengths2 - target2) / np.maximum(target2, 1e-6)) ** 2)
+            )
+        return value
 
-    constraints = []
-    for (child, parent), ratio in RIGID_BONES_RATIO.items():
-        if child not in cam1 or parent not in cam1 or (child not in f_list and parent not in f_list):
-            continue
-        target1 = ratio * dyn_scale_cam1
-        lower_sq1 = (BONE_LENGTH_MIN_SCALE * target1) ** 2
-        upper_sq1 = (BONE_LENGTH_MAX_SCALE * target1) ** 2
+    def bone_constraints(x):
+        points1, points2 = split_points(x)
+        vectors1 = bone_vectors(points1, child1_fixed, parent1_fixed)
+        vectors2 = bone_vectors(points2, child2_fixed, parent2_fixed)
+        squared1 = np.einsum("ij,ij->i", vectors1, vectors1)
+        squared2 = np.einsum("ij,ij->i", vectors2, vectors2)
+        return np.concatenate((squared1 - lower1, upper1 - squared1, squared2 - lower2, upper2 - squared2))
 
-        def constr_lower1(x, c=child, p=parent, low=lower_sq1):
-            pts = dict(cam1)
-            for i, name in enumerate(f_list):
-                pts[name] = x[i * 3:i * 3 + 3]
-            dist_sq = float(np.dot(pts[c] - pts[p], pts[c] - pts[p]))
-            return dist_sq - low
+    def bone_constraints_jac(x):
+        points1, points2 = split_points(x)
+        vectors = (
+            bone_vectors(points1, child1_fixed, parent1_fixed),
+            bone_vectors(points2, child2_fixed, parent2_fixed),
+        )
+        bone_count = len(bone_specs)
+        jacobian = np.zeros((4 * bone_count, 6 * num_f), dtype=float)
+        for camera_index, camera_vectors in enumerate(vectors):
+            lower_offset = camera_index * 2 * bone_count
+            variable_offset = camera_index * 3 * num_f
+            for bone_index, vector in enumerate(camera_vectors):
+                lower_row = lower_offset + bone_index
+                upper_row = lower_offset + bone_count + bone_index
+                for joint_index, sign in ((child_indices[bone_index], 1.0), (parent_indices[bone_index], -1.0)):
+                    if joint_index >= 0:
+                        column = variable_offset + 3 * joint_index
+                        derivative = sign * 2.0 * vector
+                        jacobian[lower_row, column:column + 3] += derivative
+                        jacobian[upper_row, column:column + 3] -= derivative
+        return jacobian
 
-        def constr_upper1(x, c=child, p=parent, up=upper_sq1):
-            pts = dict(cam1)
-            for i, name in enumerate(f_list):
-                pts[name] = x[i * 3:i * 3 + 3]
-            dist_sq = float(np.dot(pts[c] - pts[p], pts[c] - pts[p]))
-            return up - dist_sq
-
-        constraints.append({"type": "ineq", "fun": constr_lower1})
-        constraints.append({"type": "ineq", "fun": constr_upper1})
-
-        target2 = ratio * dyn_scale_cam2
-        lower_sq2 = (BONE_LENGTH_MIN_SCALE * target2) ** 2
-        upper_sq2 = (BONE_LENGTH_MAX_SCALE * target2) ** 2
-
-        def constr_lower2(x, c=child, p=parent, low=lower_sq2):
-            pts = dict(cam2)
-            for i, name in enumerate(f_list):
-                pts[name] = x[(num_f + i) * 3:(num_f + i) * 3 + 3]
-            dist_sq = float(np.dot(pts[c] - pts[p], pts[c] - pts[p]))
-            return dist_sq - low
-
-        def constr_upper2(x, c=child, p=parent, up=upper_sq2):
-            pts = dict(cam2)
-            for i, name in enumerate(f_list):
-                pts[name] = x[(num_f + i) * 3:(num_f + i) * 3 + 3]
-            dist_sq = float(np.dot(pts[c] - pts[p], pts[c] - pts[p]))
-            return up - dist_sq
-
-        constraints.append({"type": "ineq", "fun": constr_lower2})
-        constraints.append({"type": "ineq", "fun": constr_upper2})
-
-    if not use_kinematic_constraints:
-        constraints = []
-
-
-    x0 = []
-    for name in f_list:
-        x0.extend(cam1[name])
-    for name in f_list:
-        x0.extend(cam2[name])
-
-    res = minimize(objective, np.array(x0, dtype=float), constraints=constraints, method="SLSQP", options={"maxiter": max_iter})
+    constraints = (
+        [{"type": "ineq", "fun": bone_constraints, "jac": bone_constraints_jac}]
+        if use_kinematic_constraints and bone_specs else []
+    )
+    x0 = np.concatenate((initial1.ravel(), initial2.ravel()))
+    res = minimize(objective, x0, constraints=constraints, method="SLSQP", options={"maxiter": max_iter})
     use_result = bool(res.success) and np.isfinite(res.x).all()
     if not use_result:
         print(f"[Optimization] SLSQP info ({res.message}); keeping pre-optimization pose")
-    solution = res.x if use_result else np.asarray(x0, dtype=float)
+    solution = res.x if use_result else x0
 
     p1_opt, p2_opt = dict(cam1), dict(cam2)
     for i, name in enumerate(f_list):

@@ -73,6 +73,34 @@ class OptimizationDeepDiveTest(unittest.TestCase):
         self.assertIn("camera2", result_kinematic)
         print(f"\n[Test] Kinematic SLSQP Success: {res_k.success}, Unconstrained SLSQP Success: {res_u.success}")
 
+    @patch("src.pipelines.fusion.optimization.minimize")
+    def test_vectorized_bone_constraint_jacobian(self, minimize_mock):
+        def capture(_objective, x0, **_kwargs):
+            return SimpleNamespace(success=True, x=x0, message="")
+
+        minimize_mock.side_effect = capture
+        optimize_f_points(
+            data={
+                "camera1": {k: np.array(v) for k, v in self.base_pose.items()},
+                "camera2": {k: np.array(v) for k, v in self.base_pose.items()},
+            },
+            anchors=self.anchors,
+            f_list=self.f_list,
+            use_kinematic_constraints=True,
+        )
+
+        x0 = minimize_mock.call_args.args[1]
+        constraints = minimize_mock.call_args.kwargs["constraints"]
+        self.assertEqual(len(constraints), 1)
+        constraint = constraints[0]
+        epsilon = 1e-6
+        numerical = np.column_stack([
+            (constraint["fun"](x0 + np.eye(len(x0))[i] * epsilon)
+             - constraint["fun"](x0 - np.eye(len(x0))[i] * epsilon)) / (2.0 * epsilon)
+            for i in range(len(x0))
+        ])
+        np.testing.assert_allclose(constraint["jac"](x0), numerical, rtol=1e-5, atol=1e-7)
+
     def test_temporal_smoothing(self):
         """Test that temporal lambda reduces frame-to-frame joint jitter."""
         cam1_t0 = {k: np.array(v) for k, v in self.base_pose.items()}

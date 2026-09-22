@@ -1,11 +1,13 @@
 import copy
 import csv
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from brute_force_runner import _active_config_signature, _build_report_rows, _get_header_indices, _matches_active_config, _parse_history_row, parse_visibility_mpjpe
+from brute_force_runner import _active_config_signature, _build_report_rows, _get_header_indices, _matches_active_config, _parse_history_row, _process_segment, generate_spreadsheet_report_safe, load_existing_csv_results, parse_visibility_mpjpe
 from src.core.config_loader import load_config
 
 
@@ -53,9 +55,12 @@ class BruteForceResumeTest(unittest.TestCase):
 
     def test_resume_requires_the_same_full_config(self):
         config = load_config("configs/pipeline.yml")
+        method = "higher_belief_selection"
+        method_config = copy.deepcopy(config)
+        method_config["fusion"]["method"] = method
         result = {
-            "config_signature": _active_config_signature(config),
-            "fusion_method": "higher_belief_selection",
+            "config_signature": _active_config_signature(method_config),
+            "fusion_method": method,
             "alpha": config["fusion"]["belief"]["alpha"],
             "beta": config["fusion"]["belief"]["beta"],
             "global_belief": str(config["fusion"]["belief"]["global"]),
@@ -106,6 +111,45 @@ class BruteForceResumeTest(unittest.TestCase):
         self.assertEqual(parsed["fusion_method"], "aligned_averaging")
         for metric, expected in visibility_metrics.items():
             self.assertEqual(parsed[metric], expected)
+
+    def test_local_report_marks_completion(self):
+        old_cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            try:
+                os.chdir(tmp)
+                generate_spreadsheet_report_safe(
+                    {"seg_1": [{"master": "cam0", "supplement": "cam1", "mpjpe": 1.0}]},
+                    "resume_test",
+                    silent=True,
+                    is_final=True,
+                )
+                _, has_end_marker = load_existing_csv_results(Path("output/reports/resume_test.csv"))
+            finally:
+                os.chdir(old_cwd)
+        self.assertTrue(has_end_marker)
+
+    def test_checkpoints_after_each_completed_pair(self):
+        segment = {
+            "name": "seg_1",
+            "ground_truth_dir": "gt",
+            "cameras": [{"id": "cam0"}, {"id": "cam1"}],
+        }
+
+        def result(cam_a, cam_b, *_args):
+            return {
+                "master": cam_a["id"], "supplement": cam_b["id"],
+                "fusion_method": "proposed", "mpjpe": 1.0,
+            }
+
+        with patch("brute_force_runner._evaluate_camera_pair", side_effect=result), patch(
+            "brute_force_runner.generate_spreadsheet_report_safe"
+        ) as save:
+            _process_segment(
+                segment, {}, {"fusion": {}}, ["proposed"], Path("."),
+                "report", "run", {}, 0, 2,
+            )
+
+        self.assertEqual(save.call_count, 2)
 
 
 if __name__ == "__main__":
