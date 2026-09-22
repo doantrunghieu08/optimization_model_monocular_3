@@ -912,24 +912,17 @@ def run_brute_force():
             else:
                 print(f"[+] Khởi tạo file báo cáo mới: '{sh_name}.csv'")
 
-    completed = [result for result in existing.values() if result.get("mpjpe", float('inf')) != float('inf')]
-    if completed and not all(_matches_active_config(result, base_cfg) for result in completed):
-        print("[!] Config hiện tại khác worksheet/file chưa hoàn thành. Tạo file/sheet mới để không trộn kết quả cũ.")
-        existing = {}
-        existing_ws_title = None
-        has_end_marker = False
-
-    if existing_ws_title and not has_end_marker:
-        ws_title = existing_ws_title
-        print(f"[+] Báo cáo gần nhất '{ws_title}' chưa hoàn thành (chưa có dấu END). Tiếp tục ghi bổ sung vào báo cáo này.")
-    else:
+    if has_end_marker:
         new_ws_title = f"Run_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
-        if existing_ws_title and has_end_marker:
-            print(f"[+] Báo cáo gần nhất '{existing_ws_title}' đã hoàn tất (có dấu END). Tạo báo cáo mới: '{new_ws_title}'.")
-            existing = {}
-        else:
-            print(f"[+] Khởi tạo báo cáo mới: '{new_ws_title}'.")
+        print(f"[+] Báo cáo gần nhất '{existing_ws_title}' đã hoàn tất (có dấu END). Tạo báo cáo mới: '{new_ws_title}'.")
+        existing = {}
         ws_title = new_ws_title
+    elif existing_ws_title:
+        ws_title = existing_ws_title
+        print(f"[+] Báo cáo gần nhất '{ws_title}' chưa có dấu END. Tiếp tục ghi bổ sung vào báo cáo này.")
+    else:
+        ws_title = f"Run_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
+        print(f"[+] Khởi tạo báo cáo mới: '{ws_title}'.")
 
     all_res = {}
     for (s_name, master, supplement, fusion_method), res in existing.items():
