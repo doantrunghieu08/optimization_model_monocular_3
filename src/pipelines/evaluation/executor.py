@@ -9,7 +9,9 @@ import numpy as np
 from src.core.keypoints_map import load_keypoints3d_map
 
 EVALUATION_OUTPUT_MODULE_NAMES = {
-    "learnable": "fusion-learnable",
+    "posed": "posed",
+    "fused": "fused",
+    "learnable": "learnable",
     "learnable_extra": "only_learnable",
 }
 CAMERAS = ["camera1", "camera2"]
@@ -324,12 +326,19 @@ def run_evaluation(config: dict) -> None:
     else:
         out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Each module is evaluated independently:
+    #   posed         -> pose_output_dir     (monocular raw)
+    #   fused         -> fused_output_dir    (fusion only, no learnable)
+    #   learnable     -> learnable_output_dir (fusion + NetBody25 learnable)
+    #   only_learnable-> learnable_extra_output_dir (posed + NetBody25 learnable, no fusion)
     module_names = ["posed"]
     if config.get("fusion", {}).get("enabled", False):
         module_names.append("fused")
     if config.get("learnable", {}).get("enabled", False):
+        # 'learnable' reads from fused_output_dir — measured separately from 'fused'
         module_names.append("learnable")
     if config.get("learnable_extra", {}).get("enabled", False):
+        # 'learnable_extra' reads from pose_output_dir — no fusion involved
         module_names.append("learnable_extra")
 
     module_dirs = {
@@ -381,10 +390,10 @@ def run_evaluation(config: dict) -> None:
 
     frames = sorted(posed_frames)
     metadata_specs = {
-        "posed": (Path(paths["pose_output_dir"]) / "metadata", "pose_data_"),
-        "fused": (Path(paths["fused_output_dir"]) / "metadata", "fused_data_"),
-        "learnable": (Path(paths["learnable_output_dir"]) / "metadata", "learnable_frame_"),
-        "learnable_extra": (Path(paths["learnable_extra_output_dir"]) / "metadata", "learnable_extra_frame_"),
+        "posed":          (Path(paths["pose_output_dir"])           / "metadata", "pose_data_"),
+        "fused":          (Path(paths["fused_output_dir"])          / "metadata", "fused_data_"),
+        "learnable":      (Path(paths["learnable_output_dir"])      / "metadata", "learnable_frame_"),
+        "learnable_extra":(Path(paths["learnable_extra_output_dir"]) / "metadata", "learnable_extra_frame_"),
     }
 
     # metrics: metric -> cam -> frame -> module -> priority -> value
@@ -404,6 +413,8 @@ def run_evaluation(config: dict) -> None:
                 raise FileNotFoundError(f"Missing metadata for {module_name} frame {frame}: {metadata_path}")
             metadata_by_module[module_name] = _load_json(metadata_path)
             _validate_pose_sources(metadata_by_module[module_name], expected_source_stems, metadata_path)
+            # Both 'fused' and 'learnable' stages depend on fusion config
+            # (learnable reads its input from fused_output_dir)
             if module_name in ("fused", "learnable"):
                 _validate_fusion_config(metadata_by_module[module_name], config["fusion"], metadata_path)
 

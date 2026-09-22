@@ -71,7 +71,7 @@ fusion:
     regularization_lambda: 2.0 # Hệ số phạt của proximity regularization.
     temporal_lambda: 2.0 # Hệ số phạt theo thời gian so với frame trước.
     accel_lambda: 3.0 # Hệ số phạt gia tốc 2nd-order giữa 3 frame liên tiếp.
-    max_iter: 25 # Số vòng lặp tối đa cho bộ giải SLSQP.
+    max_iter: 30 # Số vòng lặp tối đa cho bộ giải SLSQP.
 
 learnable:
   enabled: false

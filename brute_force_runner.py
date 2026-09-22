@@ -523,7 +523,7 @@ def _setup_pipeline_config(base_cfg, gt_dir, camA, camB, workspace):
 
 def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_id: str, seg_name: str) -> dict:
     eval_dir = Path(config["paths"]["evaluation_output_dir"])
-    t_pref = "fusion-learnable" if config.get("learnable", {}).get("enabled", True) else "fused"
+    t_pref = "learnable" if config.get("learnable", {}).get("enabled", True) else "fused"
     belief_cfg = config["fusion"]["belief"]
     correction_cfg = config["fusion"]["correction"]
     fusion_method = config["fusion"].get("method", "proposed")

@@ -46,7 +46,7 @@ FULL_SKELETON = [
 EVALUATION_MODULE_ALIASES = {
     "pose": "posed",
     "fusion": "fused",
-    "learnable": "fusion-learnable",
+    "learnable": "learnable",
     "learnable_extra": "only_learnable",
 }
 
@@ -394,7 +394,7 @@ def _project_module_specs(paths: dict, camera_name: str, config: dict) -> list[d
     if config.get("learnable", {}).get("enabled", False):
         specs.append({
             "name": "learnable",
-            "title": "fusion-learnable 3D->2D",
+            "title": "Learnable 3D->2D",
             "frames": _load_camera_keypoints_by_frame(Path(paths["learnable_output_dir"]) / "keypoints3d", "learnable_frame_*.json", camera_name),
         })
     return specs
@@ -562,8 +562,8 @@ def create_comparison_animation(
         learn_points = []
         if frame_idx < len(learnable_poses):
             learn_pose = learnable_poses[frame_idx].get(camera_name)
-            learn_points = plot_skeleton_safe(ax_learn, learn_pose, "tab:blue", f"{camera_name} fusion-learnable")
-        setup_axis(ax_learn, f"fusion-learnable {camera_name} - Frame {frame_id}")
+            learn_points = plot_skeleton_safe(ax_learn, learn_pose, "tab:blue", f"{camera_name} learnable")
+        setup_axis(ax_learn, f"Learnable {camera_name} - Frame {frame_id}")
 
         combined = fuse_points + learn_points
         set_auto_axes(ax_fuse, combined)
