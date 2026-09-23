@@ -1,4 +1,5 @@
 #version 260826_fixed
+import argparse
 import os
 import platform
 import getpass
@@ -868,9 +869,12 @@ def _process_segment(seg, existing, base_cfg, fusion_methods, ws_dir, sh_name, w
     )
     return sorted_results, current_idx
 
-def run_brute_force():
+def run_brute_force(config_path="configs/brute_force.yml"):
     WS_DIR = Path(__file__).parent.resolve()
-    with open(WS_DIR / "configs/brute_force.yml", "r", encoding="utf-8") as f: brute_cfg = yaml.safe_load(f)
+    config_path = Path(config_path)
+    if not config_path.is_absolute():
+        config_path = WS_DIR / config_path
+    with open(config_path, "r", encoding="utf-8") as f: brute_cfg = yaml.safe_load(f)
 
     # ── Nạp biến môi trường từ tên notebook TRƯỚC khi load config ──────────────
     # Đây là bước bắt buộc: pipeline.yml dùng ${VAR:-default} nên phải set
@@ -886,6 +890,10 @@ def run_brute_force():
 
     # Gọi hàm load_config sau khi env vars đã sẵn sàng
     base_cfg = load_config(WS_DIR / "configs/pipeline.yml")
+    if "use_kinematic_constraints" in brute_cfg:
+        if not isinstance(brute_cfg["use_kinematic_constraints"], bool):
+            raise ValueError("use_kinematic_constraints must be a boolean")
+        base_cfg["fusion"]["optimization"]["use_kinematic_constraints"] = brute_cfg["use_kinematic_constraints"]
     fusion_methods = brute_cfg.get("fusion_methods", [base_cfg["fusion"].get("method", "proposed")])
     allowed_methods = {"proposed", "aligned_averaging", "higher_belief_selection"}
     if not fusion_methods or any(method not in allowed_methods for method in fusion_methods):
@@ -897,11 +905,12 @@ def run_brute_force():
         print("Global belief trong config:", base_cfg['fusion']['belief']['global'])
         print("Local method trong config:", base_cfg['fusion']['belief']['local_method'])
     if "proposed" in fusion_methods:
-        print("Proposed: fusion 2 camera + Optical/Local + Global + Kinematic + Huber")
+        kinematic_label = "Kinematic" if base_cfg["fusion"]["optimization"]["use_kinematic_constraints"] else "Without Kinematic Constraints"
+        print(f"Proposed: fusion 2 camera + Optical/Local + Global + {kinematic_label} + Huber")
     print("Learnable trong config:", base_cfg['learnable']['enabled'])
     print("Learnable extra trong config:", base_cfg['learnable_extra']['enabled'])
     
-    default_sh_name = Path(nb_name).stem
+    default_sh_name = brute_cfg.get("experiment_name", Path(nb_name).stem)
     if _COLAB_AVAILABLE:
         sh_name = get_spreadsheet_name_input(default_name=default_sh_name, timeout=10)
         existing, existing_ws_title, has_end_marker = load_existing_spreadsheet_results(sh_name)
@@ -970,4 +979,6 @@ def run_brute_force():
     generate_spreadsheet_report_safe(all_res, sh_name, ws_title, silent=False, is_final=True)
 
 if __name__ == "__main__":
-    run_brute_force()
+    parser = argparse.ArgumentParser(description="Brute-force camera-pair evaluation")
+    parser.add_argument("--config", default="configs/brute_force.yml", help="Path to brute-force config")
+    run_brute_force(parser.parse_args().config)
