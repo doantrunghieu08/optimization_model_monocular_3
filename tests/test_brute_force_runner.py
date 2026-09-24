@@ -7,11 +7,43 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from brute_force_runner import _active_config_signature, _build_report_rows, _get_header_indices, _get_sheet_data, _matches_active_config, _parse_history_row, _process_segment, generate_spreadsheet_report_safe, load_existing_csv_results, load_existing_spreadsheet_results, parse_visibility_mpjpe
+from brute_force_runner import _active_config_signature, _apply_brute_force_overrides, _build_report_rows, _get_header_indices, _get_sheet_data, _matches_active_config, _parse_history_row, _process_segment, generate_spreadsheet_report_safe, load_existing_csv_results, load_existing_spreadsheet_results, parse_visibility_mpjpe
 from src.core.config_loader import load_config
 
 
 class BruteForceResumeTest(unittest.TestCase):
+    def test_without_conflict_detection_disables_mismatch_rejection(self):
+        config = load_config("configs/pipeline.yml")
+
+        _apply_brute_force_overrides(config, {
+            "correction": {"reject_new_mismatches": False}
+        })
+
+        self.assertFalse(config["fusion"]["correction"]["reject_new_mismatches"])
+
+    def test_only_local_belief_disables_global_belief(self):
+        config = load_config("configs/pipeline.yml")
+
+        _apply_brute_force_overrides(config, {
+            "belief": {"global": False, "local_method": "optical_aware_belief"}
+        })
+
+        belief = config["fusion"]["belief"]
+        self.assertFalse(belief["global"])
+        self.assertEqual(belief["local_method"], "optical_aware_belief")
+
+    def test_without_h_th_overrides_regularization_only(self):
+        config = load_config("configs/pipeline.yml")
+
+        _apply_brute_force_overrides(config, {
+            "optimization": {"regularization": False, "regularization_lambda": 0.0}
+        })
+
+        optimization = config["fusion"]["optimization"]
+        self.assertFalse(optimization["regularization"])
+        self.assertEqual(optimization["regularization_lambda"], 0.0)
+        self.assertTrue(optimization["use_kinematic_constraints"])
+
     def test_google_sheet_resume_prefers_unfinished_worksheet(self):
         class Worksheet:
             def __init__(self, title, rows):
@@ -190,6 +222,26 @@ class BruteForceResumeTest(unittest.TestCase):
             )
 
         self.assertEqual(save.call_count, 2)
+
+    def test_resume_reruns_rows_missing_visibility_mpjpe(self):
+        segment = {
+            "name": "seg_1",
+            "ground_truth_dir": "gt",
+            "cameras": [{"id": "cam0"}, {"id": "cam1"}],
+        }
+        existing = {
+            ("seg_1", "cam0", "cam1", "proposed"): {
+                "mpjpe": 1.0, "occ_mpjpe": float("inf"), "vis_mpjpe": 2.0,
+            }
+        }
+
+        with patch("brute_force_runner._evaluate_camera_pair", return_value=None) as evaluate:
+            _process_segment(
+                segment, existing, {"fusion": {}}, ["proposed"], Path("."),
+                "report", "run", {}, 0, 2,
+            )
+
+        self.assertEqual(evaluate.call_count, 2)
 
 
 if __name__ == "__main__":

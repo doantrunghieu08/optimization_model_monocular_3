@@ -29,7 +29,7 @@ except ImportError:
     print("Cảnh báo: Không tìm thấy thư viện google colab/gspread. "
           "Các tính năng Google Sheets sẽ không khả dụng.")
 
-from src.core.config_loader import load_config, absolutize_config_paths, set_env_from_filename, get_notebook_name
+from src.core.config_loader import load_config, absolutize_config_paths, set_env_from_filename, get_notebook_name, validate_config
 from src.pipelines.orchestrator import run_pipeline
 
 GC_CLIENT = None
@@ -841,7 +841,8 @@ def _process_segment(seg, existing, base_cfg, fusion_methods, ws_dir, sh_name, w
         result_key = (seg_name, cA["id"], cB["id"], fusion_method)
         if result_key in existing:
             res = existing[result_key]
-            if res.get("mpjpe", float('inf')) != float('inf'):
+            required_metrics = ("mpjpe", "occ_mpjpe", "vis_mpjpe")
+            if all(res.get(metric, float('inf')) != float('inf') for metric in required_metrics):
                 print(f"[Bỏ qua] Cặp {cA['id']}-{cB['id']} của {seg_name} đã chạy xong trước đó (MPJPE={res.get('mpjpe')}). Giữ kết quả cũ.")
                 res.update({"set": res.get("set", extract_set_name(cA["pkl"])), "master": cA["id"], "supplement": cB["id"], "fusion_method": fusion_method})
                 results.append(res)
@@ -869,6 +870,30 @@ def _process_segment(seg, existing, base_cfg, fusion_methods, ws_dir, sh_name, w
     )
     return sorted_results, current_idx
 
+def _apply_brute_force_overrides(base_cfg, brute_cfg):
+    belief = base_cfg["fusion"]["belief"]
+    belief_overrides = brute_cfg.get("belief", {})
+    if not isinstance(belief_overrides, dict):
+        raise ValueError("belief must be a mapping")
+    belief.update(belief_overrides)
+
+    correction = base_cfg["fusion"]["correction"]
+    correction_overrides = brute_cfg.get("correction", {})
+    if not isinstance(correction_overrides, dict):
+        raise ValueError("correction must be a mapping")
+    correction.update(correction_overrides)
+
+    optimization = base_cfg["fusion"]["optimization"]
+    if "use_kinematic_constraints" in brute_cfg:
+        optimization["use_kinematic_constraints"] = brute_cfg["use_kinematic_constraints"]
+    overrides = brute_cfg.get("optimization", {})
+    if not isinstance(overrides, dict):
+        raise ValueError("optimization must be a mapping")
+    optimization.update(overrides)
+    validate_config(base_cfg)
+    return base_cfg
+
+
 def run_brute_force(config_path="configs/brute_force.yml"):
     WS_DIR = Path(__file__).parent.resolve()
     config_path = Path(config_path)
@@ -890,10 +915,7 @@ def run_brute_force(config_path="configs/brute_force.yml"):
 
     # Gọi hàm load_config sau khi env vars đã sẵn sàng
     base_cfg = load_config(WS_DIR / "configs/pipeline.yml")
-    if "use_kinematic_constraints" in brute_cfg:
-        if not isinstance(brute_cfg["use_kinematic_constraints"], bool):
-            raise ValueError("use_kinematic_constraints must be a boolean")
-        base_cfg["fusion"]["optimization"]["use_kinematic_constraints"] = brute_cfg["use_kinematic_constraints"]
+    _apply_brute_force_overrides(base_cfg, brute_cfg)
     fusion_methods = brute_cfg.get("fusion_methods", [base_cfg["fusion"].get("method", "proposed")])
     allowed_methods = {"proposed", "aligned_averaging", "higher_belief_selection"}
     if not fusion_methods or any(method not in allowed_methods for method in fusion_methods):
@@ -905,8 +927,12 @@ def run_brute_force(config_path="configs/brute_force.yml"):
         print("Global belief trong config:", base_cfg['fusion']['belief']['global'])
         print("Local method trong config:", base_cfg['fusion']['belief']['local_method'])
     if "proposed" in fusion_methods:
-        kinematic_label = "Kinematic" if base_cfg["fusion"]["optimization"]["use_kinematic_constraints"] else "Without Kinematic Constraints"
-        print(f"Proposed: fusion 2 camera + Optical/Local + Global + {kinematic_label} + Huber")
+        optimization = base_cfg["fusion"]["optimization"]
+        kinematic_label = "Kinematic" if optimization["use_kinematic_constraints"] else "Without Kinematic Constraints"
+        h_th_label = "H_th" if optimization["regularization"] else "Without H_th"
+        belief_scope = "Global" if base_cfg["fusion"]["belief"]["global"] else "Only Local"
+        conflict_label = "Conflict Detection" if base_cfg["fusion"]["correction"]["reject_new_mismatches"] else "Without Conflict Detection"
+        print(f"Proposed: fusion 2 camera + Optical/Local + {belief_scope} + {kinematic_label} + {h_th_label} + {conflict_label} + Huber")
     print("Learnable trong config:", base_cfg['learnable']['enabled'])
     print("Learnable extra trong config:", base_cfg['learnable_extra']['enabled'])
     
