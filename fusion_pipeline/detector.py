@@ -58,85 +58,79 @@ def get_orientation_flag(joints, epsilon=ORIENTATION_EPSILON):
 def load_torso_mask(seg_path):
     global _TORSO_MASK
     if not seg_path:
-        raise ValueError("Missing required fusion occlusion input: paths.segmentation")
+        _TORSO_MASK = None
+        return None
     seg_path = Path(seg_path)
     if not seg_path.exists():
-        raise FileNotFoundError(f"Segmentation mask file not found: {seg_path}")
-    with seg_path.open("rb") as f:
-        seg = pickle.load(f, encoding="latin1")
-    _TORSO_MASK = np.isin(seg["smpl_index"], list(TORSO_PART_IDS))
-    print("[Fusion] Torso mask loaded: {} / 6890 vertices".format(int(_TORSO_MASK.sum())))
-    return _TORSO_MASK
-
-
-def _intrinsics_to_params(intrinsics):
-    arr = np.asarray(intrinsics, dtype=float)
-    if arr.shape != (3, 3):
-        raise ValueError(f"Expected intrinsics shape (3, 3), got {arr.shape}")
-    fx = float(arr[0, 0])
-    fy = float(arr[1, 1])
-    cx = float(arr[0, 2])
-    cy = float(arr[1, 2])
-    return fx, fy, cx, cy
-
-
-def _project_to_image(points_3d, intrinsics):
-    fx, fy, cx, cy = _intrinsics_to_params(intrinsics)
-    X, Y, Z = points_3d[:, 0], points_3d[:, 1], points_3d[:, 2]
-    valid = Z > 1e-6
-    u = np.where(valid, fx * (X / np.where(valid, Z, 1.0)) + cx, np.nan)
-    v = np.where(valid, fy * (Y / np.where(valid, Z, 1.0)) + cy, np.nan)
-    return np.stack([u, v], axis=1)
-
-
-def _extract_torso_data(verts, torso_mask, intrinsics):
-    V_torso = verts[torso_mask]
-    uv = _project_to_image(V_torso, intrinsics)
-    valid = ~np.isnan(uv).any(axis=1)
-    all_torso_uv = uv[valid]
-    all_torso_z = V_torso[valid, 2]
-    if len(all_torso_uv) < 3:
-        return None, None, None
+        print(f"[Fusion] Warning: Torso mask file not found: {seg_path}. Using full mesh for ray-casting.")
+        _TORSO_MASK = None
+        return None
     try:
-        hull_2d_obj = ConvexHull(all_torso_uv)
-        return hull_2d_obj, all_torso_uv, all_torso_z
-    except Exception:
-        return None, None, None
+        with seg_path.open("rb") as f:
+            seg = pickle.load(f, encoding="latin1")
+        _TORSO_MASK = np.isin(seg["smpl_index"], list(TORSO_PART_IDS))
+        print("[Fusion] Torso mask loaded: {} / 6890 vertices".format(int(_TORSO_MASK.sum())))
+        return _TORSO_MASK
+    except Exception as e:
+        print(f"[Fusion] Warning: Failed to parse torso mask ({e}). Using full mesh.")
+        _TORSO_MASK = None
+        return None
 
 
-def _point_in_hull2d(pt, hull):
-    p = np.array([pt[0], pt[1], 1.0])
-    return bool(np.all(hull.equations @ p <= 1e-10))
+import trimesh
 
 
-def _local_torso_z(u_k, v_k, all_torso_uv, all_torso_z):
-    dists_2d = np.sqrt((all_torso_uv[:, 0] - u_k) ** 2 + (all_torso_uv[:, 1] - v_k) ** 2)
-    k = min(OCCLUSION_NEIGHBORS, len(dists_2d))
-    nn_idx = np.argpartition(dists_2d, k - 1)[:k]
-    return float(all_torso_z[nn_idx].min())
-
-
-def compute_visibility_from_mesh_vertices(joints, verts, intrinsics, occlusion_tau=0.05):
+def compute_visibility_from_mesh_vertices(joints, verts, intrinsics=None, occlusion_tau=0.05):
+    """
+    3D Ray-casting occlusion detection:
+    For each joint in OCCLUSION_CHECK_JOINTS, cast a 3D ray from camera center (0, 0, 0)
+    to the joint position. If the ray intersects the 3D torso mesh surface at a distance
+    significantly closer than the joint (hit_distance < joint_distance - occlusion_tau),
+    the joint is marked as occluded (visibility = False).
+    """
     visibility = {name: True for name in joints.keys()}
+    if verts is None:
+        return visibility
     verts = np.asarray(verts, dtype=float)
-    if _TORSO_MASK is None or len(verts) != 6890:
+    if verts.ndim != 2 or verts.shape[0] < 4:
         return visibility
-    hull_2d_obj, all_torso_uv, all_torso_z = _extract_torso_data(verts, _TORSO_MASK, intrinsics)
-    if hull_2d_obj is None:
+
+    torso_verts = verts[_TORSO_MASK] if _TORSO_MASK is not None and len(_TORSO_MASK) == len(verts) else verts
+    if len(torso_verts) < 4:
         return visibility
-    fx, fy, cx, cy = _intrinsics_to_params(intrinsics)
-    for name, pos in joints.items():
-        if name not in OCCLUSION_CHECK_JOINTS:
-            continue
-        kp_3d = as_xyz(pos)
-        if kp_3d[2] <= 0:
-            continue
-        u_k = fx * (kp_3d[0] / kp_3d[2]) + cx
-        v_k = fy * (kp_3d[1] / kp_3d[2]) + cy
-        if not _point_in_hull2d(np.array([u_k, v_k]), hull_2d_obj):
-            continue
-        z_local = _local_torso_z(u_k, v_k, all_torso_uv, all_torso_z)
-        visibility[name] = not (kp_3d[2] > (z_local + occlusion_tau))
+
+    try:
+        hull_3d = ConvexHull(torso_verts)
+        mesh = trimesh.Trimesh(vertices=torso_verts, faces=hull_3d.simplices, process=False)
+    except Exception:
+        return visibility
+
+    check_names = [name for name in joints.keys() if name in OCCLUSION_CHECK_JOINTS]
+    if not check_names:
+        return visibility
+
+    pts = np.array([as_xyz(joints[name]) for name in check_names], dtype=float)
+    dists = np.linalg.norm(pts, axis=1)
+    valid = dists > 1e-6
+    if not np.any(valid):
+        return visibility
+
+    ray_dirs = np.zeros_like(pts)
+    ray_dirs[valid] = pts[valid] / dists[valid, None]
+    ray_origins = np.zeros_like(ray_dirs)
+
+    try:
+        locs, index_ray, _ = mesh.ray.intersects_location(ray_origins[valid], ray_dirs[valid])
+        if len(locs) > 0:
+            valid_indices = np.where(valid)[0]
+            for loc, ray_i in zip(locs, index_ray):
+                orig_idx = valid_indices[ray_i]
+                hit_dist = float(np.linalg.norm(loc))
+                if hit_dist < (dists[orig_idx] - occlusion_tau):
+                    visibility[check_names[orig_idx]] = False
+    except Exception:
+        pass
+
     return visibility
 
 
@@ -150,6 +144,19 @@ def compute_harmonic_precision(
     beta,
     epsilon=HARMONIC_EPSILON,
 ):
+    try:
+        alpha = float(alpha)
+    except (TypeError, ValueError):
+        import re
+        m = re.search(r"[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?", str(alpha))
+        alpha = float(m.group(0)) if m else 0.001
+    try:
+        beta = float(beta)
+    except (TypeError, ValueError):
+        import re
+        m = re.search(r"[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?", str(beta))
+        beta = float(m.group(0)) if m else 0.8
+
     neighbors = {}
     for child, parent in RIGID_BONES_RATIO.keys():
         neighbors.setdefault(child, []).append(parent)
@@ -226,6 +233,8 @@ def detect_cross_view_errors(
     beta,
     confidence2d1=None,
     confidence2d2=None,
+    uncertainty_gating=True,
+    min_confidence=0.1,
 ):
     flags1 = get_orientation_flag(cam1)
     flags2 = get_orientation_flag(cam2)
@@ -242,8 +251,12 @@ def detect_cross_view_errors(
     all_weights = {name: (H1_all[name] + H2_all[name]) / 2.0 for name in names}
     abs_diffs = [abs(H1_all[n] - H2_all[n]) for n in names]
     delta = min(float(np.percentile(abs_diffs, 75)) if abs_diffs else 0.0, CONFIDENCE_DELTA_CAP)
-    k1_set = {n for n in names if H1_all[n] > H2_all[n] + delta}
-    k2_set = {n for n in names if H2_all[n] > H1_all[n] + delta}
+    if uncertainty_gating:
+        k1_set = {n for n in names if H1_all[n] > H2_all[n] + delta and vis1.get(n, True) and H1_all[n] >= min_confidence}
+        k2_set = {n for n in names if H2_all[n] > H1_all[n] + delta and vis2.get(n, True) and H2_all[n] >= min_confidence}
+    else:
+        k1_set = {n for n in names if H1_all[n] > H2_all[n] + delta}
+        k2_set = {n for n in names if H2_all[n] > H1_all[n] + delta}
     k1_set.difference_update(NON_REPLACEABLE_ANCHORS)
     k2_set.difference_update(NON_REPLACEABLE_ANCHORS)
 

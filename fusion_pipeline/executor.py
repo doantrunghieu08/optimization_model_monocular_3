@@ -103,11 +103,10 @@ def _load_verts_if_available(paths: dict, occlusion_enabled: bool):
     person_1 = _extract_person_payload(load_joblib_compat(wham_path_1))
     person_2 = _extract_person_payload(load_joblib_compat(wham_path_2))
 
-    if person_1 is None or person_2 is None or "verts_cam" not in person_1 or "verts_cam" not in person_2:
-        raise ValueError("verts_cam not found in WHAM PKL inputs; fusion.occlusion.enabled requires verts_cam")
-
-    verts_cam1 = person_1["verts_cam"]
-    verts_cam2 = person_2["verts_cam"]
+    verts_cam1 = person_1.get("verts_cam", person_1.get("verts")) if person_1 else None
+    verts_cam2 = person_2.get("verts_cam", person_2.get("verts")) if person_2 else None
+    if person_1 is None or person_2 is None or verts_cam1 is None or verts_cam2 is None:
+        raise ValueError("Neither 'verts_cam' nor 'verts' found in WHAM PKL inputs; fusion.occlusion.enabled requires mesh vertices")
     print(f"[Fusion] WHAM cam1 verts: {verts_cam1.shape[0]} frames")
     print(f"[Fusion] WHAM cam2 verts: {verts_cam2.shape[0]} frames")
     return True, verts_cam1, verts_cam2, verts_cam1.shape[0], verts_cam2.shape[0]
@@ -194,7 +193,13 @@ def run_phase3_pipeline(
     intrinsics_by_cam=None,
     frame_idx=None,
     prev_optimized_data=None,
+    prev_prev_optimized_data=None,
     confidence2d_by_cam=None,
+    blend=True,
+    conflict_detection=True,
+    uncertainty_gating=True,
+    max_displacement=0.35,
+    min_confidence=0.1,
 ):
     cam1 = {k: as_xyz(v) for k, v in data_in["camera1"].items()}
     cam2 = {k: as_xyz(v) for k, v in data_in["camera2"].items()}
@@ -231,8 +236,10 @@ def run_phase3_pipeline(
         confidence2d2=confidence2d_by_cam.get("camera2"),
         alpha=belief_alpha,
         beta=belief_beta,
+        uncertainty_gating=uncertainty_gating,
+        min_confidence=min_confidence,
     )
-    m_set = detected["M"]
+    m_set = detected["M"] if conflict_detection else set()
     k1_set = detected["K1"]
     k2_set = detected["K2"]
     l_list = detected["L"]
@@ -248,7 +255,19 @@ def run_phase3_pipeline(
         max_combos=ransac_max_combos,
     )
 
-    cam1_corr, cam2_corr = apply_confidence_corrections(cam1, cam2, k1_set, k2_set, t12, t21)
+    cam1_corr, cam2_corr = apply_confidence_corrections(
+        cam1,
+        cam2,
+        k1_set,
+        k2_set,
+        t12,
+        t21,
+        h1=H1_all,
+        h2=H2_all,
+        blend=blend,
+        uncertainty_gating=uncertainty_gating,
+        max_displacement=max_displacement,
+    )
     cam1_corr, cam2_corr = apply_rotation_mismatch_corrections(
         cam1_corr,
         cam2_corr,
@@ -261,9 +280,13 @@ def run_phase3_pipeline(
         H2_all,
         t12,
         t21,
+        blend=blend,
+        uncertainty_gating=uncertainty_gating,
+        max_displacement=max_displacement,
     )
 
-    a_new = sorted(set(a_list) | k1_set | k2_set)
+    # Preserve conflict-corrected joints in anchors so SLSQP optimizer does not overwrite them
+    a_new = sorted(set(a_list) | k1_set | k2_set | m_set)
     f_list = [n for n in names if n not in set(a_new)]
     before_stats = calculate_stats(cam1_corr, cam2_corr, names, a_new, conf1=H1_all, conf2=H2_all, vis1=vis1, vis2=vis2, f_weights=all_weights)
     optimized_data, _ = optimize_f_points(
@@ -277,8 +300,10 @@ def run_phase3_pipeline(
         regularization=regularization,
         regularization_lambda=regularization_lambda,
         prev_data=prev_optimized_data,
+        prev_prev_data=prev_prev_optimized_data,
         temporal_lambda=temporal_lambda,
         max_iter=max_iter,
+        uncertainty_gating=uncertainty_gating,
     )
     after_stats = calculate_stats(optimized_data["camera1"], optimized_data["camera2"], names, a_new, conf1=H1_all, conf2=H2_all, vis1=vis1, vis2=vis2, f_weights=all_weights)
 
@@ -302,6 +327,38 @@ def run_phase3_pipeline(
         "vis2": {k: bool(v) for k, v in vis2.items()},
     }
     #end of def run_phase3_pipeline
+
+
+def _apply_temporal_smoothing(keypoints_dir: Path, window_length: int = 5, polyorder: int = 2) -> None:
+    try:
+        from scipy.signal import savgol_filter
+    except ImportError:
+        return
+    files = sorted(keypoints_dir.glob("fused_data_*.json"), key=_frame_index)
+    if len(files) < 3:
+        return
+    all_data = [read_json(f) for f in files]
+    w_len = min(window_length, len(files))
+    if w_len % 2 == 0:
+        w_len -= 1
+    if w_len <= polyorder:
+        return
+
+    for cam in ("camera1", "camera2"):
+        if not all_data or cam not in all_data[0]:
+            continue
+        joint_names = list(all_data[0][cam].keys())
+        coords = np.array([[d[cam][j] for j in joint_names] for d in all_data], dtype=float)
+        if np.isnan(coords).any():
+            continue
+        smoothed = savgol_filter(coords, window_length=w_len, polyorder=polyorder, axis=0)
+        for t, d in enumerate(all_data):
+            for j_idx, j_name in enumerate(joint_names):
+                d[cam][j_name] = [round(float(x), 6) for x in smoothed[t, j_idx]]
+
+    for f, d in zip(files, all_data):
+        write_json(f, d)
+    print(f"[Fusion] Applied Savitzky-Golay smoothing (window={w_len}, polyorder={polyorder})")
 
 
 def run_fusion(config: dict) -> None:
@@ -348,6 +405,7 @@ def run_fusion(config: dict) -> None:
     opt_cfg = fusion_cfg["optimization"]
 
     prev_result = None
+    prev_prev_result = None
     # --- THÊM TQDM Ở ĐÂY ---
     for path in tqdm(file_paths, desc="[Fusion] Processing", unit="frame", dynamic_ncols=True):
         frame_idx = _frame_index(path)
@@ -367,6 +425,7 @@ def run_fusion(config: dict) -> None:
 
         try:
             prev_opt = prev_result["optimized"] if prev_result and "optimized" in prev_result else None
+            prev_prev_opt = prev_prev_result["optimized"] if prev_prev_result and "optimized" in prev_prev_result else None
             confidence2d_by_cam = _confidence2d_for_frame(data, frame_idx, confidence2d_profiles)
             result = run_phase3_pipeline(
                 data,
@@ -382,9 +441,15 @@ def run_fusion(config: dict) -> None:
                 ransac_max_combos=ransac_cfg["max_combos"],
                 frame_idx=frame_idx,
                 prev_optimized_data=prev_opt,
+                prev_prev_optimized_data=prev_prev_opt,
                 confidence2d_by_cam=confidence2d_by_cam,
                 belief_alpha=belief_cfg["alpha"],
                 belief_beta=belief_cfg["beta"],
+                blend=fusion_cfg.get("blend", True),
+                conflict_detection=fusion_cfg.get("conflict_detection", True),
+                uncertainty_gating=fusion_cfg.get("uncertainty_gating", {}).get("enabled", True) if isinstance(fusion_cfg.get("uncertainty_gating"), dict) else bool(fusion_cfg.get("uncertainty_gating", True)),
+                max_displacement=fusion_cfg.get("uncertainty_gating", {}).get("max_displacement", 0.35) if isinstance(fusion_cfg.get("uncertainty_gating"), dict) else 0.35,
+                min_confidence=fusion_cfg.get("uncertainty_gating", {}).get("min_confidence", 0.1) if isinstance(fusion_cfg.get("uncertainty_gating"), dict) else 0.1,
             )
             # 1. Lấy dữ liệu an toàn
             joint_conf = result.get("joint_confidence", {})
@@ -422,11 +487,14 @@ def run_fusion(config: dict) -> None:
             if occlusion_parts:
                 # Dùng tqdm.write thay cho print
                 tqdm.write(f"[Fusion] Frame {frame_idx}: Occlusion: {' | '.join(occlusion_parts)}")
+            prev_prev_result = prev_result
             prev_result = result
         except Exception as e:
             # Dùng tqdm.write thay cho print
             tqdm.write(f"[Fusion] Frame {frame_idx}: FAILED ({e}) -> fallback")
             result = copy.deepcopy(prev_result) if prev_result is not None else make_raw_judgement_fallback(data, frame_idx, e)
+            prev_prev_result = prev_result
+            prev_result = result
 
         fused_keypoints = {
             "camera1": result.get("optimized", {}).get("camera1", {}),
@@ -435,6 +503,14 @@ def run_fusion(config: dict) -> None:
         fused_metadata = {k: v for k, v in result.items() if k not in ("camera1", "camera2", "optimized")}
         write_json(output_dir / "keypoints3d" / out_name, fused_keypoints)
         write_json(output_dir / "metadata" / out_name, fused_metadata)
+
+    smoothing_cfg = fusion_cfg.get("smoothing", {})
+    if smoothing_cfg.get("enabled", True):
+        _apply_temporal_smoothing(
+            output_dir / "keypoints3d",
+            window_length=int(smoothing_cfg.get("window_length", 5)),
+            polyorder=int(smoothing_cfg.get("polyorder", 2)),
+        )
 
     print(f"\n[Fusion] Done. Output: {output_dir}")
 

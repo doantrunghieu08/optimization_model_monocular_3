@@ -516,6 +516,8 @@ def run_evaluation(config: dict) -> None:
                             row.append(f"{err_j:.2f}")
                             avg_sums[f"{out_name}_{joint}_mm"] += err_j
 
+                    writer.writerow(row)
+
                 n_frames = len(evaluated_frames)
                 if n_frames > 0:
                     avg_row = ["AVERAGE", cam, gt_camera_keys[cam]]

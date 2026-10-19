@@ -15,12 +15,14 @@ from config_loader import load_config
 
 VIDEO_FOLDER = "imageSequence"
 
+HAS_GSPREAD = False
 try:
     from google.colab import auth
     from google.auth import default
     import gspread
-except ImportError:
-    print("Cảnh báo: Không tìm thấy thư viện google colab/gspread.")
+    HAS_GSPREAD = True
+except (ImportError, Exception):
+    print("[Local Mode] Chạy môi trường Local (không dùng Google Sheets / Colab). Báo cáo xuất ra file CSV local.")
 
 from config_loader import load_config, absolutize_config_paths
 from pipeline import run_pipeline
@@ -29,10 +31,15 @@ GC_CLIENT = None
 
 def get_gspread_client():
     global GC_CLIENT
+    if not HAS_GSPREAD:
+        return None
     if GC_CLIENT is None:
-        auth.authenticate_user()
-        creds, _ = default()
-        GC_CLIENT = gspread.authorize(creds)
+        try:
+            auth.authenticate_user()
+            creds, _ = default()
+            GC_CLIENT = gspread.authorize(creds)
+        except Exception:
+            return None
     return GC_CLIENT
 
 def get_system_metadata() -> tuple[str, str, str]:
@@ -55,7 +62,28 @@ def extract_set_name(pkl_path: str) -> str:
                 return parts[0]
         except ValueError:
             pass
-    return "Unknown_Set"
+    if "Segments" in parts:
+        try:
+            idx = parts.index("Segments")
+            if idx >= 1:
+                return parts[idx - 1]
+        except ValueError:
+            pass
+    return "Seq1"
+
+def _resolve_input_path(workspace: Path, path_str: str | Path) -> Path:
+    p = Path(path_str)
+    if not p.is_absolute():
+        p = workspace / p
+    if p.exists():
+        return p
+    clean_str = str(path_str).replace("imageSequence/", "").replace("imageSequence\\", "")
+    p_clean = Path(clean_str)
+    if not p_clean.is_absolute():
+        p_clean = workspace / p_clean
+    if p_clean.exists():
+        return p_clean
+    return p
 
 def _build_format_requests(sheet_id: int, total_rows: int, total_cols: int) -> list:
     reqs = []
@@ -199,6 +227,7 @@ def _get_header_indices(header: list) -> dict:
 
 def _parse_history_row(row: list, idx: dict) -> tuple:
     if row[idx['Segment']] == "End": return None, None
+    if idx.get('MPJPE', -1) != -1 and row[idx['MPJPE']] in ("N/A", "", "inf"): return None, None
     def get_val(col, default="N/A"):
         return row[idx[col]] if idx.get(col, -1) != -1 and idx[col] < len(row) else default
     def sf(col_name): 
@@ -231,19 +260,40 @@ def _parse_history_row(row: list, idx: dict) -> tuple:
 
 def load_existing_spreadsheet_results(sheet_name: str) -> dict:
     existing = {}
-    header, rows = _get_sheet_data(sheet_name)
-    if not header: return existing
-    idx = _get_header_indices(header)
-    required = (
-        'Segment', 'Alpha', 'Beta', 'MBLE', 'Accel Error (mm/frame^2)',
-        'Fusion MBLE', 'LE MBLE', 'Old MBLE', 'GT Accel Error (mm/frame^2)',
-        'Fusion Accel Error (mm/frame^2)', 'LE Accel Error (mm/frame^2)',
-        'Old Accel Error (mm/frame^2)',
-    )
-    if any(idx[column] == -1 for column in required): return existing
-    for row in rows:
-        key, res = _parse_history_row(row, idx)
-        if key and key[0] != "N/A": existing[key] = res
+    if HAS_GSPREAD:
+        try:
+            header, rows = _get_sheet_data(sheet_name)
+            if header:
+                idx = _get_header_indices(header)
+                required = (
+                    'Segment', 'Alpha', 'Beta', 'MBLE', 'Accel Error (mm/frame^2)',
+                    'Fusion MBLE', 'LE MBLE', 'Old MBLE', 'GT Accel Error (mm/frame^2)',
+                    'Fusion Accel Error (mm/frame^2)', 'LE Accel Error (mm/frame^2)',
+                    'Old Accel Error (mm/frame^2)',
+                )
+                if not any(idx.get(column, -1) == -1 for column in required):
+                    for row in rows:
+                        key, res = _parse_history_row(row, idx)
+                        if key and key[0] != "N/A": existing[key] = res
+                    return existing
+        except Exception:
+            pass
+
+    ws_dir = Path(__file__).parent.resolve()
+    local_csv = ws_dir / "output" / "brute_force_report.csv"
+    if local_csv.exists():
+        try:
+            with open(local_csv, "r", encoding="utf-8-sig") as f:
+                reader = list(csv.reader(f))
+            if len(reader) >= 2:
+                header, rows = reader[0], reader[1:]
+                idx = _get_header_indices(header)
+                for row in rows:
+                    key, res = _parse_history_row(row, idx)
+                    if key and key[0] != "N/A": existing[key] = res
+                print(f"[Local] Đã tải {len(existing)} kết quả cũ từ {local_csv.name}")
+        except Exception:
+            pass
     return existing
 
 def _build_report_rows(all_results: dict, joint_keys: list) -> list:
@@ -261,10 +311,12 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
     def fmt(v): return round(float(v), 2) if v != float('inf') else "N/A"
     
     for seg_name, results in all_results.items():
-        for rank, res in enumerate(results, start=1):
+        valid_results = [r for r in results if r and r.get('mpjpe', float('inf')) != float('inf')]
+        for rank, res in enumerate(valid_results, start=1):
             row = [
                 res.get('set', 'Unknown_Set'), seg_name, rank, res['master'], res.get('supplement', 'N/A'),
-                res.get('alpha', 'N/A'), res.get('beta', 'N/A'),
+                res.get('alpha', 'N/A') if res.get('alpha') != float('inf') else "N/A",
+                res.get('beta', 'N/A') if res.get('beta') != float('inf') else "N/A",
                 fmt(res.get('mpjpe', float('inf'))), fmt(res.get('pa_mpjpe', float('inf'))),
                 fmt(res.get('mble', float('inf'))), fmt(res.get('accel', float('inf'))),
                 fmt(res.get('fusion_mble', float('inf'))), fmt(res.get('le_mble', float('inf'))),
@@ -285,28 +337,37 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
     return rows
 
 def _get_or_create_worksheet(sheet_name: str, worksheet_title: str = None, silent: bool = False):
+    if not HAS_GSPREAD:
+        return None, None
     gc = get_gspread_client()
+    if gc is None:
+        return None, None
     try:
         sh = gc.open(sheet_name)
-    except gspread.exceptions.SpreadsheetNotFound:
-        sh = gc.create(sheet_name)
+    except Exception:
         try:
-            sh.share('', perm_type='anyone', role='reader')
-            if not silent: print(f"[+] Đã tạo Spreadsheet '{sheet_name}' và cấp quyền Public.")
+            sh = gc.create(sheet_name)
+            try:
+                sh.share('', perm_type='anyone', role='reader')
+                if not silent: print(f"[+] Đã tạo Spreadsheet '{sheet_name}' và cấp quyền Public.")
+            except Exception: pass
         except Exception as e:
-            if not silent: print(f"[-] Không thể tự động cấp quyền Public. Lỗi: {e}")
+            if not silent: print(f"[-] Không thể tạo Google Sheet: {e}")
+            return None, None
 
     if worksheet_title:
         try:
             worksheet = sh.worksheet(worksheet_title)
-        except gspread.exceptions.WorksheetNotFound:
-            worksheet = sh.add_worksheet(title=worksheet_title, rows="1000", cols="50")
+        except Exception:
+            try:
+                worksheet = sh.add_worksheet(title=worksheet_title, rows="1000", cols="50")
+            except Exception:
+                worksheet = sh.sheet1
     else:
         worksheet = sh.sheet1
     return sh, worksheet
 
 def generate_spreadsheet_report(all_results, sheet_name, worksheet_title=None, silent=False, is_final=False):
-    sh, worksheet = _get_or_create_worksheet(sheet_name, worksheet_title, silent)
     all_joint_keys = set()
     for seg_results in all_results.values():
         for res in seg_results:
@@ -316,42 +377,60 @@ def generate_spreadsheet_report(all_results, sheet_name, worksheet_title=None, s
     if is_final and len(rows_to_insert) > 0:
         rows_to_insert.append(["End"] * len(rows_to_insert[0]))
 
-    worksheet.clear()
+    ws_dir = Path(__file__).parent.resolve()
+    csv_path = ws_dir / "output" / "brute_force_report.csv"
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        worksheet.update(values=rows_to_insert, range_name="A1")
-    except TypeError:
-        worksheet.update(rows_to_insert)
+        with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+            writer.writerows(rows_to_insert)
+        if not silent:
+            print(f"\n[Local] Đã lưu báo cáo CSV: {csv_path.resolve()}")
+    except Exception as e:
+        if not silent: print(f"[-] Lỗi khi ghi CSV local: {e}")
 
-    decorate(worksheet, len(rows_to_insert), len(rows_to_insert[0]))
-    if not silent: print(f"\nĐã xuất báo cáo ra Google Spreadsheet thành công!\n🔗 Xem file tại: {sh.url}")
+    if not HAS_GSPREAD:
+        return
 
-def generate_spreadsheet_report_safe(all_results, sheet_name, worksheet_title=None, silent=False, is_final=False, max_retries=5):
-    for attempt in range(max_retries):
-        try:
-            generate_spreadsheet_report(all_results, sheet_name, worksheet_title, silent, is_final)
+    try:
+        sh, worksheet = _get_or_create_worksheet(sheet_name, worksheet_title, silent)
+        if not worksheet:
             return
-        except gspread.exceptions.APIError as e:
-            if hasattr(e, 'response') and e.response.status_code == 429:
-                wait_time = (attempt + 1) * 15 
-                print(f"\n[!] Vượt quá giới hạn Google API (429). Đang chờ {wait_time}s trước khi thử lại...")
-                time.sleep(wait_time)
-            else:
-                raise e
-    print("[-] Đã thử lại nhiều lần nhưng không thể ghi Google Sheet do nghẽn API.")
+        worksheet.clear()
+        try:
+            worksheet.update(values=rows_to_insert, range_name="A1")
+        except TypeError:
+            worksheet.update(rows_to_insert)
+
+        decorate(worksheet, len(rows_to_insert), len(rows_to_insert[0]))
+        if not silent: print(f"\nĐã xuất báo cáo ra Google Spreadsheet thành công!\n🔗 Xem file tại: {sh.url}")
+    except Exception as e:
+        if not silent: print(f"[-] Không thể ghi Google Sheet: {e}. Báo cáo đã lưu ở CSV local.")
+
+def generate_spreadsheet_report_safe(all_results, sheet_name, worksheet_title=None, silent=False, is_final=False, max_retries=3):
+    try:
+        generate_spreadsheet_report(all_results, sheet_name, worksheet_title, silent, is_final)
+    except Exception as e:
+        if not silent: print(f"[-] Lỗi khi tạo báo cáo: {e}")
 
 def _setup_pipeline_config(base_cfg, gt_dir, camA, camB, workspace):
     import copy
+    import torch
     cfg = copy.deepcopy(base_cfg)
     cfg.setdefault("inputs", {})
     cfg["inputs"].update({
-        "ground_truth_dir": gt_dir, "cam1_pkl": camA["pkl"], "camera1_video": camA["video"],
-        "cam2_pkl": camB["pkl"], "camera2_video": camB["video"]
+        "ground_truth_dir": str(_resolve_input_path(workspace, gt_dir)),
+        "cam1_pkl": str(_resolve_input_path(workspace, camA["pkl"])),
+        "camera1_video": str(_resolve_input_path(workspace, camA["video"])),
+        "cam2_pkl": str(_resolve_input_path(workspace, camB["pkl"])),
+        "camera2_video": str(_resolve_input_path(workspace, camB["video"]))
     })
     cfg.setdefault("visualization", {})["enabled"] = False
     cfg.setdefault("runtime", {})["clean_output"] = True
     cfg["runtime"]["stage"] = "visualization"
-    cfg.setdefault("learnable", {})["device"] = "cuda"
-    cfg.setdefault("learnable_extra", {})["device"] = "cuda"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    cfg.setdefault("learnable", {})["device"] = device
+    cfg.setdefault("learnable_extra", {})["device"] = device
     return absolutize_config_paths(cfg, workspace)
 
 def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_id: str, seg_name: str) -> dict:
@@ -410,10 +489,11 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
 def _evaluate_camera_pair(camA, camB, base_cfg, gt_dir, workspace, seg_name: str) -> dict:
     current_set = extract_set_name(camA["pkl"])
     os_v, usr, ts = get_system_metadata()
-    if not (workspace / camA["pkl"]).exists() or not (workspace / camB["pkl"]).exists():
-        print("Bỏ qua cặp này do thiếu file pkl đầu vào.")
-        return {"set": current_set, "master": camA["id"], "supplement": camB["id"], 
-                "os_version": os_v, "username": usr, "timestamp": ts}
+    camA_pkl = _resolve_input_path(workspace, camA["pkl"])
+    camB_pkl = _resolve_input_path(workspace, camB["pkl"])
+    if not camA_pkl.exists() or not camB_pkl.exists():
+        print(f"Bỏ qua cặp {camA['id']}-{camB['id']} do thiếu file pkl đầu vào.")
+        return None
     try:
         config = _setup_pipeline_config(base_cfg, gt_dir, camA, camB, workspace)
         run_pipeline(config, stage_override=None)
@@ -439,8 +519,7 @@ def _evaluate_camera_pair(camA, camB, base_cfg, gt_dir, workspace, seg_name: str
         import traceback
         print(f"Lỗi khi chạy cặp {camA['id']}-{camB['id']}: {e}")
         traceback.print_exc()
-        return {"set": current_set, "master": camA["id"], "supplement": camB["id"], 
-                "os_version": os_v, "username": usr, "timestamp": ts}
+        return None
 
 def _get_timed_input(timeout: int) -> str | None:
     q = queue.Queue()
@@ -452,9 +531,14 @@ def _get_timed_input(timeout: int) -> str | None:
     except queue.Empty: return None
 
 def _archive_old_spreadsheet(default_name: str):
+    if not HAS_GSPREAD:
+        return
     print(f"\n[+] Đang kiểm tra và lưu trữ file mặc định cũ '{default_name}'...")
     try:
-        sh = get_gspread_client().open(default_name)
+        client = get_gspread_client()
+        if not client:
+            return
+        sh = client.open(default_name)
         time_suffix = datetime.now().strftime("%Y%m%d_%H%M%S")
         try:
             if getattr(sh, 'creationTime', None):
@@ -463,12 +547,13 @@ def _archive_old_spreadsheet(default_name: str):
         archived_name = f"{default_name}_{time_suffix}"
         sh.update_title(archived_name)
         print(f"[+] Đã đổi tên Spreadsheet cũ thành: '{archived_name}'")
-    except gspread.exceptions.SpreadsheetNotFound:
-        print(f"[*] Không tìm thấy file cũ '{default_name}'. Sẽ tự động tạo file mới.")
     except Exception as e:
-        print(f"[-] Không thể đổi tên file cũ ({e}). Sẽ dùng file mặc định hiện tại.")
+        print(f"[-] Không thể đổi tên file cũ ({e}).")
 
 def get_spreadsheet_name_input(default_name: str = "Brute_Force_Report_Pipeline v260823", timeout: int = 10) -> str:
+    if not HAS_GSPREAD:
+        print(f"\n[Local Mode] Báo cáo sẽ được lưu trực tiếp vào: output/brute_force_report.csv")
+        return default_name
     print(f"\n[?] Nhập tên file Google Spreadsheet (Mặc định: '{default_name}'):")
     print("    - ENTER / Bỏ trống: Sử dụng tên mặc định")
     print("    - 'new': Đổi tên file cũ (thêm timestamp) & tạo file mới | 'now': Đặt tên vYYMMDD")
@@ -510,18 +595,16 @@ def _process_segment(seg, existing, base_cfg, ws_dir, sh_name, ws_title, all_res
             continue
         
         res = _evaluate_camera_pair(cA, cB, base_cfg, str(ws_dir / seg["ground_truth_dir"]), ws_dir, seg_name)
-        results.append(res)
+        if res is not None:
+            results.append(res)
         
-        current_time = time.time()
-        if current_time - last_update_time > 30:
-            temp_res = dict(all_res)
-            temp_res[seg_name] = sorted(
-                results, 
-                key=lambda x: x.get("% delta_mpjpe", float('-inf')) + x.get("% delta_pa_mpjpe", float('-inf')), 
-                reverse=True
-            )
-            generate_spreadsheet_report_safe(temp_res, sh_name, ws_title, silent=True)
-            last_update_time = current_time
+        temp_res = dict(all_res)
+        temp_res[seg_name] = sorted(
+            results, 
+            key=lambda x: x.get("% delta_mpjpe", float('-inf')) + x.get("% delta_pa_mpjpe", float('-inf')), 
+            reverse=True
+        )
+        generate_spreadsheet_report_safe(temp_res, sh_name, ws_title, silent=True)
 
     sorted_results = sorted(
         results, 

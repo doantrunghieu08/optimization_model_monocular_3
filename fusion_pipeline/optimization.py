@@ -49,10 +49,16 @@ def compute_dynamic_scale(cam_dict, f_list, ratios):
         if c not in f_list and p not in f_list and c in cam_dict and p in cam_dict:
             sum_len += float(np.linalg.norm(cam_dict[c] - cam_dict[p]))
             sum_ratio += r
-    return (sum_len / sum_ratio) if sum_ratio > 0 else HEIGHT
+    if sum_ratio > 0:
+        return sum_len / sum_ratio
+    if "left_shoulder" in cam_dict and "right_shoulder" in cam_dict:
+        shoulder_dist = float(np.linalg.norm(as_xyz(cam_dict["left_shoulder"]) - as_xyz(cam_dict["right_shoulder"])))
+        if shoulder_dist > 0.1:
+            return shoulder_dist / 0.22
+    return HEIGHT
 
 
-def optimize_f_points(data, anchors, f_list, conf1=None, conf2=None, vis1=None, vis2=None, occluded_factor=DEFAULT_OCCLUDED_FACTOR, regularization=False, regularization_lambda=1.0, prev_data=None, temporal_lambda=1.0, max_iter=1000):
+def optimize_f_points(data, anchors, f_list, conf1=None, conf2=None, vis1=None, vis2=None, occluded_factor=DEFAULT_OCCLUDED_FACTOR, regularization=False, regularization_lambda=1.0, prev_data=None, prev_prev_data=None, temporal_lambda=1.0, max_iter=1000, uncertainty_gating=True):
     cam1 = {k: as_xyz(v) for k, v in data["camera1"].items()}
     cam2 = {k: as_xyz(v) for k, v in data["camera2"].items()}
     f_weights = {}
@@ -67,11 +73,13 @@ def optimize_f_points(data, anchors, f_list, conf1=None, conf2=None, vis1=None, 
     if not f_list:
         return {"camera1": cam1, "camera2": cam2}, None
 
+    min_floor = 0.2 if uncertainty_gating else 0.0
+
     def proximity_penalty(x):
         penalty = 0.0
         for i, name in enumerate(f_list):
-            c1v = float(conf1.get(name, 1.0)) if conf1 else 1.0
-            c2v = float(conf2.get(name, 1.0)) if conf2 else 1.0
+            c1v = max(float(conf1.get(name, 1.0)) if conf1 else 1.0, min_floor)
+            c2v = max(float(conf2.get(name, 1.0)) if conf2 else 1.0, min_floor)
             d1 = x[i * 3:i * 3 + 3] - cam1[name]
             d2 = x[(num_f + i) * 3:(num_f + i) * 3 + 3] - cam2[name]
             penalty += c1v * float(np.dot(d1, d1)) + c2v * float(np.dot(d2, d2))
@@ -82,16 +90,26 @@ def optimize_f_points(data, anchors, f_list, conf1=None, conf2=None, vis1=None, 
             return 0.0
         prev_cam1 = prev_data.get("camera1", {})
         prev_cam2 = prev_data.get("camera2", {})
+        prev_prev_cam1 = prev_prev_data.get("camera1", {}) if prev_prev_data else {}
+        prev_prev_cam2 = prev_prev_data.get("camera2", {}) if prev_prev_data else {}
         penalty = 0.0
         for i, name in enumerate(f_list):
             if name in prev_cam1:
                 p1_curr = x[i * 3:i * 3 + 3]
                 p1_prev = np.asarray(prev_cam1[name], dtype=float)
-                penalty += float(np.sum((p1_curr - p1_prev) ** 2))
+                if name in prev_prev_cam1:
+                    p1_pp = np.asarray(prev_prev_cam1[name], dtype=float)
+                    penalty += float(np.sum((p1_curr - 2.0 * p1_prev + p1_pp) ** 2))
+                else:
+                    penalty += float(np.sum((p1_curr - p1_prev) ** 2))
             if name in prev_cam2:
                 p2_curr = x[(num_f + i) * 3:(num_f + i) * 3 + 3]
                 p2_prev = np.asarray(prev_cam2[name], dtype=float)
-                penalty += float(np.sum((p2_curr - p2_prev) ** 2))
+                if name in prev_prev_cam2:
+                    p2_pp = np.asarray(prev_prev_cam2[name], dtype=float)
+                    penalty += float(np.sum((p2_curr - 2.0 * p2_prev + p2_pp) ** 2))
+                else:
+                    penalty += float(np.sum((p2_curr - p2_prev) ** 2))
         return penalty
 
     def objective(x):

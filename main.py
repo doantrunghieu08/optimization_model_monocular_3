@@ -9,7 +9,7 @@ import shutil
 from pipeline import run_pipeline
 
 # Import utility functions for configuration
-from config_loader import absolutize_config_paths, print_path_summary
+from config_loader import load_config, absolutize_config_paths, print_path_summary
 
 def main():
     parser = argparse.ArgumentParser(description="Monocular Optimization Pipeline")
@@ -24,8 +24,7 @@ def main():
         sys.exit(1)
 
     print(f"Loading config from {config_path}")
-    with open(config_path, "r", encoding="utf-8") as f:
-        REFERENCE_CONFIG = yaml.safe_load(f)
+    REFERENCE_CONFIG = load_config(config_path)
 
     # Resolve paths relative to WORKSPACE_DIR
     CONFIG = absolutize_config_paths(REFERENCE_CONFIG, WORKSPACE_DIR)

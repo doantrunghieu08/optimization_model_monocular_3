@@ -73,24 +73,64 @@ def estimate_bidirectional_similarity(cam1, cam2, candidate_names, threshold, ma
     return t12, t21, anchor_names
 
 
-def apply_confidence_corrections(cam1, cam2, k1_set, k2_set, t12, t21):
+def apply_confidence_corrections(cam1, cam2, k1_set, k2_set, t12, t21, h1=None, h2=None, blend=True, uncertainty_gating=True, max_displacement=0.35):
     cam1_corr = dict(cam1)
     cam2_corr = dict(cam2)
     for name in k1_set:
-        cam2_corr[name] = apply_similarity(cam1[name], t12)
+        p_from_1 = apply_similarity(cam1[name], t12)
+        if uncertainty_gating and max_displacement is not None:
+            disp = float(np.linalg.norm(p_from_1 - as_xyz(cam2[name])))
+            if disp > max_displacement:
+                continue
+        if blend and h1 and h2:
+            w1 = float(h1.get(name, 1.0))
+            w2 = float(h2.get(name, 0.5))
+            alpha = w1 / max(w1 + w2, 1e-6)
+            cam2_corr[name] = alpha * p_from_1 + (1.0 - alpha) * as_xyz(cam2[name])
+        else:
+            cam2_corr[name] = p_from_1
     for name in k2_set:
-        cam1_corr[name] = apply_similarity(cam2[name], t21)
+        p_from_2 = apply_similarity(cam2[name], t21)
+        if uncertainty_gating and max_displacement is not None:
+            disp = float(np.linalg.norm(p_from_2 - as_xyz(cam1[name])))
+            if disp > max_displacement:
+                continue
+        if blend and h1 and h2:
+            w1 = float(h1.get(name, 0.5))
+            w2 = float(h2.get(name, 1.0))
+            alpha = w2 / max(w1 + w2, 1e-6)
+            cam1_corr[name] = alpha * p_from_2 + (1.0 - alpha) * as_xyz(cam1[name])
+        else:
+            cam1_corr[name] = p_from_2
     return cam1_corr, cam2_corr
 
 
-def apply_rotation_mismatch_corrections(cam1_corr, cam2_corr, cam1, cam2, m_set, k1_set, k2_set, h1, h2, t12, t21):
+def apply_rotation_mismatch_corrections(cam1_corr, cam2_corr, cam1, cam2, m_set, k1_set, k2_set, h1, h2, t12, t21, blend=True, uncertainty_gating=True, max_displacement=0.35):
     cam1_fixed = dict(cam1_corr)
     cam2_fixed = dict(cam2_corr)
     for name in m_set:
         if name in k1_set or name in k2_set:
             continue
-        if h1.get(name, 0.5) > h2.get(name, 0.5):
-            cam2_fixed[name] = apply_similarity(cam1[name], t12)
+        w1 = float(h1.get(name, 0.5)) if h1 else 0.5
+        w2 = float(h2.get(name, 0.5)) if h2 else 0.5
+        if w1 > w2:
+            p_trans = apply_similarity(cam1[name], t12)
+            if uncertainty_gating and max_displacement is not None:
+                if float(np.linalg.norm(p_trans - as_xyz(cam2[name]))) > max_displacement:
+                    continue
+            if blend:
+                alpha = w1 / max(w1 + w2, 1e-6)
+                cam2_fixed[name] = alpha * p_trans + (1.0 - alpha) * as_xyz(cam2[name])
+            else:
+                cam2_fixed[name] = p_trans
         else:
-            cam1_fixed[name] = apply_similarity(cam2[name], t21)
+            p_trans = apply_similarity(cam2[name], t21)
+            if uncertainty_gating and max_displacement is not None:
+                if float(np.linalg.norm(p_trans - as_xyz(cam1[name]))) > max_displacement:
+                    continue
+            if blend:
+                alpha = w2 / max(w1 + w2, 1e-6)
+                cam1_fixed[name] = alpha * p_trans + (1.0 - alpha) * as_xyz(cam1[name])
+            else:
+                cam1_fixed[name] = p_trans
     return cam1_fixed, cam2_fixed

@@ -10,10 +10,10 @@ preprocess:
     max_frames: null # Số frame tối đa dùng cho ước lượng offset.
 
 inputs:
-  cam1_pkl: "input/Seq1/imageSequence/Segments/wham_output_video_0_seg_1/video_0_seg_1.pkl"
-  cam2_pkl: "input/Seq1/imageSequence/Segments/wham_output_video_2_seg_1/video_2_seg_1.pkl"
-  camera1_video: "input/Seq1/imageSequence/video_0.avi"
-  camera2_video: "input/Seq1/imageSequence/video_2.avi"
+  cam1_pkl: "input/Seq1/Segments/wham_output_video_0_seg_1/video_0_seg_1.pkl"
+  cam2_pkl: "input/Seq1/Segments/wham_output_video_2_seg_1/video_2_seg_1.pkl"
+  camera1_video: "input/Seq1/video_0.avi"
+  camera2_video: "input/Seq1/video_2.avi"
   ground_truth_dir: "input/Seq1/GT" # Thư mục ground-truth cho evaluation.
 
 paths:
@@ -38,8 +38,20 @@ fusion:
     beta: ${BETA:-0.8} # beta: hệ số trộn tin cậy của láng giềng xương trong harmonic mean, càng lớn thì belief càng chịu ảnh hưởng bởi skeleton lân cận.
 
   occlusion:
-    enabled: false  # Tắt vì WHAM pkl không có verts_cam (chỉ có verts world space)
-    tau: 0.01 # Ngưỡng khoảng cách z để kết luận joint bị che khuất.
+    enabled: true  # Phát hiện che khuất bằng 3D ray-casting
+    tau: 0.05 # Ngưỡng khoảng cách (m) trước joint để kết luận joint bị che khuất.
+
+  # Cơ chế Uncertainty-Gating: ngăn chặn việc thay thế khớp nếu camera phụ không đáng tin cậy
+  uncertainty_gating:
+    enabled: true
+    max_displacement: 0.35 # Khoảng cách tối đa (m) giữa tọa độ ánh xạ và mục tiêu
+    min_confidence: 0.1    # Ngưỡng tin cậy tối thiểu của camera phụ
+
+  # Bộ lọc làm mượt quỹ đạo thời gian (giảm rung giật / giảm Accel Error)
+  smoothing:
+    enabled: true
+    window_length: 5
+    polyorder: 2
 
   # Cấu hình RANSAC dùng để ước lượng similarity transform giữa 2 camera.
   ransac:

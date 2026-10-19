@@ -77,11 +77,13 @@ def post_optimize_smpl_sequence(
         loss_pose = torch.mean(torch.sum((pose_var - pose_anchor) ** 2, dim=-1))
         loss_trans = torch.mean(torch.sum((trans_var - trans_anchor) ** 2, dim=-1))
 
-        # Temporal smooth on pose and trans
-        if n_frames > 1:
-            loss_temp_pose = torch.mean(torch.sum((pose_var[1:] - pose_var[:-1]) ** 2, dim=-1))
-            loss_temp_trans = torch.mean(torch.sum((trans_var[1:] - trans_var[:-1]) ** 2, dim=-1))
-            loss_temp = loss_temp_pose + loss_temp_trans
+        # Temporal acceleration smoothness on pose and trans (2nd-order difference matching evaluation metric)
+        if n_frames > 2:
+            accel_pose = pose_var[2:] - 2.0 * pose_var[1:-1] + pose_var[:-2]
+            accel_trans = trans_var[2:] - 2.0 * trans_var[1:-1] + trans_var[:-2]
+            loss_temp = torch.mean(torch.sum(accel_pose ** 2, dim=-1)) + torch.mean(torch.sum(accel_trans ** 2, dim=-1))
+        elif n_frames > 1:
+            loss_temp = torch.mean(torch.sum((pose_var[1:] - pose_var[:-1]) ** 2, dim=-1)) + torch.mean(torch.sum((trans_var[1:] - trans_var[:-1]) ** 2, dim=-1))
         else:
             loss_temp = torch.tensor(0.0, device=device)
 
