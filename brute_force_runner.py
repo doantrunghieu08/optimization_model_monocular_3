@@ -212,14 +212,26 @@ def _get_header_indices(header: list) -> dict:
     for k in keys:
         if k in header:
             idx[k] = header.index(k)
+        elif k == 'Cam Master' and 'Master' in header:
+            idx[k] = header.index('Master')
+        elif k == 'Cam Slave' and 'Supplement' in header:
+            idx[k] = header.index('Supplement')
+        elif k == 'Accel Error (mm/frame^2)' and 'Accel' in header:
+            idx[k] = header.index('Accel')
+        elif k == 'GT Accel Error (mm/frame^2)' and 'GT Accel Error' in header:
+            idx[k] = header.index('GT Accel Error')
+        elif k == 'Fusion Accel Error (mm/frame^2)' and 'Fusion Accel Error' in header:
+            idx[k] = header.index('Fusion Accel Error')
+        elif k == 'LE Accel Error (mm/frame^2)' and 'LE Accel Error' in header:
+            idx[k] = header.index('LE Accel Error')
+        elif k == 'Old Accel Error (mm/frame^2)' and 'Old Accel Error' in header:
+            idx[k] = header.index('Old Accel Error')
         elif k == '% Δ_MPJPE' and '% d_MPJPE%' in header:
             idx[k] = header.index('% d_MPJPE%')
         elif k == '% Δ_PA-MPJPE' and 'd_PA-MPJPE' in header:
             idx[k] = header.index('d_PA-MPJPE')
         elif k in ('belief Master', 'belief Slave') and f'local_{k}' in header:
             idx[k] = header.index(f'local_{k}')
-        elif k == 'Accel Error (mm/frame^2)' and 'Accel' in header:
-            idx[k] = header.index('Accel')
         else:
             idx[k] = -1
     idx['joints'] = {h: i for i, h in enumerate(header) if h.startswith(("MPJPE_", "PA-MPJPE_"))}
@@ -463,14 +475,15 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
     joint_metrics.update({f"PA-MPJPE_{k}": v for k, v in pa_jts.items()})
     os_v, usr, ts = get_system_metadata()
 
-    # Trích xuất ngay lập tức metrics LE từ biến môi trường của lần chạy hiện tại
+    # Trích xuất metrics LE: ưu tiên đọc trực tiếp từ evaluation CSV, fallback sang os.environ
+    le_m_val = parse_average_csv(eval_dir / "MPJPE_cam1.csv", "only_learnable_priority1_mm")
+    le_pa_val = parse_average_csv(eval_dir / "PA-MPJPE_cam1.csv", "only_learnable_priority1_mm")
     raw_env = os.environ.get("LEARNABLE_EXTRA_METRICS", "{}")
     le_data = json.loads(raw_env) if raw_env.strip() else {}
     seg_metrics = le_data.get(seg_name, le_data)
-    # Cam Master (camA) luôn luôn được pipeline gán vào role "camera1"
     cam1_metrics = seg_metrics.get("camera1", {}) if isinstance(seg_metrics, dict) else {}
-    le_mpjpe = cam1_metrics.get("MPJPE", "N/A")
-    le_pa_mpjpe = cam1_metrics.get("PA-MPJPE", "N/A")
+    le_mpjpe = f"{le_m_val:.2f}" if le_m_val != float('inf') else cam1_metrics.get("MPJPE", "N/A")
+    le_pa_mpjpe = f"{le_pa_val:.2f}" if le_pa_val != float('inf') else cam1_metrics.get("PA-MPJPE", "N/A")
 
     return {
         "set": current_set, "master": camA_id, "supplement": camB_id,
