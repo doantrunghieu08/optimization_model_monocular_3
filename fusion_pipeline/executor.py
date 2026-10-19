@@ -201,6 +201,7 @@ def run_phase3_pipeline(
     uncertainty_gating=True,
     max_displacement=0.35,
     min_confidence=0.1,
+    optimization_enabled=True,
 ):
     cam1 = {k: as_xyz(v) for k, v in data_in["camera1"].items()}
     cam2 = {k: as_xyz(v) for k, v in data_in["camera2"].items()}
@@ -306,23 +307,8 @@ def run_phase3_pipeline(
     a_new = sorted(set(a_list) | k1_set | k2_set | m_set)
     f_list = [n for n in names if n not in set(a_new)]
     before_stats = calculate_stats(cam1_corr, cam2_corr, names, a_new, conf1=H1_all, conf2=H2_all, vis1=vis1, vis2=vis2, f_weights=all_weights)
-    optimized_data, _ = optimize_f_points(
-        {"camera1": cam1_corr, "camera2": cam2_corr},
-        a_new,
-        f_list,
-        conf1=H1_all,
-        conf2=H2_all,
-        vis1=vis1,
-        vis2=vis2,
-        regularization=regularization,
-        regularization_lambda=regularization_lambda,
-        prev_data=prev_optimized_data,
-        prev_prev_data=prev_prev_optimized_data,
-        temporal_lambda=temporal_lambda,
-        max_iter=max_iter,
-        uncertainty_gating=uncertainty_gating,
-    )
-    after_stats = calculate_stats(optimized_data["camera1"], optimized_data["camera2"], names, a_new, conf1=H1_all, conf2=H2_all, vis1=vis1, vis2=vis2, f_weights=all_weights)
+    optimized_data = {"camera1": cam1_corr, "camera2": cam2_corr}
+    after_stats = before_stats
 
     flags1_after = get_orientation_flag(optimized_data["camera1"])
     flags2_after = get_orientation_flag(optimized_data["camera2"])
@@ -516,6 +502,7 @@ def run_fusion(config: dict) -> None:
                 uncertainty_gating=fusion_cfg.get("uncertainty_gating", {}).get("enabled", True) if isinstance(fusion_cfg.get("uncertainty_gating"), dict) else bool(fusion_cfg.get("uncertainty_gating", True)),
                 max_displacement=fusion_cfg.get("uncertainty_gating", {}).get("max_displacement", 0.35) if isinstance(fusion_cfg.get("uncertainty_gating"), dict) else 0.35,
                 min_confidence=fusion_cfg.get("uncertainty_gating", {}).get("min_confidence", 0.1) if isinstance(fusion_cfg.get("uncertainty_gating"), dict) else 0.1,
+                optimization_enabled=opt_cfg.get("enabled", True),
             )
             # 1. Lấy dữ liệu an toàn
             joint_conf = result.get("joint_confidence", {})
@@ -572,6 +559,16 @@ def run_fusion(config: dict) -> None:
         fused_metadata = {k: v for k, v in result.items() if k not in ("camera1", "camera2", "optimized")}
         write_json(output_dir / "keypoints3d" / out_name, fused_keypoints)
         write_json(output_dir / "metadata" / out_name, fused_metadata)
+
+    opt_cfg = fusion_cfg.get("optimization", {})
+    if opt_cfg.get("enabled", True):
+        from fusion_pipeline.optimization import optimize_sequence_gpu
+        optimize_sequence_gpu(
+            output_dir / "keypoints3d",
+            metadata_dir=output_dir / "metadata",
+            pose_dir=input_dir / "keypoints3d",
+            config=config,
+        )
 
     smoothing_cfg = fusion_cfg.get("smoothing", {})
     if smoothing_cfg.get("enabled", True):

@@ -199,11 +199,8 @@ def _get_header_indices(header: list) -> dict:
     idx = {}
     keys = [
         'Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 'Alpha', 'Beta',
-        'MPJPE', 'PA-MPJPE', 'MBLE',
-        'Fusion MBLE', 'LE MBLE', 'Old MBLE',
-        'Accel Error (mm/frame^2)', 'GT Accel Error (mm/frame^2)',
-        'Fusion Accel Error (mm/frame^2)', 'LE Accel Error (mm/frame^2)',
-        'Old Accel Error (mm/frame^2)',
+        'MPJPE', 'PA-MPJPE', 'MBLE', 'Old MBLE', 'LE MBLE',
+        'Accel Error (mm/frame^2)', 'Old Accel Error (mm/frame^2)', 'LE Accel Error (mm/frame^2)',
         'LE MPJPE Master', 'LE PA-MPJPE Master',
         'belief Master', 'belief Slave',
         'Old MPJPE', 'Old PA-MPJPE', '% Δ_MPJPE', '% Δ_PA-MPJPE', 
@@ -218,12 +215,10 @@ def _get_header_indices(header: list) -> dict:
             idx[k] = header.index('Supplement')
         elif k == 'Accel Error (mm/frame^2)' and 'Accel' in header:
             idx[k] = header.index('Accel')
-        elif k == 'GT Accel Error (mm/frame^2)' and 'GT Accel Error' in header:
-            idx[k] = header.index('GT Accel Error')
-        elif k == 'Fusion Accel Error (mm/frame^2)' and 'Fusion Accel Error' in header:
-            idx[k] = header.index('Fusion Accel Error')
-        elif k == 'LE Accel Error (mm/frame^2)' and 'LE Accel Error' in header:
-            idx[k] = header.index('LE Accel Error')
+        elif k == 'Accel Error (mm/frame^2)' and 'Fusion Accel Error (mm/frame^2)' in header:
+            idx[k] = header.index('Fusion Accel Error (mm/frame^2)')
+        elif k == 'MBLE' and 'Fusion MBLE' in header:
+            idx[k] = header.index('Fusion MBLE')
         elif k == 'Old Accel Error (mm/frame^2)' and 'Old Accel Error' in header:
             idx[k] = header.index('Old Accel Error')
         elif k == '% Δ_MPJPE' and '% d_MPJPE%' in header:
@@ -279,9 +274,7 @@ def load_existing_spreadsheet_results(sheet_name: str) -> dict:
                 idx = _get_header_indices(header)
                 required = (
                     'Segment', 'Alpha', 'Beta', 'MBLE', 'Accel Error (mm/frame^2)',
-                    'Fusion MBLE', 'LE MBLE', 'Old MBLE', 'GT Accel Error (mm/frame^2)',
-                    'Fusion Accel Error (mm/frame^2)', 'LE Accel Error (mm/frame^2)',
-                    'Old Accel Error (mm/frame^2)',
+                    'Old MBLE', 'Old Accel Error (mm/frame^2)',
                 )
                 if not any(idx.get(column, -1) == -1 for column in required):
                     for row in rows:
@@ -310,10 +303,8 @@ def load_existing_spreadsheet_results(sheet_name: str) -> dict:
 
 def _build_report_rows(all_results: dict, joint_keys: list) -> list:
     header = ['Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 'Alpha', 'Beta',
-              'MPJPE', 'PA-MPJPE', 'MBLE', 'Accel Error (mm/frame^2)',
-              'Fusion MBLE', 'LE MBLE', 'Old MBLE',
-              'GT Accel Error (mm/frame^2)', 'Fusion Accel Error (mm/frame^2)',
-              'LE Accel Error (mm/frame^2)', 'Old Accel Error (mm/frame^2)',
+              'MPJPE', 'PA-MPJPE', 'MBLE', 'Old MBLE', 'LE MBLE',
+              'Accel Error (mm/frame^2)', 'Old Accel Error (mm/frame^2)', 'LE Accel Error (mm/frame^2)',
               'LE MPJPE Master', 'LE PA-MPJPE Master', 
               'belief Master', 'belief Slave', 'Old MPJPE',
               'Old PA-MPJPE', '% Δ_MPJPE', '% Δ_PA-MPJPE', 
@@ -330,13 +321,8 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
                 res.get('alpha', 'N/A') if res.get('alpha') != float('inf') else "N/A",
                 res.get('beta', 'N/A') if res.get('beta') != float('inf') else "N/A",
                 fmt(res.get('mpjpe', float('inf'))), fmt(res.get('pa_mpjpe', float('inf'))),
-                fmt(res.get('mble', float('inf'))), fmt(res.get('accel', float('inf'))),
-                fmt(res.get('fusion_mble', float('inf'))), fmt(res.get('le_mble', float('inf'))),
-                fmt(res.get('old_mble', float('inf'))),
-                fmt(res.get('gt_accel_error', float('inf'))),
-                fmt(res.get('fusion_accel_error', float('inf'))),
-                fmt(res.get('le_accel_error', float('inf'))),
-                fmt(res.get('old_accel_error', float('inf'))),
+                fmt(res.get('mble', float('inf'))), fmt(res.get('old_mble', float('inf'))), fmt(res.get('le_mble', float('inf'))),
+                fmt(res.get('accel', float('inf'))), fmt(res.get('old_accel_error', float('inf'))), fmt(res.get('le_accel_error', float('inf'))),
                 res.get('le_mpjpe_master', 'N/A'), res.get('le_pa_mpjpe_master', 'N/A'),
                 res.get('belief_master', "[]"), res.get('belief_slave', "[]"),
                 fmt(res.get('old_mpjpe', float('inf'))), fmt(res.get('old_pa_mpjpe', float('inf'))), 
@@ -439,7 +425,7 @@ def _setup_pipeline_config(base_cfg, gt_dir, camA, camB, workspace):
     })
     cfg.setdefault("visualization", {})["enabled"] = False
     cfg.setdefault("runtime", {})["clean_output"] = True
-    cfg["runtime"]["stage"] = "visualization"
+    cfg["runtime"]["stage"] = "default"
     device = "cuda" if torch.cuda.is_available() else "cpu"
     cfg.setdefault("learnable", {})["device"] = device
     cfg.setdefault("learnable_extra", {})["device"] = device

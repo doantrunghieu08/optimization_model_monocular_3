@@ -169,3 +169,17 @@ Ràng buộc an toàn:
 * **CAM2 PA-MPJPE:** Cải thiện **+0.67 mm** (`202.38` $\rightarrow$ **`201.72` mm**).
 
 
+
+---
+
+## 9. Khắc Phục Negative Transfer & Chặn Lỗi Cánh Tay Đòn Của Umeyama (Strict Gating & Safe Consensus)
+
+* **Vị trí file:** [fusion_pipeline/correction.py](file:///d:/optimization_model_monocular_3/fusion_pipeline/correction.py)
+
+### Bối cảnh & Vấn đề
+* **Hiệu ứng cánh tay đòn (Lever-Arm Error):** Phép biến đổi tương đồng Umeyama (T_21) chỉ được fit trên các khớp thân mình (Torso). Do khoảng cách các khớp torso hẹp (~35 cm), sai số góc xoay 3° - 5° bị khuếch đại lên 50 - 70 mm ở các chi xa (cổ tay, cổ chân).
+* **Negative Transfer:** Chiếu Cam 2 sang Cam 1 bằng T_21 làm tăng sai số cổ tay từ 1393 mm -> 1424 mm (+31 mm tệ hơn). Việc bypass gating khi che khuất hoặc ép buộc hòa trộn 50% : 50% trên các khớp nhìn rõ khiến kết quả sau fusion bị kéo tụt MPJPE/PA-MPJPE.
+
+### Giải pháp
+1. **Khóa trần độ dịch chuyển khi che khuất:** Ngăn chặn việc bypass hoàn toàn gating; đặt giới hạn trần nghiêm ngặt 1.25 * d_max cho các khớp bị che khuất để loại bỏ các điểm biến dạng cực đoan do xoay góc.
+2. **Loại bỏ cưỡng bức hòa trộn trên khớp nhìn rõ:** Nếu cả hai camera cùng nhìn rõ (vis1 and vis2), chỉ hòa trộn khi đạt độ đồng thuận cao (disp <= 0.08m); giữ nguyên quan sát monocular của camera chính để tránh làm hỏng các dự đoán đúng.

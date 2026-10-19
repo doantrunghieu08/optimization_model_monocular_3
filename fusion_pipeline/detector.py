@@ -57,24 +57,33 @@ def get_orientation_flag(joints, epsilon=ORIENTATION_EPSILON):
 
 def load_torso_mask(seg_path):
     global _TORSO_MASK
-    if not seg_path:
-        _TORSO_MASK = None
-        return None
-    seg_path = Path(seg_path)
-    if not seg_path.exists():
-        print(f"[Fusion] Warning: Torso mask file not found: {seg_path}. Using full mesh for ray-casting.")
-        _TORSO_MASK = None
-        return None
-    try:
-        with seg_path.open("rb") as f:
-            seg = pickle.load(f, encoding="latin1")
-        _TORSO_MASK = np.isin(seg["smpl_index"], list(TORSO_PART_IDS))
-        print("[Fusion] Torso mask loaded: {} / 6890 vertices".format(int(_TORSO_MASK.sum())))
-        return _TORSO_MASK
-    except Exception as e:
-        print(f"[Fusion] Warning: Failed to parse torso mask ({e}). Using full mesh.")
-        _TORSO_MASK = None
-        return None
+    if seg_path and Path(seg_path).exists():
+        try:
+            with Path(seg_path).open("rb") as f:
+                seg = pickle.load(f, encoding="latin1")
+            _TORSO_MASK = np.isin(seg["smpl_index"], list(TORSO_PART_IDS))
+            print("[Fusion] Torso mask loaded: {} / 6890 vertices".format(int(_TORSO_MASK.sum())))
+            return _TORSO_MASK
+        except Exception:
+            pass
+
+    for smpl_candidate in ("models/smpl/SMPL_NEUTRAL.pkl", "models/SMPL_NEUTRAL.pkl"):
+        p = Path(smpl_candidate)
+        if p.exists():
+            try:
+                with p.open("rb") as f:
+                    d = pickle.load(f, encoding="latin1")
+                if "weights" in d:
+                    part_ids = np.argmax(d["weights"], axis=1)
+                    _TORSO_MASK = np.isin(part_ids, [0, 3, 6, 9, 12, 13, 14])
+                    print("[Fusion] Torso mask extracted from SMPL weights: {} / 6890 vertices".format(int(_TORSO_MASK.sum())))
+                    return _TORSO_MASK
+            except Exception:
+                pass
+
+    print("[Fusion] Warning: Torso mask not available. Using full mesh.")
+    _TORSO_MASK = None
+    return None
 
 
 import trimesh
@@ -98,6 +107,9 @@ def compute_visibility_from_mesh_vertices(joints, verts, intrinsics=None, occlus
     torso_verts = verts[_TORSO_MASK] if _TORSO_MASK is not None and len(_TORSO_MASK) == len(verts) else verts
     if len(torso_verts) < 4:
         return visibility
+
+    if "pelvis" in joints:
+        torso_verts = torso_verts + (as_xyz(joints["pelvis"]) - torso_verts.mean(axis=0))
 
     try:
         hull_3d = ConvexHull(torso_verts)
@@ -149,7 +161,7 @@ def compute_harmonic_precision(
     except (TypeError, ValueError):
         import re
         m = re.search(r"[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?", str(alpha))
-        alpha = float(m.group(0)) if m else 0.001
+        alpha = float(m.group(0)) if m else 0.0
     try:
         beta = float(beta)
     except (TypeError, ValueError):
@@ -161,7 +173,7 @@ def compute_harmonic_precision(
     for child, parent in RIGID_BONES_RATIO.keys():
         neighbors.setdefault(child, []).append(parent)
         neighbors.setdefault(parent, []).append(child)
-    #Dự phòng sửa hàm này: https://docs.google.com/document/d/1yWfUcBP3AAykBXCK-aihj92ZplWtqjaSpFuPn-7N-eg/edit?usp=sharing
+
     def calc_P(cam, vis):
         P = {}
         for name in joint_names:
@@ -169,7 +181,8 @@ def compute_harmonic_precision(
                 P[name] = 0.0
                 continue
             C = 1.0 if vis.get(name, True) else 0.0
-            L = float(np.linalg.norm(as_xyz(cam[name])))
+            p_c = as_xyz(cam[name])
+            L = float(np.linalg.norm(p_c))
             P[name] = C / (1.0 + alpha * (L ** 2))
         return P
 

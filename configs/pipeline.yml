@@ -34,7 +34,7 @@ paths:
 fusion:
   enabled: true
   belief:
-    alpha: ${ALPHA:-0.001} # alpha: hệ số phạt theo khoảng cách 3D của joint, càng lớn thì joint xa camera càng bị giảm tin cậy mạnh hơn.
+    alpha: ${ALPHA:-0.0} # alpha: hệ số phạt theo khoảng cách 3D (0.0 để tránh thiên vị camera gần/xa)
     beta: ${BETA:-0.8} # beta: hệ số trộn tin cậy của láng giềng xương trong harmonic mean, càng lớn thì belief càng chịu ảnh hưởng bởi skeleton lân cận.
 
   occlusion:
@@ -58,19 +58,20 @@ fusion:
     threshold: 0.05 # Ngưỡng sai khác để coi một joint là inlier.
     max_combos: 500 # Số tổ hợp mẫu tối đa khi không thể liệt kê toàn bộ triplet.
 
-  # Cấu hình tối ưu hóa cho nhóm điểm F trong fusion.
+  # Cấu hình tối ưu hóa nhóm điểm F bằng PyTorch GPU Autograd + Adam (thay thế SLSQP CPU)
   optimization:
+    enabled: true
     regularization: true
     regularization_lambda: 1.0 # Hệ số phạt của proximity regularization.
     temporal_lambda: 2.0 # Hệ số phạt theo thời gian so với frame trước.
-    max_iter: 1000 # Số vòng lặp tối đa cho bộ giải SLSQP.
+    max_iter: 35 # Số vòng lặp tối đa cho PyTorch GPU Adam.
 
 learnable:
   enabled: false
   checkpoint: "models/best_ckpt.pth.tar"
 
 learnable_extra:
-  enabled: true
+  enabled: false
 
 visualization:
   enabled: false

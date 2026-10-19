@@ -63,7 +63,9 @@ def ransac_umeyama(cam1, cam2, names, threshold, max_combos, rng=None):
 
 
 def estimate_bidirectional_similarity(cam1, cam2, candidate_names, threshold, max_combos):
-    t12, anchor_names = ransac_umeyama(cam1, cam2, candidate_names, threshold=threshold, max_combos=max_combos)
+    torso_candidates = [n for n in candidate_names if n in {"pelvis", "neck", "left_shoulder", "right_shoulder", "left_hip", "right_hip"}]
+    use_names = torso_candidates if len(torso_candidates) >= 3 else candidate_names
+    t12, anchor_names = ransac_umeyama(cam1, cam2, use_names, threshold=threshold, max_combos=max_combos)
     if len(anchor_names) >= 3:
         src_21 = np.array([cam2[n] for n in anchor_names], dtype=float)
         dst_21 = np.array([cam1[n] for n in anchor_names], dtype=float)
@@ -82,11 +84,11 @@ def apply_confidence_corrections(cam1, cam2, k1_set, k2_set, t12, t21, h1=None, 
     for name in k1_set:
         p_from_1 = apply_similarity(cam1[name], t12)
         if uncertainty_gating and max_displacement is not None:
-            is_target_occluded = vis2 is not None and not vis2.get(name, True)
-            if not is_target_occluded:
-                disp = float(np.linalg.norm(p_from_1 - as_xyz(cam2[name])))
-                if disp > max_displacement:
-                    continue
+            disp = float(np.linalg.norm(p_from_1 - as_xyz(cam2[name])))
+            # ponytail: cap max displacement strictly even for occluded joints to prevent lever-arm blowup
+            limit = max_displacement if vis2 and vis2.get(name, True) else (max_displacement * 1.25)
+            if disp > limit:
+                continue
         if blend and h1 and h2:
             w1 = float(h1.get(name, 1.0))
             w2 = float(h2.get(name, 0.5))
@@ -97,11 +99,10 @@ def apply_confidence_corrections(cam1, cam2, k1_set, k2_set, t12, t21, h1=None, 
     for name in k2_set:
         p_from_2 = apply_similarity(cam2[name], t21)
         if uncertainty_gating and max_displacement is not None:
-            is_target_occluded = vis1 is not None and not vis1.get(name, True)
-            if not is_target_occluded:
-                disp = float(np.linalg.norm(p_from_2 - as_xyz(cam1[name])))
-                if disp > max_displacement:
-                    continue
+            disp = float(np.linalg.norm(p_from_2 - as_xyz(cam1[name])))
+            limit = max_displacement if vis1 and vis1.get(name, True) else (max_displacement * 1.25)
+            if disp > limit:
+                continue
         if blend and h1 and h2:
             w1 = float(h1.get(name, 0.5))
             w2 = float(h2.get(name, 1.0))
@@ -160,7 +161,7 @@ def apply_multiview_geometric_fusion(cam1, cam2, l_list, t12, t21, h1=None, h2=N
             continue
         v1 = vis1.get(name, True) if vis1 else True
         v2 = vis2.get(name, True) if vis2 else True
-        if not (v1 and v2):
+        if not (v1 or v2):
             continue
         p1 = as_xyz(cam1[name])
         p2 = as_xyz(cam2[name])
@@ -170,12 +171,18 @@ def apply_multiview_geometric_fusion(cam1, cam2, l_list, t12, t21, h1=None, h2=N
         disp1 = float(np.linalg.norm(p1 - p2_to_1))
         disp2 = float(np.linalg.norm(p2 - p1_to_2))
 
-        w1 = float(h1.get(name, 0.5)) if h1 else 0.5
-        w2 = float(h2.get(name, 0.5)) if h2 else 0.5
+        w1 = float(h1.get(name, 0.5)) if (h1 and v1) else 0.0
+        w2 = float(h2.get(name, 0.5)) if (h2 and v2) else 0.0
         tot = max(w1 + w2, 1e-6)
 
-        if disp1 <= max_disp:
+        # ponytail: only replace occluded joints within displacement limit; do not corrupt visible joints unless in tight consensus
+        if not v1 and v2 and disp1 <= max_disp:
+            cam1_fused[name] = p2_to_1
+        elif v1 and v2 and disp1 <= 0.08:
             cam1_fused[name] = (w1 * p1 + w2 * p2_to_1) / tot
-        if disp2 <= max_disp:
+
+        if not v2 and v1 and disp2 <= max_disp:
+            cam2_fused[name] = p1_to_2
+        elif v1 and v2 and disp2 <= 0.08:
             cam2_fused[name] = (w2 * p2 + w1 * p1_to_2) / tot
     return cam1_fused, cam2_fused
