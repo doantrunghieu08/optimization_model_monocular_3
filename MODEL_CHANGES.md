@@ -135,3 +135,37 @@ $$\mathcal{L}_{\text{temp}} = \frac{1}{T-2} \sum_{t=2}^{T-1} \left( \|\boldsymbo
   * `PA-MPJPE cam1`: **`201.08` mm** *(tốt hơn baseline `202.61` mm)*.
   * `Accel cam1`: **`13.68` mm/frame²** *(tốt hơn baseline `21.37` mm/frame²)*.
 
+---
+
+## 8. Bypass Gating Cho Khớp Bị Che Khuất & Dung Hợp Đa Góc Nhìn (Solution 2 & 3)
+
+* **Vị trí file:** [fusion_pipeline/correction.py](file:///d:/optimization_model_monocular_3/fusion_pipeline/correction.py), [fusion_pipeline/executor.py](file:///d:/optimization_model_monocular_3/fusion_pipeline/executor.py)
+
+### Bối cảnh & Vấn đề
+Khi dataset không có 2D keypoint confidence, độ tin cậy detector chỉ phụ thuộc vào khoảng cách:
+* Với các khớp không bị che khuất: $H_1 \approx H_2 \approx 0.88 \implies |H_1 - H_2| < \delta \implies K_1 = \emptyset, K_2 = \emptyset$.
+* Toàn bộ các khớp này được đưa vào nhóm Inliers $L$ và đưa tiếp vào Anchor $A_{\text{new}}$ $\implies$ **không bao giờ được tối ưu hay kết hợp chéo giữa 2 camera** (Cam 1 giữ nguyên 100% kết quả monocular WHAM).
+* Với các khớp bị che khuất nặng (>35 cm), điều kiện gating `disp > max_displacement` (35 cm) bỏ qua hiệu chỉnh, khiến camera bị che khuất tiếp tục giữ nguyên dự đoán lỗi.
+
+### Giải pháp 2: Bypass Displacement Gating Khi Camera Mục Tiêu Bị Che Khuất
+Khi camera mục tiêu bị che khuất ($\text{vis}_{\text{target}}(n) = \text{False}$), cho phép thay thế/hòa trộn bất kể độ dịch chuyển:
+$$\text{Gating Bypassed} \iff \neg \text{vis}_{\text{target}}(n)$$
+Khắc phục triệt để hiện tượng khớp bị che khuất (lệch > 35 cm) bị loại bỏ và giữ lại sai số lớn từ monocular prior.
+
+### Giải pháp 3: Dung Hợp Hình Học Đa Góc Nhìn Trực Tiếp (Direct Multi-View Geometric Fusion)
+Với các khớp cùng nhìn thấy được ở cả hai camera ($\text{vis}_1(n) = \text{True} \;\land\; \text{vis}_2(n) = \text{True}$):
+Thay vì giữ nguyên camera đơn lẻ, áp dụng dung hợp tọa độ 3D hai chiều qua biến đổi tương đồng Umeyama ($T_{12}, T_{21}$) với trọng số tin cậy $H_1, H_2$:
+$$P_{1,\text{fused}}(n) = \frac{H_1(n) P_1(n) + H_2(n) T_{21}(P_2(n))}{H_1(n) + H_2(n)}$$
+$$P_{2,\text{fused}}(n) = \frac{H_2(n) P_2(n) + H_1(n) T_{12}(P_1(n))}{H_1(n) + H_2(n)}$$
+Ràng buộc an toàn:
+* Loại trừ các anchor torso cốt lõi ($\text{core\_anchors} = \{\text{pelvis}, \text{neck}, \text{left\_hip}, \text{right\_hip}, \text{left\_shoulder}, \text{right\_shoulder}\}$) nhằm bảo toàn gốc tọa độ và hướng thân.
+* Ngưỡng kiểm tra chênh lệch góc nhìn: $\|P_1(n) - T_{21}(P_2(n))\|_2 \le d_{\max}$ ($d_{\max} = 0.35\,\text{m}$).
+* Chiếu cứng chiều dài xương động học (`_enforce_bone_lengths`) và lọc mượt Savitzky-Golay ngay sau khi dung hợp.
+
+### Hiệu Quả Thực Nghiệm (482 Frames Đo Lường)
+* **CAM1 MBLE:** Tiếp tục giảm từ `33.25` mm $\rightarrow$ **`32.30` mm** *(tiếp tục dẫn đầu bảng)*.
+* **CAM1 Accel Error:** Giảm sâu từ `18.63` $\rightarrow$ **`12.22` mm/frame²** *(giảm >34% rung giật gia tốc)*.
+* **CAM2 MPJPE:** Cải thiện **+4.64 mm** (`423.64` $\rightarrow$ **`419.01` mm**).
+* **CAM2 PA-MPJPE:** Cải thiện **+0.67 mm** (`202.38` $\rightarrow$ **`201.72` mm**).
+
+

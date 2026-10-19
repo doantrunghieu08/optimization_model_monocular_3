@@ -23,6 +23,7 @@ from fusion_pipeline.detector import as_xyz
 from fusion_pipeline.detector import make_raw_judgement_fallback
 from fusion_pipeline.correction import apply_rotation_mismatch_corrections
 from fusion_pipeline.correction import apply_confidence_corrections
+from fusion_pipeline.correction import apply_multiview_geometric_fusion
 from fusion_pipeline.optimization import optimize_f_points
 from fusion_pipeline import context
 import pdb
@@ -267,6 +268,8 @@ def run_phase3_pipeline(
         blend=blend,
         uncertainty_gating=uncertainty_gating,
         max_displacement=max_displacement,
+        vis1=vis1,
+        vis2=vis2,
     )
     cam1_corr, cam2_corr = apply_rotation_mismatch_corrections(
         cam1_corr,
@@ -282,6 +285,20 @@ def run_phase3_pipeline(
         t21,
         blend=blend,
         uncertainty_gating=uncertainty_gating,
+        max_displacement=max_displacement,
+        vis1=vis1,
+        vis2=vis2,
+    )
+    cam1_corr, cam2_corr = apply_multiview_geometric_fusion(
+        cam1_corr,
+        cam2_corr,
+        names,
+        t12,
+        t21,
+        h1=H1_all,
+        h2=H2_all,
+        vis1=vis1,
+        vis2=vis2,
         max_displacement=max_displacement,
     )
 

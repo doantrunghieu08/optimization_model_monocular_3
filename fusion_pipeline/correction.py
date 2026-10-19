@@ -73,15 +73,20 @@ def estimate_bidirectional_similarity(cam1, cam2, candidate_names, threshold, ma
     return t12, t21, anchor_names
 
 
-def apply_confidence_corrections(cam1, cam2, k1_set, k2_set, t12, t21, h1=None, h2=None, blend=True, uncertainty_gating=True, max_displacement=0.35):
+from fusion_pipeline.config import NON_REPLACEABLE_ANCHORS
+
+
+def apply_confidence_corrections(cam1, cam2, k1_set, k2_set, t12, t21, h1=None, h2=None, blend=True, uncertainty_gating=True, max_displacement=0.35, vis1=None, vis2=None):
     cam1_corr = dict(cam1)
     cam2_corr = dict(cam2)
     for name in k1_set:
         p_from_1 = apply_similarity(cam1[name], t12)
         if uncertainty_gating and max_displacement is not None:
-            disp = float(np.linalg.norm(p_from_1 - as_xyz(cam2[name])))
-            if disp > max_displacement:
-                continue
+            is_target_occluded = vis2 is not None and not vis2.get(name, True)
+            if not is_target_occluded:
+                disp = float(np.linalg.norm(p_from_1 - as_xyz(cam2[name])))
+                if disp > max_displacement:
+                    continue
         if blend and h1 and h2:
             w1 = float(h1.get(name, 1.0))
             w2 = float(h2.get(name, 0.5))
@@ -92,9 +97,11 @@ def apply_confidence_corrections(cam1, cam2, k1_set, k2_set, t12, t21, h1=None, 
     for name in k2_set:
         p_from_2 = apply_similarity(cam2[name], t21)
         if uncertainty_gating and max_displacement is not None:
-            disp = float(np.linalg.norm(p_from_2 - as_xyz(cam1[name])))
-            if disp > max_displacement:
-                continue
+            is_target_occluded = vis1 is not None and not vis1.get(name, True)
+            if not is_target_occluded:
+                disp = float(np.linalg.norm(p_from_2 - as_xyz(cam1[name])))
+                if disp > max_displacement:
+                    continue
         if blend and h1 and h2:
             w1 = float(h1.get(name, 0.5))
             w2 = float(h2.get(name, 1.0))
@@ -105,7 +112,7 @@ def apply_confidence_corrections(cam1, cam2, k1_set, k2_set, t12, t21, h1=None, 
     return cam1_corr, cam2_corr
 
 
-def apply_rotation_mismatch_corrections(cam1_corr, cam2_corr, cam1, cam2, m_set, k1_set, k2_set, h1, h2, t12, t21, blend=True, uncertainty_gating=True, max_displacement=0.35):
+def apply_rotation_mismatch_corrections(cam1_corr, cam2_corr, cam1, cam2, m_set, k1_set, k2_set, h1, h2, t12, t21, blend=True, uncertainty_gating=True, max_displacement=0.35, vis1=None, vis2=None):
     cam1_fixed = dict(cam1_corr)
     cam2_fixed = dict(cam2_corr)
     for name in m_set:
@@ -113,10 +120,11 @@ def apply_rotation_mismatch_corrections(cam1_corr, cam2_corr, cam1, cam2, m_set,
             continue
         w1 = float(h1.get(name, 0.5)) if h1 else 0.5
         w2 = float(h2.get(name, 0.5)) if h2 else 0.5
-        if w1 > w2:
+        if w1 >= w2:
             p_trans = apply_similarity(cam1[name], t12)
             if uncertainty_gating and max_displacement is not None:
-                if float(np.linalg.norm(p_trans - as_xyz(cam2[name]))) > max_displacement:
+                is_target_occluded = vis2 is not None and not vis2.get(name, True)
+                if not is_target_occluded and float(np.linalg.norm(p_trans - as_xyz(cam2[name]))) > max_displacement:
                     continue
             if blend:
                 alpha = w1 / max(w1 + w2, 1e-6)
@@ -126,7 +134,8 @@ def apply_rotation_mismatch_corrections(cam1_corr, cam2_corr, cam1, cam2, m_set,
         else:
             p_trans = apply_similarity(cam2[name], t21)
             if uncertainty_gating and max_displacement is not None:
-                if float(np.linalg.norm(p_trans - as_xyz(cam1[name]))) > max_displacement:
+                is_target_occluded = vis1 is not None and not vis1.get(name, True)
+                if not is_target_occluded and float(np.linalg.norm(p_trans - as_xyz(cam1[name]))) > max_displacement:
                     continue
             if blend:
                 alpha = w2 / max(w1 + w2, 1e-6)
@@ -134,3 +143,39 @@ def apply_rotation_mismatch_corrections(cam1_corr, cam2_corr, cam1, cam2, m_set,
             else:
                 cam1_fixed[name] = p_trans
     return cam1_fixed, cam2_fixed
+
+
+def apply_multiview_geometric_fusion(cam1, cam2, l_list, t12, t21, h1=None, h2=None, vis1=None, vis2=None, max_displacement=0.50):
+    cam1_fused = dict(cam1)
+    cam2_fused = dict(cam2)
+    if t12 is None or t21 is None:
+        return cam1_fused, cam2_fused
+    if np.allclose(t21[1], np.eye(3)) and np.allclose(t21[2], np.zeros(3)):
+        return cam1_fused, cam2_fused
+
+    core_anchors = NON_REPLACEABLE_ANCHORS | {"pelvis", "neck"}
+    max_disp = 0.35 if max_displacement is None else float(max_displacement)
+    for name in l_list:
+        if name in core_anchors:
+            continue
+        v1 = vis1.get(name, True) if vis1 else True
+        v2 = vis2.get(name, True) if vis2 else True
+        if not (v1 and v2):
+            continue
+        p1 = as_xyz(cam1[name])
+        p2 = as_xyz(cam2[name])
+        p2_to_1 = apply_similarity(p2, t21)
+        p1_to_2 = apply_similarity(p1, t12)
+
+        disp1 = float(np.linalg.norm(p1 - p2_to_1))
+        disp2 = float(np.linalg.norm(p2 - p1_to_2))
+
+        w1 = float(h1.get(name, 0.5)) if h1 else 0.5
+        w2 = float(h2.get(name, 0.5)) if h2 else 0.5
+        tot = max(w1 + w2, 1e-6)
+
+        if disp1 <= max_disp:
+            cam1_fused[name] = (w1 * p1 + w2 * p2_to_1) / tot
+        if disp2 <= max_disp:
+            cam2_fused[name] = (w2 * p2 + w1 * p1_to_2) / tot
+    return cam1_fused, cam2_fused
