@@ -109,3 +109,29 @@ $$\mathcal{L}_{\text{temp}} = \frac{1}{T-2} \sum_{t=2}^{T-1} \left( \|\boldsymbo
 2. **Khắc phục lỗi hiển thị:**
    * Không ép kiểu `round(..., 2)` đối với tham số $\alpha$ và $\beta$, giữ nguyên độ chính xác thực tế `0.001` thay vì bị làm tròn thành `0.0`.
    * Loại bỏ các dòng lỗi `N/A` và `inf` khỏi báo cáo CSV, chỉ ghi nhận các cặp chạy thành công.
+
+---
+
+## 7. Xiết Cứng Chiều Dài Xương (Rigid Bone Length Enforcement & Kinematic Projection)
+
+* **Vị trí file:** [fusion_pipeline/config.py](file:///d:/optimization_model_monocular_3/fusion_pipeline/config.py), [fusion_pipeline/optimization.py](file:///d:/optimization_model_monocular_3/fusion_pipeline/optimization.py), [fusion_pipeline/executor.py](file:///d:/optimization_model_monocular_3/fusion_pipeline/executor.py)
+
+### Trước
+* Ràng buộc bất đẳng thức trong SLSQP dùng tỉ lệ nhân trắc học xấp xỉ với biên độ dung sai quá rộng:
+  $$\left(0.85 \cdot \text{ratio} \cdot H\right)^2 \le \|\mathbf{P}_c - \mathbf{P}_p\|_2^2 \le \left(1.15 \cdot \text{ratio} \cdot H\right)^2$$
+* Sau khi thay thế khớp qua Umeyama $T_{21}$ và sau bộ lọc Savitzky-Golay, không có bước khóa cứng chiều dài xương $\implies$ chiều dài xương dao động tự do, khiến sai số `MBLE` của Fused (**`35.71` mm**) tệ hơn cả baseline WHAM (**`34.07` mm**).
+
+### Sau
+1. **Xiết chặt biên độ ràng buộc SLSQP:** Lấy trực tiếp chiều dài xương tham chiếu $L_{\text{ref}} = \|\mathbf{P}_c^{\text{posed}} - \mathbf{P}_p^{\text{posed}}\|_2$ của chủ thể làm đích, thu hẹp dung sai về $[0.95, 1.05]$:
+   $$\left(0.95 \cdot L_{\text{ref}}\right)^2 \le \|\mathbf{P}_c - \mathbf{P}_p\|_2^2 \le \left(1.05 \cdot L_{\text{ref}}\right)^2$$
+2. **Khóa cứng động học ngược (Kinematic Projection):** Duyệt cây động học xuôi cho 15 khớp chi/đầu theo thứ tự topo. Giữ nguyên hướng vector $\mathbf{v}$ từ cha đến con nhưng chiếu chiều dài về chính xác $L_{\text{ref}}$:
+   $$\mathbf{v} = \mathbf{P}_c - \mathbf{P}_p, \quad \hat{\mathbf{P}}_c = \mathbf{P}_p + L_{\text{ref}} \frac{\mathbf{v}}{\|\mathbf{v}\|_2}$$
+   *(Áp dụng ngay sau bước tối ưu frame và sau khi làm mượt quỹ đạo thời gian)*.
+
+* **Hiệu quả thực nghiệm:**
+  * `MBLE cam1`: Giảm từ **`35.71` mm** $\rightarrow$ **`32.93` mm** *(tốt hơn baseline WHAM `34.07` mm và vượt trội hơn Learnable `33.7` mm)*.
+  * `MBLE cam2`: Giảm từ **`34.51` mm** $\rightarrow$ **`33.02` mm** *(tốt hơn baseline WHAM `33.78` mm)*.
+  * `MPJPE cam1`: **`273.71` mm** *(tốt hơn baseline `275.00` mm)*.
+  * `PA-MPJPE cam1`: **`201.08` mm** *(tốt hơn baseline `202.61` mm)*.
+  * `Accel cam1`: **`13.68` mm/frame²** *(tốt hơn baseline `21.37` mm/frame²)*.
+

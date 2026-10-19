@@ -131,7 +131,11 @@ def optimize_f_points(data, anchors, f_list, conf1=None, conf2=None, vis1=None, 
     for (child, parent), ratio in RIGID_BONES_RATIO.items():
         if child not in cam1 or parent not in cam1 or (child not in f_list and parent not in f_list):
             continue
-        target1 = ratio * dyn_scale_cam1
+        if child in cam1 and parent in cam1:
+            ref_len1 = float(np.linalg.norm(as_xyz(cam1[child]) - as_xyz(cam1[parent])))
+            target1 = ref_len1 if ref_len1 > 0.05 else (ratio * dyn_scale_cam1)
+        else:
+            target1 = ratio * dyn_scale_cam1
         lower_sq1 = (BONE_LENGTH_MIN_SCALE * target1) ** 2
         upper_sq1 = (BONE_LENGTH_MAX_SCALE * target1) ** 2
 
@@ -152,7 +156,11 @@ def optimize_f_points(data, anchors, f_list, conf1=None, conf2=None, vis1=None, 
         constraints.append({"type": "ineq", "fun": constr_lower1})
         constraints.append({"type": "ineq", "fun": constr_upper1})
 
-        target2 = ratio * dyn_scale_cam2
+        if child in cam2 and parent in cam2:
+            ref_len2 = float(np.linalg.norm(as_xyz(cam2[child]) - as_xyz(cam2[parent])))
+            target2 = ref_len2 if ref_len2 > 0.05 else (ratio * dyn_scale_cam2)
+        else:
+            target2 = ratio * dyn_scale_cam2
         lower_sq2 = (BONE_LENGTH_MIN_SCALE * target2) ** 2
         upper_sq2 = (BONE_LENGTH_MAX_SCALE * target2) ** 2
 

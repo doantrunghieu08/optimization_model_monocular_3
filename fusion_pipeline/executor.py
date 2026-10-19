@@ -329,7 +329,44 @@ def run_phase3_pipeline(
     #end of def run_phase3_pipeline
 
 
-def _apply_temporal_smoothing(keypoints_dir: Path, window_length: int = 5, polyorder: int = 2) -> None:
+KINEMATIC_CHAINS = (
+    ("head", "neck"),
+    ("left_elbow", "left_shoulder"),
+    ("right_elbow", "right_shoulder"),
+    ("left_wrist", "left_elbow"),
+    ("right_wrist", "right_elbow"),
+    ("left_hand", "left_wrist"),
+    ("right_hand", "right_wrist"),
+    ("left_knee", "left_hip"),
+    ("right_knee", "right_hip"),
+    ("left_ankle", "left_knee"),
+    ("right_ankle", "right_knee"),
+    ("left_toe", "left_ankle"),
+    ("left_foot", "left_ankle"),
+    ("right_toe", "right_ankle"),
+    ("right_foot", "right_ankle"),
+)
+
+
+def _enforce_bone_lengths(points: dict, ref_points: dict) -> None:
+    # ponytail: minimal forward kinematic bone projection, locks lengths to SMPL baseline
+    for child, parent in KINEMATIC_CHAINS:
+        if child not in points or parent not in points or child not in ref_points or parent not in ref_points:
+            continue
+        p_c = np.asarray(points[child], dtype=float)
+        p_p = np.asarray(points[parent], dtype=float)
+        r_c = np.asarray(ref_points[child], dtype=float)
+        r_p = np.asarray(ref_points[parent], dtype=float)
+        l_ref = float(np.linalg.norm(r_c - r_p))
+        if l_ref < 1e-4:
+            continue
+        v = p_c - p_p
+        dist = float(np.linalg.norm(v))
+        if dist > 1e-6:
+            points[child] = [round(float(x), 6) for x in (p_p + v * (l_ref / dist))]
+
+
+def _apply_temporal_smoothing(keypoints_dir: Path, pose_dir: Path | None = None, window_length: int = 5, polyorder: int = 2) -> None:
     try:
         from scipy.signal import savgol_filter
     except ImportError:
@@ -356,9 +393,21 @@ def _apply_temporal_smoothing(keypoints_dir: Path, window_length: int = 5, polyo
             for j_idx, j_name in enumerate(joint_names):
                 d[cam][j_name] = [round(float(x), 6) for x in smoothed[t, j_idx]]
 
+    if pose_dir and pose_dir.exists():
+        pose_files = sorted(pose_dir.glob("*.json"), key=_frame_index)
+        pose_map = {_frame_index(pf): read_json(pf) for pf in pose_files}
+        for f, d in zip(files, all_data):
+            f_idx = _frame_index(f)
+            ref_d = pose_map.get(f_idx)
+            if not ref_d:
+                continue
+            for cam in ("camera1", "camera2"):
+                if cam in d and cam in ref_d:
+                    _enforce_bone_lengths(d[cam], ref_d[cam])
+
     for f, d in zip(files, all_data):
         write_json(f, d)
-    print(f"[Fusion] Applied Savitzky-Golay smoothing (window={w_len}, polyorder={polyorder})")
+    print(f"[Fusion] Applied Savitzky-Golay smoothing (window={w_len}, polyorder={polyorder}) with rigid bone projection")
 
 
 def run_fusion(config: dict) -> None:
@@ -500,6 +549,9 @@ def run_fusion(config: dict) -> None:
             "camera1": result.get("optimized", {}).get("camera1", {}),
             "camera2": result.get("optimized", {}).get("camera2", {}),
         }
+        for cam_k in ("camera1", "camera2"):
+            if cam_k in fused_keypoints and cam_k in data:
+                _enforce_bone_lengths(fused_keypoints[cam_k], data[cam_k])
         fused_metadata = {k: v for k, v in result.items() if k not in ("camera1", "camera2", "optimized")}
         write_json(output_dir / "keypoints3d" / out_name, fused_keypoints)
         write_json(output_dir / "metadata" / out_name, fused_metadata)
@@ -508,6 +560,7 @@ def run_fusion(config: dict) -> None:
     if smoothing_cfg.get("enabled", True):
         _apply_temporal_smoothing(
             output_dir / "keypoints3d",
+            pose_dir=input_dir / "keypoints3d",
             window_length=int(smoothing_cfg.get("window_length", 5)),
             polyorder=int(smoothing_cfg.get("polyorder", 2)),
         )
