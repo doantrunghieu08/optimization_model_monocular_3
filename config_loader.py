@@ -195,6 +195,11 @@ def validate_config(config):
         if key not in occlusion_cfg or occlusion_cfg[key] is None:
             raise ValueError("Missing config fusion occlusion parameter: fusion.occlusion.{}".format(key))
 
+    gating_cfg = fusion_cfg.get("uncertainty_gating", {})
+    blend_strength = float(gating_cfg.get("consensus_blend_strength", 0.25)) if isinstance(gating_cfg, dict) else 0.25
+    if not 0.0 <= blend_strength <= 1.0:
+        raise ValueError("fusion.uncertainty_gating.consensus_blend_strength must be between 0 and 1")
+
     ransac_cfg = fusion_cfg["ransac"]
     for key in ("threshold", "max_combos"):
         if key not in ransac_cfg or ransac_cfg[key] is None:
@@ -208,6 +213,8 @@ def validate_config(config):
     for key in ("pa_mpjpe", "mpjpe", "pck"):
         if key not in metrics_cfg or metrics_cfg[key] is None:
             raise ValueError("Missing config evaluation metric flag: evaluation.metrics.{}".format(key))
+    if metrics_cfg["pck"] and float(metrics_cfg.get("pck_threshold_mm", 0)) <= 0:
+        raise ValueError("evaluation.metrics.pck_threshold_mm must be positive when PCK is enabled")
 
 """## 5. chuẩn hóa config để chạy ổn định
 

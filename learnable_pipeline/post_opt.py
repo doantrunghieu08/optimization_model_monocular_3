@@ -55,7 +55,7 @@ def post_optimize_smpl_sequence(
 
     # Dùng desc="..." để đặt tên cho thanh tiến trình
     # leave=False để thanh tiến trình biến mất sau khi chạy xong (đỡ rác màn hình terminal)
-    for step in tqdm(range(iters), desc="Post-optimizing SMPL", leave=False):
+    for step in tqdm(range(iters + 1), desc="Post-optimizing SMPL", leave=False):
         optimizer.zero_grad()
 
         root_orient = pose_var[:, :3]
@@ -92,16 +92,18 @@ def post_optimize_smpl_sequence(
         if step == 0:
             initial_loss = loss.item()
 
-        loss.backward()
-        optimizer.step()
-
         current_loss = loss.item()
         if not np.isfinite(current_loss):
             raise ValueError("Non-finite loss during post-optimization")
 
         if current_loss < best_loss:
             best_loss = current_loss
-            best_pose = pose_var.detach().cpu().numpy()
-            best_trans = trans_var.detach().cpu().numpy()
+            best_pose = pose_var.detach().cpu().numpy().copy()
+            best_trans = trans_var.detach().cpu().numpy().copy()
+
+        if step == iters:
+            break
+        loss.backward()
+        optimizer.step()
 
     return best_pose, best_trans, initial_loss, best_loss

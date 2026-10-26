@@ -33,8 +33,6 @@ def main():
     stage = CONFIG.get('runtime', {}).get('stage', 'visualization')
     print(f"[Config] runtime.stage = {stage}")
 
-    learnable_checkpoint = WORKSPACE_DIR / "models" / "best_ckpt.pth.tar"
-    CONFIG.setdefault("learnable", {})["checkpoint"] = str(learnable_checkpoint)
     CONFIG.setdefault("paths", {})["preprocess_output_dir"] = CONFIG["paths"].get("preprocess_output_dir", str(WORKSPACE_DIR / "output" / "preprocess_results"))
     CONFIG.setdefault("paths", {})["learnable_extra_output_dir"] = CONFIG["paths"].get("learnable_extra_output_dir", str(WORKSPACE_DIR / "output" / "learnable_extra_results"))
     CONFIG.setdefault("learnable_extra", {})["enabled"] = bool(CONFIG.get("learnable_extra", {}).get("enabled", False))
@@ -58,12 +56,12 @@ def main():
                     "-pix_fmt", "yuv420p",
                     "-an",
                     str(output_video)
-                ])
+                ], check=True)
                 print(f"Created {output_video.name}")
 
     print("\n--- Packaging Evaluation Results ---")
     evaluation_dir = Path(CONFIG["paths"]["evaluation_output_dir"])
-    if evaluation_dir.exists():
+    if CONFIG.get("evaluation", {}).get("enabled", False) and evaluation_dir.exists():
         output_zip = str(evaluation_dir.parent / "evaluation_results")
         shutil.make_archive(
             base_name=output_zip,
@@ -73,7 +71,7 @@ def main():
         )
         print(f"Created: {output_zip}.zip")
     else:
-        print("No evaluation output found to zip.")
+        print("Evaluation disabled or no evaluation output found to zip.")
 
 if __name__ == "__main__":
     main()

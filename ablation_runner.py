@@ -53,7 +53,7 @@ def parse_csv_results(eval_dir: Path, prefix: str = "fused") -> dict:
             header = next(reader)
             joint_cols = {}
             for i, col in enumerate(header):
-                if col.startswith(f"{pref}_") and col.endswith("_mm") and "priority" not in col:
+                if col.startswith(f"{pref}_") and col.endswith("_mm") and "priority" not in col and not col.endswith(("_occ_mm", "_vis_mm")):
                     j_name = col[len(f"{pref}_") : -len("_mm")]
                     joint_cols[j_name] = i
             for row in reader:
@@ -192,8 +192,8 @@ def run_ablation_suite(segment="seg_4"):
     if segment == "seg_4":
         base_cfg["inputs"]["cam1_pkl"] = "input/Seq1/Segments/wham_output_video_0_seg_4/video_0_seg_4.pkl"
         base_cfg["inputs"]["cam2_pkl"] = "input/Seq1/Segments/wham_output_video_2_seg_4/video_2_seg_4.pkl"
-        base_cfg["inputs"]["camera1_video"] = "input/Seq1/video_0.avi"
-        base_cfg["inputs"]["camera2_video"] = "input/Seq1/video_2.avi"
+        base_cfg["inputs"]["camera1_video"] = "input/Seq1/Segments/wham_output_video_0_seg_4/output.mp4"
+        base_cfg["inputs"]["camera2_video"] = "input/Seq1/Segments/wham_output_video_2_seg_4/output.mp4"
         base_cfg["inputs"]["ground_truth_dir"] = "input/Seq1/GT"
 
     base_cfg["visualization"]["enabled"] = False
@@ -237,7 +237,7 @@ def run_ablation_suite(segment="seg_4"):
             "overrides": {
                 "fusion": {
                     "occlusion": {"enabled": False},
-                    "uncertainty_gating": {"enabled": False},
+                    "uncertainty_gating": {"enabled": True, "max_displacement": 0.35, "min_confidence": 0.1},
                     "optimization": {"temporal_lambda": 2.0, "regularization": True},
                     "blend": True,
                     "conflict_detection": True,

@@ -12,8 +12,6 @@ from fusion_pipeline.config import ORIENTATION_EPSILON
 from fusion_pipeline.config import RIGID_BONES_RATIO
 from fusion_pipeline.config import OCCLUSION_CHECK_JOINTS
 from fusion_pipeline.config import CONFIDENCE_DELTA_CAP
-from fusion_pipeline import context
-
 _TORSO_MASK = None
 
 
@@ -55,38 +53,69 @@ def get_orientation_flag(joints, epsilon=ORIENTATION_EPSILON):
     return flags
 
 
-def load_torso_mask(seg_path):
+def load_torso_mask(seg_path=None):
     global _TORSO_MASK
+    # 1. Prefer precomputed torso vertex indices
+    torso_idx_path = Path("models/torso_indices.npy")
+    if torso_idx_path.exists():
+        try:
+            indices = np.load(torso_idx_path)
+            mask = np.zeros(6890, dtype=bool)
+            mask[indices] = True
+            _TORSO_MASK = mask
+            print(f"[Fusion] Torso mask loaded from {torso_idx_path}: {int(_TORSO_MASK.sum())} / 6890 vertices")
+            return _TORSO_MASK
+        except Exception:
+            pass
+
+    # 2. Check segmentation mapping pkl
     if seg_path and Path(seg_path).exists():
         try:
             with Path(seg_path).open("rb") as f:
                 seg = pickle.load(f, encoding="latin1")
             _TORSO_MASK = np.isin(seg["smpl_index"], list(TORSO_PART_IDS))
-            print("[Fusion] Torso mask loaded: {} / 6890 vertices".format(int(_TORSO_MASK.sum())))
+            print("[Fusion] Torso mask loaded from segmentation: {} / 6890 vertices".format(int(_TORSO_MASK.sum())))
             return _TORSO_MASK
         except Exception:
             pass
 
+    # 3. Fallback: extract directly via smplx
     for smpl_candidate in ("models/smpl/SMPL_NEUTRAL.pkl", "models/SMPL_NEUTRAL.pkl"):
         p = Path(smpl_candidate)
         if p.exists():
             try:
-                with p.open("rb") as f:
-                    d = pickle.load(f, encoding="latin1")
-                if "weights" in d:
-                    part_ids = np.argmax(d["weights"], axis=1)
-                    _TORSO_MASK = np.isin(part_ids, [0, 3, 6, 9, 12, 13, 14])
-                    print("[Fusion] Torso mask extracted from SMPL weights: {} / 6890 vertices".format(int(_TORSO_MASK.sum())))
-                    return _TORSO_MASK
+                import inspect
+                if not hasattr(inspect, "getargspec"):
+                    inspect.getargspec = inspect.getfullargspec
+                for t in ["bool", "int", "float", "complex", "object", "unicode", "str"]:
+                    if not hasattr(np, t):
+                        setattr(np, t, getattr(__builtins__, t, None))
+                import smplx
+                smpl = smplx.create(str(p.parent), model_type="smpl", gender="neutral")
+                weights = smpl.lbs_weights.numpy()
+                part_ids = np.argmax(weights, axis=1)
+                _TORSO_MASK = np.isin(part_ids, [0, 3, 6, 9, 12, 13, 14])
+                print("[Fusion] Torso mask extracted from smplx weights: {} / 6890 vertices".format(int(_TORSO_MASK.sum())))
+                np.save("models/torso_indices.npy", np.where(_TORSO_MASK)[0])
+                return _TORSO_MASK
             except Exception:
                 pass
 
-    print("[Fusion] Warning: Torso mask not available. Using full mesh.")
+    print("[Fusion] Warning: Torso mask not available. Disabling occlusion ray-casting to prevent false positives.")
     _TORSO_MASK = None
     return None
 
 
 import trimesh
+
+
+def require_ray_casting_backend() -> None:
+    try:
+        import rtree  # noqa: F401
+    except ImportError as exc:
+        raise RuntimeError(
+            "fusion.occlusion.enabled requires the 'rtree' package; install requirements.txt"
+        ) from exc
 
 
 def compute_visibility_from_mesh_vertices(joints, verts, intrinsics=None, occlusion_tau=0.05):
@@ -98,18 +127,15 @@ def compute_visibility_from_mesh_vertices(joints, verts, intrinsics=None, occlus
     the joint is marked as occluded (visibility = False).
     """
     visibility = {name: True for name in joints.keys()}
-    if verts is None:
+    if verts is None or _TORSO_MASK is None:
         return visibility
     verts = np.asarray(verts, dtype=float)
-    if verts.ndim != 2 or verts.shape[0] < 4:
+    if verts.ndim != 2 or len(verts) != len(_TORSO_MASK):
         return visibility
 
-    torso_verts = verts[_TORSO_MASK] if _TORSO_MASK is not None and len(_TORSO_MASK) == len(verts) else verts
+    torso_verts = verts[_TORSO_MASK]
     if len(torso_verts) < 4:
         return visibility
-
-    if "pelvis" in joints:
-        torso_verts = torso_verts + (as_xyz(joints["pelvis"]) - torso_verts.mean(axis=0))
 
     try:
         hull_3d = ConvexHull(torso_verts)
@@ -133,15 +159,15 @@ def compute_visibility_from_mesh_vertices(joints, verts, intrinsics=None, occlus
 
     try:
         locs, index_ray, _ = mesh.ray.intersects_location(ray_origins[valid], ray_dirs[valid])
-        if len(locs) > 0:
-            valid_indices = np.where(valid)[0]
-            for loc, ray_i in zip(locs, index_ray):
-                orig_idx = valid_indices[ray_i]
-                hit_dist = float(np.linalg.norm(loc))
-                if hit_dist < (dists[orig_idx] - occlusion_tau):
-                    visibility[check_names[orig_idx]] = False
-    except Exception:
-        pass
+    except Exception as exc:
+        raise RuntimeError("Occlusion ray-casting failed") from exc
+    if len(locs) > 0:
+        valid_indices = np.where(valid)[0]
+        for loc, ray_i in zip(locs, index_ray):
+            orig_idx = valid_indices[ray_i]
+            hit_dist = float(np.linalg.norm(loc))
+            if hit_dist < (dists[orig_idx] - occlusion_tau):
+                visibility[check_names[orig_idx]] = False
 
     return visibility
 
@@ -199,8 +225,6 @@ def compute_harmonic_precision(
     H1, H2 = calc_H(P1), calc_H(P2)
     weights = {name: (H1[name] + H2[name]) / 2.0 for name in joint_names}
     # Cập nhật giá trị vào biến context lưu ngữ cảnh
-    context.current_H1 = H1
-    context.current_H2 = H2
     return weights, H1, H2
 
 

@@ -19,6 +19,7 @@ from keypoints_map import load_keypoints3d_map
 from learnable_pipeline.post_opt import post_optimize_smpl_sequence
 from json_io import write_json
 from compat import load_joblib_compat
+from preprocess_pipeline.calib import resolve_selected_offset_from_camera_profile
 
 LEARNABLE_VENDOR_ROOT = Path(__file__).resolve().parent.parent / "_learnable_backend"
 
@@ -150,23 +151,29 @@ def _extract_person_payload(wham_data):
                 return value
     return None
 
-def _truncate_person(person: dict, frame_count: int) -> dict:
+def _slice_person(person: dict, start: int, frame_count: int) -> dict:
+    total_frames = int(np.asarray(person["pose"]).shape[0])
+    end = start + frame_count
+    if start < 0 or end > total_frames:
+        raise ValueError(f"WHAM slice [{start}:{end}] exceeds {total_frames} frames")
     out = {}
     for key, value in person.items():
-        if isinstance(value, np.ndarray) and value.ndim > 0 and value.shape[0] > frame_count:
-            out[key] = value[:frame_count].copy()
+        if isinstance(value, np.ndarray) and value.ndim > 0 and value.shape[0] == total_frames:
+            out[key] = value[start:end].copy()
         else:
             out[key] = value
     return out
 
-def load_wham_data(cam1_pkl: Path, cam2_pkl: Path, frame_count: int) -> dict:
+def load_wham_data(cam1_pkl: Path, cam2_pkl: Path, frame_count: int, offset: int) -> dict:
     person_1 = _extract_person_payload(load_joblib_compat(cam1_pkl))
     person_2 = _extract_person_payload(load_joblib_compat(cam2_pkl))
     if person_1 is None or person_2 is None:
         raise ValueError("Cannot extract person payload from WHAM PKL files")
+    cam1_start = max(0, -int(offset))
+    cam2_start = max(0, int(offset))
     return {
-        "camera1": _truncate_person(person_1, frame_count),
-        "camera2": _truncate_person(person_2, frame_count),
+        "camera1": _slice_person(person_1, cam1_start, frame_count),
+        "camera2": _slice_person(person_2, cam2_start, frame_count),
     }
 
 def betas_per_frame(person_data: dict, frame_count: int) -> np.ndarray:
@@ -523,7 +530,9 @@ def _run_learnable_smplify_stage(
             learnable_cfg["checkpoint"] = fallback_checkpoint
         else:
             raise ValueError("Missing config parameter: learnable.checkpoint")
-    learnable_cfg["checkpoint"] = str(project_root / "models" / "best_ckpt.pth.tar")
+    checkpoint_path = Path(learnable_cfg["checkpoint"])
+    if not checkpoint_path.is_absolute():
+        learnable_cfg["checkpoint"] = str(project_root / checkpoint_path)
     if runtime_cfg["clean_output"]:
         _clean_learnable_output(output_dir, output_file_prefix)
     else:
@@ -541,7 +550,8 @@ def _run_learnable_smplify_stage(
     frame_count = len(judgement_results)
     frame_ids = [int(frame.get("frame_id", idx + 1)) for idx, frame in enumerate(judgement_results)]
 
-    wham_data = load_wham_data(cam1_pkl, cam2_pkl, frame_count)
+    offset, _ = resolve_selected_offset_from_camera_profile(config)
+    wham_data = load_wham_data(cam1_pkl, cam2_pkl, frame_count, offset)
     net, normalize_kp = load_netbody25(learnable_cfg, device)
 
     map_data = load_keypoints3d_map(config["paths"]["keypoints3d_map"])

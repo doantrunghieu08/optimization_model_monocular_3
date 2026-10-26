@@ -284,8 +284,12 @@ def optimize_sequence_gpu(
     delta1 = torch.zeros_like(p1_init, requires_grad=True)
     delta2 = torch.zeros_like(p2_init, requires_grad=True)
 
+    torso_anchors = [name_to_idx[n] for n in ("pelvis", "neck", "left_shoulder", "right_shoulder", "left_hip", "right_hip") if n in name_to_idx]
+    anchor_idx_t = torch.tensor(torso_anchors, device=device, dtype=torch.long)
+
     optimizer = torch.optim.Adam([delta1, delta2], lr=0.005)
     opt_cfg = (config or {}).get("fusion", {}).get("optimization", {})
+    regularization_enabled = bool(opt_cfg.get("regularization", True))
     reg_lambda = float(opt_cfg.get("regularization_lambda", 1.0))
     temp_lambda = float(opt_cfg.get("temporal_lambda", 2.0))
     n_iters = min(int(opt_cfg.get("max_iter", 35)), 50)
@@ -305,11 +309,19 @@ def optimize_sequence_gpu(
             loss_bone = loss_bone + (torch.relu(low1[b_idx] - d1_sq) ** 2 + torch.relu(d1_sq - up1[b_idx]) ** 2).mean()
             loss_bone = loss_bone + (torch.relu(low2[b_idx] - d2_sq) ** 2 + torch.relu(d2_sq - up2[b_idx]) ** 2).mean()
 
+        # ponytail: multi-view invariant distance loss forces inter-joint consistency between camera frames
+        d1 = torch.cdist(p1, p1[:, anchor_idx_t])
+        d2 = torch.cdist(p2, p2[:, anchor_idx_t])
+        diff_mv = torch.abs(d1 - d2)
+        huber_mv = torch.where(diff_mv <= 0.05, 0.5 * (diff_mv ** 2), 0.05 * (diff_mv - 0.025))
+        w_mv = torch.clamp((c1_t + c2_t) / 2.0, min=0.0).unsqueeze(-1)
+        loss_mv = (w_mv * huber_mv).mean()
+
         accel1 = p1[2:] - 2.0 * p1[1:-1] + p1[:-2]
         accel2 = p2[2:] - 2.0 * p2[1:-1] + p2[:-2]
         loss_accel = (accel1 ** 2).mean() + (accel2 ** 2).mean()
 
-        total_loss = reg_lambda * loss_prox + 50.0 * loss_bone + temp_lambda * 2.5 * loss_accel
+        total_loss = (reg_lambda * loss_prox if regularization_enabled else 0.0) + 50.0 * loss_bone + 15.0 * loss_mv + temp_lambda * 2.5 * loss_accel
         total_loss.backward()
         optimizer.step()
 

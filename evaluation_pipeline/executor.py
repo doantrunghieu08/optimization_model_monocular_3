@@ -72,15 +72,17 @@ def _compute_pa_mpjpe(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray],
     norm_T = np.linalg.norm(T_c)
     
     if norm_P < 1e-6 or norm_T < 1e-6:
-        return 0.0, {k: 0.0 for k in keys}
+        raise ValueError("Cannot compute PA-MPJPE for a degenerate pose")
 
     P_c_unit = P_c / norm_P
     T_c_unit = T_c / norm_T
 
     U, s, Vt = np.linalg.svd(np.dot(T_c_unit.T, P_c_unit))
-    R = np.dot(U, Vt)
+    correction = np.eye(3)
+    correction[-1, -1] = np.sign(np.linalg.det(np.dot(U, Vt)))
+    R = np.dot(np.dot(U, correction), Vt)
     
-    scale = np.sum(s) * (norm_T / norm_P)
+    scale = np.sum(s * np.diag(correction)) * (norm_T / norm_P)
     P_aligned = np.dot(P_c, R.T) * scale + np.mean(T, axis=0)
 
     errors = []
@@ -92,17 +94,19 @@ def _compute_pa_mpjpe(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray],
         
     return float(np.mean(errors)), errors_dict
 
-def _compute_pck_mm(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], keys: list[str]) -> tuple[float, dict[str, float]]:
-    # PCK-mm is mean Euclidean distance (absolute, no root align)
-    errors = []
-    errors_dict = {}
+def _compute_pck(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], keys: list[str], threshold_mm: float) -> tuple[float, dict[str, float]]:
+    pred_root = _resolve_root_joint(pred)
+    truth_root = _resolve_root_joint(truth)
+    correct = []
+    correct_dict = {}
     for k in keys:
-        p = pred[k]
-        t = truth[k]
+        p = pred[k] - pred_root
+        t = truth[k] - truth_root
         err = float(np.linalg.norm(p - t) * 1000.0)
-        errors.append(err)
-        errors_dict[k] = err
-    return float(np.mean(errors)), errors_dict
+        value = 100.0 if err <= threshold_mm else 0.0
+        correct.append(value)
+        correct_dict[k] = value
+    return float(np.mean(correct)), correct_dict
 
 
 def _compute_mble(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], bones: list[list[str]]) -> tuple[float, dict]:
@@ -290,6 +294,7 @@ def run_evaluation(config: dict) -> None:
         "PA-MPJPE": bool(metrics_cfg["pa_mpjpe"]),
         "PCK": bool(metrics_cfg["pck"]),
     }
+    pck_threshold_mm = float(metrics_cfg.get("pck_threshold_mm", 150.0))
     enabled_metrics = [name for name, enabled in metric_enabled.items() if enabled]
     mble_enabled = bool(metrics_cfg.get("mble", False))
     accel_enabled = bool(metrics_cfg.get("accel", False))
@@ -383,10 +388,18 @@ def run_evaluation(config: dict) -> None:
             
         evaluated_frames.append(frame)
 
+        fused_metadata_path = Path(paths.get("fused_output_dir", "")) / "metadata" / f"fused_data_{frame}.json"
+        fused_meta = _load_json(fused_metadata_path) if fused_metadata_path.exists() else {}
+        vis_by_cam = {
+            "camera1": fused_meta.get("vis1", {}),
+            "camera2": fused_meta.get("vis2", {}),
+        }
+
         for cam in CAMERAS:
             gt_frame_id = cam1_frame_id if cam == "camera1" else cam2_frame_id
             truth_item = gt_cam_data[cam][gt_frame_id]
             truth_joints = _parse_new_gt(truth_item, canonical_names, map_data)
+            vis_map = vis_by_cam.get(cam, {})
 
             if accel_enabled:
                 source_frame_ids[cam][frame] = gt_frame_id
@@ -421,6 +434,9 @@ def run_evaluation(config: dict) -> None:
                 if not valid_priority1:
                     print(f"Warning: No overlapping priority1 keys for {mod} {cam} frame {frame}")
 
+                occ_keys = [k for k in valid_priority1 if not vis_map.get(k, True)]
+                vis_keys = [k for k in valid_priority1 if vis_map.get(k, True)]
+
                 # compute metrics
                 # MPJPE
                 if metric_enabled["MPJPE"]:
@@ -433,6 +449,11 @@ def run_evaluation(config: dict) -> None:
                     results["MPJPE"][cam][frame][mod]["priority2_mm"] = mean_p2
                     results["MPJPE"][cam][frame][mod]["priority2_details"] = dict_p2
 
+                    occ_errs = [dict_p1[k] for k in occ_keys if k in dict_p1]
+                    vis_errs = [dict_p1[k] for k in vis_keys if k in dict_p1]
+                    results["MPJPE"][cam][frame][mod]["occ_mm"] = float(np.mean(occ_errs)) if occ_errs else float("nan")
+                    results["MPJPE"][cam][frame][mod]["vis_mm"] = float(np.mean(vis_errs)) if vis_errs else float("nan")
+
                 if metric_enabled["PA-MPJPE"]:
                     results["PA-MPJPE"][cam][frame].setdefault(mod, {})
                     mean_p1, dict_p1 = _compute_pa_mpjpe(pred_joints, truth_joints, valid_priority1) if valid_priority1 else (0.0, {})
@@ -443,15 +464,25 @@ def run_evaluation(config: dict) -> None:
                     results["PA-MPJPE"][cam][frame][mod]["priority2_mm"] = mean_p2
                     results["PA-MPJPE"][cam][frame][mod]["priority2_details"] = dict_p2
 
+                    occ_errs = [dict_p1[k] for k in occ_keys if k in dict_p1]
+                    vis_errs = [dict_p1[k] for k in vis_keys if k in dict_p1]
+                    results["PA-MPJPE"][cam][frame][mod]["occ_mm"] = float(np.mean(occ_errs)) if occ_errs else float("nan")
+                    results["PA-MPJPE"][cam][frame][mod]["vis_mm"] = float(np.mean(vis_errs)) if vis_errs else float("nan")
+
                 if metric_enabled["PCK"]:
                     results["PCK"][cam][frame].setdefault(mod, {})
-                    mean_p1, dict_p1 = _compute_pck_mm(pred_joints, truth_joints, valid_priority1) if valid_priority1 else (0.0, {})
+                    mean_p1, dict_p1 = _compute_pck(pred_joints, truth_joints, valid_priority1, pck_threshold_mm) if valid_priority1 else (0.0, {})
                     results["PCK"][cam][frame][mod]["priority1_mm"] = mean_p1
                     results["PCK"][cam][frame][mod]["priority1_details"] = dict_p1
                     
-                    mean_p2, dict_p2 = _compute_pck_mm(pred_joints, truth_joints, valid_priority2) if valid_priority2 else (0.0, {})
+                    mean_p2, dict_p2 = _compute_pck(pred_joints, truth_joints, valid_priority2, pck_threshold_mm) if valid_priority2 else (0.0, {})
                     results["PCK"][cam][frame][mod]["priority2_mm"] = mean_p2
                     results["PCK"][cam][frame][mod]["priority2_details"] = dict_p2
+
+                    occ_errs = [dict_p1[k] for k in occ_keys if k in dict_p1]
+                    vis_errs = [dict_p1[k] for k in vis_keys if k in dict_p1]
+                    results["PCK"][cam][frame][mod]["occ_mm"] = float(np.mean(occ_errs)) if occ_errs else float("nan")
+                    results["PCK"][cam][frame][mod]["vis_mm"] = float(np.mean(vis_errs)) if vis_errs else float("nan")
 
     module_output_names = {
         mod: EVALUATION_OUTPUT_MODULE_NAMES.get(mod, mod)
@@ -480,15 +511,18 @@ def run_evaluation(config: dict) -> None:
                         "details": joint_details,
                     }
 
-    header = ["Frame", "Evaluated_Camera", "Ground_Truth_Camera"]
-    for mod in module_names:
-        out_name = module_output_names[mod]
-        header.append(f"{out_name}_priority1_mm")
-        header.append(f"{out_name}_priority2_mm")
-        for joint in priority1_names:
-            header.append(f"{out_name}_{joint}_mm")
-
     for metric in enabled_metrics:
+        unit = "pct" if metric == "PCK" else "mm"
+        header = ["Frame", "Evaluated_Camera", "Ground_Truth_Camera"]
+        for mod in module_names:
+            out_name = module_output_names[mod]
+            header.append(f"{out_name}_priority1_{unit}")
+            header.append(f"{out_name}_priority2_{unit}")
+            header.append(f"{out_name}_occ_{unit}")
+            header.append(f"{out_name}_vis_{unit}")
+            for joint in priority1_names:
+                header.append(f"{out_name}_{joint}_{unit}")
+
         for cam in CAMERAS:
             filename = f"{metric}_{CAMERA_FILE_NAMES[cam]}.csv"
             out_file = out_dir / filename
@@ -497,6 +531,7 @@ def run_evaluation(config: dict) -> None:
                 writer.writerow(header)
 
                 avg_sums = {h: 0.0 for h in header[3:]}
+                avg_counts = {h: 0 for h in header[3:]}
 
                 for frame in evaluated_frames:
                     row = [frame, cam, gt_camera_keys[cam]]
@@ -507,14 +542,37 @@ def run_evaluation(config: dict) -> None:
                         v2 = results[metric][cam][frame][mod]["priority2_mm"]
                         row.append(f"{v1:.2f}")
                         row.append(f"{v2:.2f}")
-                        avg_sums[f"{out_name}_priority1_mm"] += v1
-                        avg_sums[f"{out_name}_priority2_mm"] += v2
+                        avg_sums[f"{out_name}_priority1_{unit}"] += v1
+                        avg_sums[f"{out_name}_priority2_{unit}"] += v2
+                        avg_counts[f"{out_name}_priority1_{unit}"] += 1
+                        avg_counts[f"{out_name}_priority2_{unit}"] += 1
+
+                        v_occ = results[metric][cam][frame][mod].get("occ_mm", float("nan"))
+                        v_vis = results[metric][cam][frame][mod].get("vis_mm", float("nan"))
+
+                        if np.isnan(v_occ):
+                            row.append("N/A")
+                        else:
+                            row.append(f"{v_occ:.2f}")
+                            avg_sums[f"{out_name}_occ_{unit}"] += v_occ
+                            avg_counts[f"{out_name}_occ_{unit}"] += 1
+
+                        if np.isnan(v_vis):
+                            row.append("N/A")
+                        else:
+                            row.append(f"{v_vis:.2f}")
+                            avg_sums[f"{out_name}_vis_{unit}"] += v_vis
+                            avg_counts[f"{out_name}_vis_{unit}"] += 1
                         
                         p1_details = results[metric][cam][frame][mod]["priority1_details"]
                         for joint in priority1_names:
-                            err_j = p1_details.get(joint, 0.0)
-                            row.append(f"{err_j:.2f}")
-                            avg_sums[f"{out_name}_{joint}_mm"] += err_j
+                            value = p1_details.get(joint)
+                            if value is None:
+                                row.append("N/A")
+                            else:
+                                row.append(f"{value:.2f}")
+                                avg_sums[f"{out_name}_{joint}_{unit}"] += value
+                                avg_counts[f"{out_name}_{joint}_{unit}"] += 1
 
                     writer.writerow(row)
 
@@ -522,7 +580,8 @@ def run_evaluation(config: dict) -> None:
                 if n_frames > 0:
                     avg_row = ["AVERAGE", cam, gt_camera_keys[cam]]
                     for h in header[3:]:
-                        avg_row.append(f"{(avg_sums[h]/n_frames):.2f}")
+                        c = avg_counts[h]
+                        avg_row.append(f"{(avg_sums[h]/c):.2f}" if c > 0 else "N/A")
                     writer.writerow(avg_row)
 
     if mble_enabled:

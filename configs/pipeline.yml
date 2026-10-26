@@ -34,7 +34,7 @@ paths:
 fusion:
   enabled: true
   belief:
-    alpha: ${ALPHA:-0.0} # alpha: hệ số phạt theo khoảng cách 3D (0.0 để tránh thiên vị camera gần/xa)
+    alpha: ${ALPHA:-0.001} # alpha: hệ số phạt theo khoảng cách 3D (0.001 để phân biệt nhẹ góc nhìn gần/xa)
     beta: ${BETA:-0.8} # beta: hệ số trộn tin cậy của láng giềng xương trong harmonic mean, càng lớn thì belief càng chịu ảnh hưởng bởi skeleton lân cận.
 
   occlusion:
@@ -43,9 +43,11 @@ fusion:
 
   # Cơ chế Uncertainty-Gating: ngăn chặn việc thay thế khớp nếu camera phụ không đáng tin cậy
   uncertainty_gating:
+    consensus_blend_strength: 0.25
     enabled: true
     max_displacement: 0.35 # Khoảng cách tối đa (m) giữa tọa độ ánh xạ và mục tiêu
     min_confidence: 0.1    # Ngưỡng tin cậy tối thiểu của camera phụ
+    consensus_threshold: 0.08 # Ngưỡng (m) đồng thuận đa góc nhìn để blend các khớp cùng nhìn thấy rõ
 
   # Bộ lọc làm mượt quỹ đạo thời gian (giảm rung giật / giảm Accel Error)
   smoothing:
@@ -66,12 +68,18 @@ fusion:
     temporal_lambda: 2.0 # Hệ số phạt theo thời gian so với frame trước.
     max_iter: 35 # Số vòng lặp tối đa cho PyTorch GPU Adam.
 
+  # Hiệu chỉnh sai số hệ thống giữa khung xương SMPL và Ground-Truth mocap marker
+  domain_calibration:
+    enabled: true
+    calib_frames: 30
+
+
 learnable:
   enabled: false
   checkpoint: "models/best_ckpt.pth.tar"
 
 learnable_extra:
-  enabled: false
+  enabled: true
 
 visualization:
   enabled: false
@@ -90,5 +98,6 @@ evaluation:
     pa_mpjpe: true # PA-MPJPE là metric mặc định đang bật.
     mpjpe: true
     pck: false
+    pck_threshold_mm: 150.0
     mble: true
     accel: true

@@ -13,6 +13,7 @@ gdown
 loguru
 fastdtw
 trimesh
+rtree
 python-decouple
 kornia==0.8.2
 ultralytics==8.4.53

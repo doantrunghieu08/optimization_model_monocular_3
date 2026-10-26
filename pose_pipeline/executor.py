@@ -123,6 +123,10 @@ def run_pose_export(config: dict) -> None:
         "left_start": cam1_start,
         "right_start": cam2_start,
         "frame_count": min_frames,
+        "source_pkls": {
+            "camera1": str(cam1_file.resolve()),
+            "camera2": str(cam2_file.resolve()),
+        },
     }
 
     print(f"[Pose] Cam1 frames: {len(cam1_data['pose'])}")

@@ -41,28 +41,43 @@ def _load_tracking_payload(pkl_path: Path) -> Optional[dict]:
         return None
 
     person = _extract_person_payload(load_joblib_compat(pkl_path))
-    if person is None:
-        print(f"[Preprocess] 2D skip: cannot find person payload in {pkl_path}")
-        return None
+    if person is not None:
+        tracking = person.get("tracking_results_for_reproj")
+        if isinstance(tracking, Mapping):
+            return dict(tracking)
 
-    tracking = person.get("tracking_results_for_reproj")
-    if not isinstance(tracking, Mapping):
-        print(f"[Preprocess] 2D skip: tracking_results_for_reproj missing in {pkl_path}")
-        return None
-    return dict(tracking)
+    # ponytail: fallback to tracking_results.pth in same folder if not embedded in pkl
+    pth_path = pkl_path.parent / "tracking_results.pth"
+    if pth_path.exists():
+        t_raw = load_joblib_compat(pth_path)
+        t = t_raw[0] if (isinstance(t_raw, dict) and 0 in t_raw) else (next(iter(t_raw.values())) if isinstance(t_raw, dict) else t_raw)
+        if isinstance(t, Mapping) and "keypoints" in t:
+            return dict(t)
+
+    print(f"[Preprocess] 2D skip: tracking results missing in {pkl_path}")
+    return None
 
 
 def _load_keypoints2d_map(map_path: Path) -> dict[str, object]:
     return load_keypoints2d_map(str(map_path))
 
 
+_FALLBACK_COCO_INDICES = {17: 15, 18: 15, 20: 16, 21: 16, 101: 9, 122: 10}
+
+
 def _resolve_keypoint_spec(spec, source_keypoints: np.ndarray) -> list[float]:
+    n_kp = len(source_keypoints)
     if isinstance(spec, int):
-        return source_keypoints[spec, :3].tolist()
+        idx = _FALLBACK_COCO_INDICES.get(spec, spec)
+        if idx < n_kp:
+            return source_keypoints[idx, :3].tolist()
+        return [0.0, 0.0, 0.0]
     if isinstance(spec, Mapping) and "average" in spec:
-        pts = [source_keypoints[int(idx), :3] for idx in spec["average"]]
-        return np.mean(pts, axis=0).tolist()
-    raise ValueError(f"Unsupported spec: {spec}")
+        pts = [source_keypoints[_FALLBACK_COCO_INDICES.get(int(idx), int(idx)), :3] 
+               for idx in spec["average"] 
+               if _FALLBACK_COCO_INDICES.get(int(idx), int(idx)) < n_kp]
+        return np.mean(pts, axis=0).tolist() if pts else [0.0, 0.0, 0.0]
+    return [0.0, 0.0, 0.0]
 
 
 def _build_2d_camera_payload(tracking: dict, keypoints2d_map: dict[str, object]) -> tuple[dict, Optional[list]]:
