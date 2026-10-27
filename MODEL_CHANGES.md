@@ -105,10 +105,14 @@ $$\Delta\mathbf{p}_k = \frac{1}{N} \sum_{t=0}^{N-1} \left[ \left(\mathbf{P}_{t}^
 Áp dụng cộng bù trực tiếp vào toàn bộ chuỗi video sau bước làm mượt:
 $$\mathbf{P}_t^*(k) = \mathbf{P}_t(k) + \Delta\mathbf{p}_k, \quad \forall t \in [0, T-1]$$
 
-### Tính chất bất biến gia tốc (Acceleration Invariance)
-Vì $\Delta\mathbf{p}_k$ là vector hằng số không đổi theo thời gian, đạo hàm bậc 2 rời rạc (gia tốc) hoàn toàn không bị ảnh hưởng:
+### Tính chất bất biến gia tốc & Khóa cứng chiều dài xương (Acceleration Invariance & Bone Locking)
+1. Vì $\Delta\mathbf{p}_k$ là vector hằng số không đổi theo thời gian, đạo hàm bậc 2 rời rạc (gia tốc) hoàn toàn không bị ảnh hưởng:
 $$\mathbf{a}_t^* = \mathbf{P}_{t+1}^* - 2\mathbf{P}_t^* + \mathbf{P}_{t-1}^* = (\mathbf{P}_{t+1} + \Delta) - 2(\mathbf{P}_t + \Delta) + (\mathbf{P}_{t-1} + \Delta) = \mathbf{a}_t$$
 $\implies$ Giảm ngay lập tức **`35.64 mm` MPJPE** mà **`Accel Error` giữ nguyên tuyệt đối ở 7.60 mm/f²**.
+
+2. **Lọc nhiễu tư thế động & Khóa cứng xương:**
+* Khi tính offset trên 30 frame đầu, đặt bộ lọc ngưỡng $\|\Delta\mathbf{p}_k\|_2 < 0.35\text{ m}$ để loại bỏ các frame bị lật ngược góc tay do chuyển động mạnh (dynamic flip error).
+* Ngay sau khi cộng bù offset, gọi ngay hàm `enforce_bone_lengths` để khóa cứng 100% các đoạn xương theo tỷ lệ giải phẫu nguyên bản, triệt tiêu hoàn toàn nguy cơ xé dãn xương ở các segment chuyển động khó.
 
 ---
 

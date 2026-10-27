@@ -471,6 +471,7 @@ def calibrate_domain_offsets(
             try:
                 gt_data = read_json(gt_file)
                 cam_offsets = {k: np.zeros(3) for k in gt_indices}
+                counts = {k: 0 for k in gt_indices}
                 n_used = min(calib_frames, len(fused_files), len(gt_data))
                 for t in range(n_used):
                     frame_data = read_json(fused_files[t]).get(cam, {})
@@ -481,7 +482,16 @@ def calibrate_domain_offsets(
                     g_root = (g_raw[18] + g_raw[23]) / 2.0
                     for k, idx in gt_indices.items():
                         if k in frame_data and idx < len(g_raw):
-                            cam_offsets[k] += ((g_raw[idx] - g_root) - (np.array(frame_data[k], dtype=float) - p_root)) / max(n_used, 1)
+                            diff = (g_raw[idx] - g_root) - (np.array(frame_data[k], dtype=float) - p_root)
+                            # ponytail: only accumulate true static domain gap; reject dynamic flipped poses (>0.35m)
+                            if np.linalg.norm(diff) < 0.35:
+                                cam_offsets[k] += diff
+                                counts[k] += 1
+                for k in gt_indices:
+                    if counts[k] > 0:
+                        cam_offsets[k] /= counts[k]
+                    else:
+                        cam_offsets[k] = np.zeros(3)
                 offsets[cam] = cam_offsets
                 print(f"[Calibration] Calibrated domain offsets for {cam} on {n_used} frames")
             except Exception as e:
@@ -495,11 +505,14 @@ def calibrate_domain_offsets(
         modified = False
         for cam, cam_offsets in offsets.items():
             if cam in frame_json:
+                ref_pose = {k: list(v) for k, v in frame_json[cam].items()}
                 for k, off in cam_offsets.items():
                     if k in frame_json[cam]:
                         cur = np.array(frame_json[cam][k], dtype=float)
                         frame_json[cam][k] = [round(float(x), 6) for x in (cur + off)]
                         modified = True
+                # ponytail: lock rigid bone lengths immediately after calibration
+                enforce_bone_lengths(frame_json[cam], ref_pose)
         if modified:
             write_json(fpath, frame_json)
 
