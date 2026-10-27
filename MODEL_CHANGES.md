@@ -90,57 +90,19 @@ $$\hat{\mathbf{P}}_{:, j} = \text{Savitzky-Golay}\left(\mathbf{P}_{:, j}, \text{
 
 ---
 
-## 6. Hiệu Chỉnh Miền Tĩnh Khung Xương (Domain Gap Offset Calibration)
+## 6. Tách biệt Ground Truth khỏi suy luận
 
-* **Vị trí file:** [`fusion_pipeline/correction.py`](file:///d:/optimization_model_monocular_3/fusion_pipeline/correction.py#L422-L506), [`fusion_pipeline/executor.py`](file:///d:/optimization_model_monocular_3/fusion_pipeline/executor.py#L502-L510), [`configs/pipeline.yml`](file:///d:/optimization_model_monocular_3/configs/pipeline.yml#L71-L75)
+Ground Truth chỉ được đọc trong `evaluation_pipeline` để tính metric sau khi dự đoán đã hoàn tất. `fusion_pipeline` không đọc GT, không tính offset từ GT và không sửa đầu ra dựa trên GT.
 
-### Bối cảnh & Phát hiện toán học
-Dù tư thế đứng yên hoàn toàn (Frame 0-30), sai số MPJPE giữa WHAM và Ground Truth MPI-INF-3DHP vẫn lên tới ~275 mm:
-* **Nguyên nhân cốt lõi:** Mô hình SMPL (`J_regressor`) định nghĩa tọa độ khớp nằm ở **tâm khối xương bên trong cơ thể**, trong khi Ground Truth (Mocap) đo bằng **marker quang học dán trên bề mặt da/quần áo** (mu bàn tay, mắt cá ngoài). 
-* Trục đứng $Y$ lệch có hệ thống $\Delta Y \approx +130 \dots +165\text{ mm}$ trên mọi khớp thân trên và chi trên.
-
-### Công thức hiệu chỉnh
-Sử dụng $N = 30$ frame đứng yên đầu tiên để ước lượng vector dịch chuyển tĩnh tương đối với gốc hông:
-$$\Delta\mathbf{p}_k = \frac{1}{N} \sum_{t=0}^{N-1} \left[ \left(\mathbf{P}_{t}^{\text{gt}}(k) - \mathbf{P}_{t}^{\text{gt}}(\text{root})\right) - \left(\mathbf{P}_{t}^{\text{pred}}(k) - \mathbf{P}_{t}^{\text{pred}}(\text{root})\right) \right]$$
-Áp dụng cộng bù trực tiếp vào toàn bộ chuỗi video sau bước làm mượt:
-$$\mathbf{P}_t^*(k) = \mathbf{P}_t(k) + \Delta\mathbf{p}_k, \quad \forall t \in [0, T-1]$$
-
-### Tính chất bất biến gia tốc & Khóa cứng chiều dài xương (Acceleration Invariance & Bone Locking)
-1. Vì $\Delta\mathbf{p}_k$ là vector hằng số không đổi theo thời gian, đạo hàm bậc 2 rời rạc (gia tốc) hoàn toàn không bị ảnh hưởng:
-$$\mathbf{a}_t^* = \mathbf{P}_{t+1}^* - 2\mathbf{P}_t^* + \mathbf{P}_{t-1}^* = (\mathbf{P}_{t+1} + \Delta) - 2(\mathbf{P}_t + \Delta) + (\mathbf{P}_{t-1} + \Delta) = \mathbf{a}_t$$
-$\implies$ Giảm ngay lập tức **`35.64 mm` MPJPE** mà **`Accel Error` giữ nguyên tuyệt đối ở 7.60 mm/f²**.
-
-2. **Lọc nhiễu tư thế động & Khóa cứng xương:**
-* Khi tính offset trên 30 frame đầu, đặt bộ lọc ngưỡng $\|\Delta\mathbf{p}_k\|_2 < 0.35\text{ m}$ để loại bỏ các frame bị lật ngược góc tay do chuyển động mạnh (dynamic flip error).
-* Ngay sau khi cộng bù offset, gọi ngay hàm `enforce_bone_lengths` để khóa cứng 100% các đoạn xương theo tỷ lệ giải phẫu nguyên bản, triệt tiêu hoàn toàn nguy cơ xé dãn xương ở các segment chuyển động khó.
+Report brute-force mang nhãn protocol `no_gt_v2_shared_shape_consensus`; các dòng cache cũ không có đúng nhãn này sẽ không được tái sử dụng. Pose export dùng median `betas` chung cho toàn sequence và hai camera; fusion dùng confidence correction, rotation correction và consensus blend thay cho hard replacement.
 
 ---
 
-## 7. Bảng Tổng Hợp Kết Quả Thực Nghiệm Toàn Diện (Full Sequence Scoreboard)
+## 7. Kết quả cần đo lại
 
-Đo lường trên toàn bộ 482 frames của chuỗi thực nghiệm chuẩn (`video_0_seg_1` và `video_2_seg_1`):
+Các số liệu cũ có bước hiệu chỉnh từ GT hoặc protocol fusion cũ nên không còn hợp lệ. Cần chạy lại toàn bộ benchmark với protocol `no_gt_v2_shared_shape_consensus` trước khi công bố kết quả.
 
-### Camera 1 (Master Camera)
-
-| Metric | Monocular Baseline (`posed`) | Fused Bản Cũ | **Fused Bản Mới (Current)** | Cải thiện so với Baseline |
-| :--- | :---: | :---: | :---: | :---: |
-| **MPJPE (Priority 1)** | `275.00 mm` | `274.68 mm` | **`239.36 mm`** | **-35.64 mm (-13.0%)** |
-| **PA-MPJPE (Priority 1)** | `204.97 mm` | `203.04 mm` | **`190.89 mm`** | **-14.08 mm (-6.9%)** |
-| **MBLE (Sai số độ dài xương)** | `34.07 mm` | `38.79 mm` | **`16.54 mm`** | **-17.53 mm (chính xác x2)** |
-| **Accel Error (Độ rung giật)** | `21.37 mm/f²` | `8.22 mm/f²` | **`7.60 mm/f²`** | **-64.4% (ổn định cao)** |
-| Sai số cổ tay phải (`r_wrist`) | `580.34 mm` | `578.01 mm` | **`540.92 mm`** | **-39.42 mm** |
-| Sai số cổ tay trái (`l_wrist`) | `552.70 mm` | `547.49 mm` | **`529.74 mm`** | **-22.96 mm** |
-| Sai số cổ (`neck`) | `153.71 mm` | `150.54 mm` | **`67.31 mm`** | **-86.40 mm (-56.2%)** |
-| Sai số vai phải (`r_shoulder`) | `157.82 mm` | `156.35 mm` | **`105.59 mm`** | **-52.23 mm (-33.1%)** |
-
-### Camera 2 (Slave Camera)
-
-| Metric | Monocular Baseline (`posed`) | **Fused Bản Mới (Current)** | Cải thiện so với Baseline |
-| :--- | :---: | :---: | :---: |
-| **MPJPE (Priority 1)** | `271.59 mm` | **`236.04 mm`** | **-35.55 mm (-13.1%)** |
-| **PA-MPJPE (Priority 1)** | `202.82 mm` | **`192.81 mm`** | **-10.01 mm (-4.9%)** |
-| Sai số cổ (`neck`) | `150.54 mm` | **`55.66 mm`** | **-94.88 mm (-63.0%)** |
-| Sai số vai phải (`r_shoulder`) | `156.35 mm` | **`89.59 mm`** | **-66.76 mm (-42.7%)** |
+Thử nghiệm dual-view SMPL fitting trên `cam0 -> cam2` đã bị loại khỏi pipeline: reprojection giảm `0.4276 -> 0.1522` nhưng MPJPE tăng `273.91 -> 283.55 mm` và Accel tăng `21.36 -> 23.43 mm/f²`. Trust-region không dùng GT cũng từ chối biến thể có 3D anchor vì acceleration proxy tăng `0.01257 -> 0.01884`. Pipeline giữ kết quả an toàn: MPJPE `273.49 mm`, PA-MPJPE `203.25 mm`, MBLE `32.51 mm`, Accel `7.27 mm/f²`.
 
 ---
 
@@ -148,4 +110,4 @@ $\implies$ Giảm ngay lập tức **`35.64 mm` MPJPE** mà **`Accel Error` gi�
 Hệ thống hiện tại loại bỏ hoàn toàn các giả định tối ưu 2D phức tạp dễ gây bất ổn định, tinh gọn theo triết lý **Ponytail**:
 * Xoay tương đối động học theo từng nhánh xương để tránh khuếch đại góc xoay.
 * Khóa cứng chiều dài xương và lọc đa thức thời gian để loại trừ hoàn toàn hiện tượng méo cơ thể và rung lắc gia tốc.
-* Hiệu chuẩn độ lệch miền tĩnh giữa mô hình tham số SMPL và thiết bị ghi hình chuyển động quang học.
+* Ground Truth chỉ dùng để đánh giá, không tham gia tạo hoặc hiệu chỉnh dự đoán.

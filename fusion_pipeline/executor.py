@@ -22,7 +22,6 @@ from fusion_pipeline.detector import make_raw_judgement_fallback
 from fusion_pipeline.correction import apply_rotation_mismatch_corrections
 from fusion_pipeline.correction import apply_confidence_corrections
 from fusion_pipeline.correction import apply_multiview_geometric_fusion
-from fusion_pipeline.correction import apply_belief_joint_replacement
 
 def _frame_index(path: Path) -> int:
     match = re.search(r"\d+", path.name)
@@ -43,23 +42,14 @@ def _clean_output(output_dir: Path, pattern: str = "*.json", create_split_dirs: 
                 old_json.unlink(missing_ok=True)
 
 
+from compat import load_joblib_compat, resolve_person_payload
+
+
 def _extract_person_payload(wham_data):
-    if isinstance(wham_data, dict):
-        if 0 in wham_data:
-            return wham_data[0]
-        if "0" in wham_data:
-            return wham_data["0"]
-        for value in wham_data.values():
-            if isinstance(value, dict):
-                return value
-    if isinstance(wham_data, list):
-        for value in wham_data:
-            if isinstance(value, dict):
-                return value
-    return None
+    return resolve_person_payload(wham_data)
 
 
-def _load_verts_if_available(paths: dict, occlusion_enabled: bool):
+def _load_verts_if_available(paths: dict, occlusion_enabled: bool, target_person=None):
     if not occlusion_enabled:
         return False, None, None, 0, 0
 
@@ -70,8 +60,8 @@ def _load_verts_if_available(paths: dict, occlusion_enabled: bool):
     if not wham_path_2.exists():
         raise FileNotFoundError(f"WHAM PKL file not found: {wham_path_2}")
 
-    person_1 = _extract_person_payload(load_joblib_compat(wham_path_1))
-    person_2 = _extract_person_payload(load_joblib_compat(wham_path_2))
+    person_1 = resolve_person_payload(load_joblib_compat(wham_path_1), pkl_path=wham_path_1, target_person=target_person)
+    person_2 = resolve_person_payload(load_joblib_compat(wham_path_2), pkl_path=wham_path_2, target_person=target_person)
 
     verts_cam1 = person_1.get("verts_cam", person_1.get("verts")) if person_1 else None
     verts_cam2 = person_2.get("verts_cam", person_2.get("verts")) if person_2 else None
@@ -244,20 +234,64 @@ def run_phase3_pipeline(
         max_combos=ransac_max_combos,
     )
 
-    # ponytail: rotate slave (cam2) into master (cam1) space, replace joints where belief slave > master, and enforce bone lengths
-    cam1_corr, cam2_corr = apply_belief_joint_replacement(
-        cam1,
-        cam2,
-        t12=t12,
-        t21=t21,
-        h1=H1_all,
-        h2=H2_all,
-        vis1=vis1,
-        vis2=vis2,
-        names=names,
-        max_displacement=float(max_displacement) if max_displacement else 0.75,
-    )
+    torso_check = [n for n in ("pelvis", "neck", "left_shoulder", "right_shoulder", "left_hip", "right_hip") if n in cam1 and n in cam2]
+    skip_cross_view = False
+    if torso_check and t12 is not None:
+        from fusion_pipeline.correction import apply_similarity
+        residuals = [float(np.linalg.norm(apply_similarity(np.asarray(cam1[n], dtype=float), t12) - np.asarray(cam2[n], dtype=float))) for n in torso_check]
+        if np.mean(residuals) > 0.12:
+            skip_cross_view = True
 
+    if not skip_cross_view:
+        cam1_corr, cam2_corr = apply_confidence_corrections(
+            cam1,
+            cam2,
+            k1_set,
+            k2_set,
+            t12=t12,
+            t21=t21,
+            h1=H1_all,
+            h2=H2_all,
+            blend=blend,
+            uncertainty_gating=uncertainty_gating,
+            max_displacement=max_displacement,
+            vis1=vis1,
+            vis2=vis2,
+        )
+        cam1_corr, cam2_corr = apply_rotation_mismatch_corrections(
+            cam1_corr,
+            cam2_corr,
+            cam1,
+            cam2,
+            m_set,
+            k1_set,
+            k2_set,
+            H1_all,
+            H2_all,
+            t12,
+            t21,
+            blend=blend,
+            uncertainty_gating=uncertainty_gating,
+            max_displacement=max_displacement,
+            vis1=vis1,
+            vis2=vis2,
+        )
+        cam1_corr, cam2_corr = apply_multiview_geometric_fusion(
+            cam1_corr,
+            cam2_corr,
+            l_list,
+            t12,
+            t21,
+            h1=H1_all,
+            h2=H2_all,
+            vis1=vis1,
+            vis2=vis2,
+            max_displacement=max_displacement,
+            consensus_threshold=consensus_threshold,
+            consensus_blend_strength=consensus_blend_strength,
+        )
+    else:
+        cam1_corr, cam2_corr = dict(cam1), dict(cam2)
 
     # Preserve conflict-corrected joints in anchors so SLSQP optimizer does not overwrite them
     a_new = sorted(set(a_list) | k1_set | k2_set | m_set)
@@ -398,7 +432,9 @@ def run_fusion(config: dict) -> None:
         if load_torso_mask(paths["segmentation"]) is None:
             raise RuntimeError("fusion.occlusion.enabled requires a valid SMPL torso mask")
 
-    wham_loaded, verts_cam1, verts_cam2, n_frames_1, n_frames_2 = _load_verts_if_available(inputs, occlusion_enabled)
+    wham_loaded, verts_cam1, verts_cam2, n_frames_1, n_frames_2 = _load_verts_if_available(
+        inputs, occlusion_enabled, target_person=inputs.get("target_person")
+    )
     confidence2d_profiles = _load_2d_profiles(config, inputs)
     occlusion_intrinsics = _load_occlusion_intrinsics(config) if occlusion_enabled and wham_loaded else None
 
@@ -497,15 +533,6 @@ def run_fusion(config: dict) -> None:
             pose_dir=input_dir / "keypoints3d",
             window_length=int(smoothing_cfg.get("window_length", 5)),
             polyorder=int(smoothing_cfg.get("polyorder", 2)),
-        )
-
-    calib_cfg = fusion_cfg.get("domain_calibration", {})
-    if calib_cfg.get("enabled", True):
-        from fusion_pipeline.correction import calibrate_domain_offsets
-        calibrate_domain_offsets(
-            output_dir / "keypoints3d",
-            config=config,
-            calib_frames=int(calib_cfg.get("calib_frames", 30)),
         )
 
     print(f"\n[Fusion] Done. Output: {output_dir}")

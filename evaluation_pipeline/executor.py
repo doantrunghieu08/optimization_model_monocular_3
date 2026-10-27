@@ -162,21 +162,79 @@ def _load_frame_map(frame_dir: Path, frame_offset: int = 0) -> dict[int, Path]:
     return frame_map
 
 
+HUGGING_SMPL_INDICES = {
+    "pelvis": 0, "left_hip": 1, "right_hip": 2,
+    "left_knee": 4, "right_knee": 5,
+    "left_ankle": 7, "right_ankle": 8,
+    "left_foot": 10, "right_foot": 11,
+    "neck": 12, "head": 15,
+    "left_shoulder": 16, "right_shoulder": 17,
+    "left_elbow": 18, "right_elbow": 19,
+    "left_wrist": 20, "right_wrist": 21,
+    "left_hand": 22, "right_hand": 23,
+}
+
+
+def _load_ground_truth(path: Path, truth_dir: Path = None, target_person: str = "aria01") -> dict:
+    if path.exists():
+        with path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        gt_map = {}
+        for idx, item in enumerate(data):
+            gt_map[idx] = item
+            if "frame_id" in item:
+                gt_map[int(item["frame_id"])] = item
+        return gt_map
+
+    search_dir = truth_dir or path.parent
+    npy_files = sorted(search_dir.glob("*.npy"))
+    if not npy_files and (search_dir / "smpl").exists():
+        npy_files = sorted((search_dir / "smpl").glob("*.npy"))
+    if not npy_files and (search_dir / "poses3d").exists():
+        npy_files = sorted((search_dir / "poses3d").glob("*.npy"))
+
+    if npy_files:
+        gt_map = {}
+        person_key = str(target_person or "aria01").lower()
+        for idx, p in enumerate(npy_files):
+            fid = int(p.stem) - 1 if p.stem.isdigit() else idx
+            try:
+                d = np.load(p, allow_pickle=True).item()
+            except Exception:
+                continue
+            matched_person = next((k for k in d.keys() if str(k).lower() == person_key), None)
+            if matched_person is None:
+                matched_person = next(iter(d.keys())) if d else None
+            if matched_person and matched_person in d:
+                pdata = d[matched_person]
+                if isinstance(pdata, dict) and "joints" in pdata:
+                    raw_j = pdata["joints"]
+                    joints = {k: np.array(raw_j[i], dtype=float) for k, i in HUGGING_SMPL_INDICES.items() if i < len(raw_j)}
+                    gt_map[fid] = {"joints": joints, "frame_id": fid}
+                elif isinstance(pdata, np.ndarray) and pdata.ndim == 2:
+                    coco_map = {
+                        "left_shoulder": 5, "right_shoulder": 6,
+                        "left_elbow": 7, "right_elbow": 8,
+                        "left_wrist": 9, "right_wrist": 10,
+                        "left_hip": 11, "right_hip": 12,
+                        "left_knee": 13, "right_knee": 14,
+                        "left_ankle": 15, "right_ankle": 16,
+                    }
+                    joints = {k: np.array(pdata[i, :3], dtype=float) for k, i in coco_map.items() if i < len(pdata)}
+                    gt_map[fid] = {"joints": joints, "frame_id": fid}
+        if gt_map:
+            return gt_map
+
+    raise FileNotFoundError(f"GT file not found: {path} and no .npy GT in {search_dir}")
+
+
 def _load_segment_gt(path: Path) -> dict:
-    if not path.exists():
-        raise FileNotFoundError(f"GT file not found: {path}")
-    with path.open("r", encoding="utf-8") as f:
-        data = json.load(f)
-    
-    gt_map = {}
-    for idx, item in enumerate(data):
-        gt_map[idx] = item
-        if "frame_id" in item:
-            gt_map[int(item["frame_id"])] = item
-    return gt_map
+    return _load_ground_truth(path)
 
 
 def _parse_new_gt(item: dict, canonical_names: set, map_data: dict) -> dict:
+    if "joints" in item:
+        return item["joints"]
     joints = {}
     # Convert from millimeters to meters to match the prediction scale
     pose3d = np.array(item["pose3d"], dtype=float) / 1000.0
@@ -338,8 +396,9 @@ def run_evaluation(config: dict) -> None:
     cam1_gt_path = truth_dir / f"{cam1_gt_stem}.json"
     cam2_gt_path = truth_dir / f"{cam2_gt_stem}.json"
     
-    gt_cam1_data = _load_segment_gt(cam1_gt_path)
-    gt_cam2_data = _load_segment_gt(cam2_gt_path)
+    target_person = inputs.get("target_person", "aria01")
+    gt_cam1_data = _load_ground_truth(cam1_gt_path, truth_dir=truth_dir, target_person=target_person)
+    gt_cam2_data = _load_ground_truth(cam2_gt_path, truth_dir=truth_dir, target_person=target_person)
     gt_cam_data = {"camera1": gt_cam1_data, "camera2": gt_cam2_data}
 
     gt_camera_keys = {

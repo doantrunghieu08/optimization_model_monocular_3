@@ -8,7 +8,7 @@ from pose_pipeline.smpl_runner import create_smpl_model
 from config_loader import resolve_inputs
 from pose_pipeline.smpl_runner import get_3d_joints_for_frame
 from json_io import write_json
-from compat import load_joblib_compat
+from compat import load_joblib_compat, resolve_person_payload
 from preprocess_pipeline.calib import resolve_selected_offset_from_camera_profile
 
 
@@ -16,26 +16,14 @@ POSE_OUTPUT_SUBDIRS = ("keypoints3d", "metadata")
 
 
 def _extract_person_payload(data):
-    if isinstance(data, dict) or "defaultdict" in str(type(data)):
-        if 0 in data:
-            return data[0]
-        if "0" in data:
-            return data["0"]
-        for value in data.values():
-            if isinstance(value, dict):
-                return value
-    if isinstance(data, list):
-        for value in data:
-            if isinstance(value, dict):
-                return value
-    return None
+    return resolve_person_payload(data)
 
 
-def load_pkl_data(file_path):
+def load_pkl_data(file_path, target_person=None):
     file_path = Path(file_path)
     if not file_path.exists():
         raise FileNotFoundError("PKL file not found: {}".format(file_path))
-    person_data = _extract_person_payload(load_joblib_compat(file_path))
+    person_data = resolve_person_payload(load_joblib_compat(file_path), pkl_path=file_path, target_person=target_person)
     if person_data is None:
         raise ValueError("Cannot read person payload from {}".format(file_path))
     for key in ("pose", "trans", "betas"):
@@ -54,6 +42,20 @@ def slice_person_frames(person_data, start, frame_count):
         if isinstance(value, np.ndarray) and value.ndim > 0 and value.shape[0] == total_frames:
             out[key] = value[start:end].copy()
     return out
+
+
+def _shared_betas(*person_data: dict) -> np.ndarray:
+    betas = []
+    for person in person_data:
+        values = np.asarray(person["betas"], dtype=np.float32)
+        if values.ndim == 1:
+            values = values[None, :]
+        if values.ndim != 2 or values.shape[0] == 0:
+            raise ValueError(f"Expected non-empty betas with shape (frames, dims), got {values.shape}")
+        betas.append(values)
+    if len({values.shape[1] for values in betas}) != 1:
+        raise ValueError("Camera beta dimensions do not match")
+    return np.median(np.concatenate(betas, axis=0), axis=0).astype(np.float32)
 
 
 def _resolve_tracking_frame_ids(person_data):
@@ -105,10 +107,11 @@ def run_pose_export(config: dict) -> None:
     print("[Pose] Loading SMPL model...")
     model = create_smpl_model(smpl_model_path)
 
-    print(f"[Pose] Loading camera 1: {cam1_file}")
-    cam1_data = load_pkl_data(cam1_file)
-    print(f"[Pose] Loading camera 2: {cam2_file}")
-    cam2_data = load_pkl_data(cam2_file)
+    target_person = inputs.get("target_person")
+    print(f"[Pose] Loading camera 1: {cam1_file} (target_person={target_person})")
+    cam1_data = load_pkl_data(cam1_file, target_person=target_person)
+    print(f"[Pose] Loading camera 2: {cam2_file} (target_person={target_person})")
+    cam2_data = load_pkl_data(cam2_file, target_person=target_person)
     cam1_tracking_frame_ids = _resolve_tracking_frame_ids(cam1_data)
     cam2_tracking_frame_ids = _resolve_tracking_frame_ids(cam2_data)
 
@@ -139,6 +142,10 @@ def run_pose_export(config: dict) -> None:
 
     cam1_export_data = slice_person_frames(cam1_data, cam1_start, min_frames)
     cam2_export_data = slice_person_frames(cam2_data, cam2_start, min_frames)
+    if min_frames:
+        shared_betas = _shared_betas(cam1_export_data, cam2_export_data)
+        for camera_data in (cam1_export_data, cam2_export_data):
+            camera_data["betas"] = np.repeat(shared_betas[None, :], min_frames, axis=0)
 
     # Sử dụng tqdm bọc quanh range() để tạo progress bar
     for i in tqdm(range(min_frames), desc="[Pose] Exporting JSONs", unit="frame"):

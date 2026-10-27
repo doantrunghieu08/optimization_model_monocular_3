@@ -9,7 +9,7 @@ import numpy as np
 import torch
 
 from evaluation_pipeline.executor import _compute_pa_mpjpe, _compute_pck
-from brute_force_runner import _ranking_key
+from brute_force_runner import EVALUATION_PROTOCOL, _get_header_indices, _parse_history_row, _ranking_key
 from fusion_pipeline.correction import apply_multiview_geometric_fusion
 from fusion_pipeline.executor import _source_frame_indices
 from fusion_pipeline.detector import require_ray_casting_backend
@@ -17,6 +17,8 @@ from fusion_pipeline.optimization import optimize_sequence_gpu
 from learnable_pipeline.executor import _slice_person
 from learnable_pipeline.post_opt import post_optimize_smpl_sequence
 from pipeline import _evaluation_input_dirs, _require_evaluation_inputs
+from pose_pipeline.executor import _shared_betas
+from preprocess_pipeline.calib import _estimate_intrinsics
 
 
 class MetricTests(unittest.TestCase):
@@ -78,6 +80,19 @@ class SynchronizationTests(unittest.TestCase):
         np.testing.assert_array_equal(sliced["trans"], person["trans"][2:4])
         self.assertEqual(sliced["gender"], "neutral")
 
+    def test_shared_betas_are_constant_across_cameras(self):
+        shared = _shared_betas(
+            {"betas": np.array([[0.0, 0.0], [10.0, 10.0]])},
+            {"betas": np.array([[2.0, 2.0], [4.0, 4.0]])},
+        )
+        np.testing.assert_array_equal(shared, np.array([3.0, 3.0], dtype=np.float32))
+
+    def test_calibration_file_is_preferred_over_video_heuristic(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "calib.txt").write_text("1000 1001 320 240", encoding="utf-8")
+            self.assertEqual(_estimate_intrinsics(root / "missing.mp4"), [[1000.0, 0.0, 320.0], [0.0, 1001.0, 240.0], [0.0, 0.0, 1.0]])
+
 
 class FusionOptimizationTests(unittest.TestCase):
     JOINTS = ("pelvis", "neck", "left_shoulder", "right_shoulder", "left_hip", "right_hip")
@@ -113,6 +128,26 @@ class FusionOptimizationTests(unittest.TestCase):
         self.assertNotIn("learnable", source)
         self.assertNotIn("netbody", source)
 
+    def test_fusion_and_pose_packages_have_no_ground_truth_access(self):
+        root = Path(__file__).resolve().parents[1]
+        for pkg in ("fusion_pipeline", "pose_pipeline"):
+            source = "\n".join(path.read_text(encoding="utf-8").lower() for path in (root / pkg).glob("*.py"))
+            self.assertNotIn("ground_truth", source)
+            self.assertNotIn("calibrate_domain_offsets", source)
+
+    def test_fusion_executor_uses_gated_consensus(self):
+        executor = (Path(__file__).resolve().parents[1] / "fusion_pipeline" / "executor.py").read_text(encoding="utf-8")
+        self.assertIn("apply_multiview_geometric_fusion(", executor)
+        self.assertNotIn("apply_belief_joint_replacement", executor)
+
+    def test_stale_report_protocol_is_not_reused(self):
+        header = ["Set", "Segment", "Cam Master", "Cam Slave"]
+        self.assertEqual(_parse_history_row(["S1", "seg1", "cam1", "cam2"], _get_header_indices(header)), (None, None))
+        header = ["Set", "Segment", "Protocol", "Cam Master", "Cam Slave"]
+        stale = ["S1", "seg1", "no_gt_v1", "cam1", "cam2"]
+        self.assertEqual(_parse_history_row(stale, _get_header_indices(header)), (None, None))
+        self.assertEqual(EVALUATION_PROTOCOL, "no_gt_v2_shared_shape_consensus")
+
     def test_safe_consensus_blend_moves_both_views_only_partway(self):
         cam1 = {"left_elbow": [0.0, 0.0, 0.0], "left_wrist": [1.0, 0.0, 0.0]}
         cam2 = {"left_elbow": [0.0, 0.0, 0.0], "left_wrist": [1.032, 0.0, 0.0]}
@@ -145,6 +180,29 @@ class FusionOptimizationTests(unittest.TestCase):
         )
         self.assertEqual(unchanged1["left_wrist"], cam1["left_wrist"])
         self.assertEqual(unchanged2["left_wrist"], far_cam2["left_wrist"])
+
+    def test_confidence_corrections_protects_visible_extremities_from_negative_transfer(self):
+        from fusion_pipeline.correction import apply_confidence_corrections
+        cam1 = {"left_wrist": np.array([1.0, 0.0, 0.0])}
+        cam2 = {"left_wrist": np.array([1.2, 0.0, 0.0])}  # 20cm away
+        identity = (1.0, np.eye(3), np.zeros(3))
+        # When cam1 can see left_wrist (vis1=True), 20cm displacement exceeds 5cm extremity limit -> ignored
+        c1, _ = apply_confidence_corrections(
+            cam1, cam2, k1_set=set(), k2_set={"left_wrist"},
+            t12=identity, t21=identity,
+            h1={"left_wrist": 0.2}, h2={"left_wrist": 0.9},
+            vis1={"left_wrist": True}, vis2={"left_wrist": True}
+        )
+        np.testing.assert_array_equal(c1["left_wrist"], cam1["left_wrist"])
+
+        # When cam1 is occluded (vis1=False), slave is allowed to supply the joint
+        c1_occ, _ = apply_confidence_corrections(
+            cam1, cam2, k1_set=set(), k2_set={"left_wrist"},
+            t12=identity, t21=identity,
+            h1={"left_wrist": 0.2}, h2={"left_wrist": 0.9},
+            vis1={"left_wrist": False}, vis2={"left_wrist": True}
+        )
+        self.assertGreater(float(c1_occ["left_wrist"][0]), 1.0)
 
     def test_ranking_prioritizes_both_pose_metrics(self):
         balanced = {
@@ -245,6 +303,21 @@ class EvaluationStageTests(unittest.TestCase):
             (pose / "metadata" / "pose_data_1.json").write_text(json.dumps(metadata), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "different inputs"):
                 _require_evaluation_inputs(config)
+
+    def test_person_payload_resolution_by_target_name(self):
+        from compat import resolve_person_payload
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "harmony_person_mapping.txt").write_text("0 = aria02\n1 = aria01", encoding="utf-8")
+            pkl_path = root / "cam.pkl"
+            wham_data = {
+                0: {"pose": np.zeros((10, 72)), "name": "track_zero"},
+                1: {"pose": np.zeros((20, 72)), "name": "track_one"},
+            }
+            p1 = resolve_person_payload(wham_data, pkl_path=pkl_path, target_person="aria01")
+            self.assertEqual(p1["name"], "track_one")
+            p2 = resolve_person_payload(wham_data, pkl_path=pkl_path, target_person="aria02")
+            self.assertEqual(p2["name"], "track_zero")
 
 
 if __name__ == "__main__":

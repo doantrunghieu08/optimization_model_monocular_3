@@ -161,6 +161,12 @@ def estimate_bidirectional_similarity(cam1, cam2, candidate_names, threshold, ma
 from fusion_pipeline.config import NON_REPLACEABLE_ANCHORS
 
 
+EXTREMITIES = {
+    "left_wrist", "right_wrist", "left_hand", "right_hand",
+    "left_ankle", "right_ankle", "left_toe", "right_toe", "left_foot", "right_foot"
+}
+
+
 def apply_confidence_corrections(cam1, cam2, k1_set, k2_set, t12, t21, h1=None, h2=None, blend=True, uncertainty_gating=True, max_displacement=0.35, vis1=None, vis2=None):
     cam1_corr = dict(cam1)
     cam2_corr = dict(cam2)
@@ -169,32 +175,38 @@ def apply_confidence_corrections(cam1, cam2, k1_set, k2_set, t12, t21, h1=None, 
 
     for name in sorted_k1:
         p_from_1 = transform_joint_kinematic(name, cam1, cam2_corr, t12)
+        is_target_occluded = vis2 is not None and not vis2.get(name, True)
+        is_extremity = name in EXTREMITIES
+        limit = 0.75 if is_target_occluded else (0.05 if is_extremity else min(float(max_displacement), 0.15))
         if uncertainty_gating and max_displacement is not None:
             disp = float(np.linalg.norm(p_from_1 - as_xyz(cam2[name])))
-            is_target_occluded = vis2 is not None and not vis2.get(name, True)
-            limit = 0.75 if is_target_occluded else float(max_displacement)
             if disp > limit:
                 continue
         if blend and h1 and h2:
             w1 = float(h1.get(name, 1.0))
             w2 = float(h2.get(name, 0.5))
             alpha = w1 / max(w1 + w2, 1e-6)
+            if not is_target_occluded:
+                alpha = min(alpha, 0.35 if is_extremity else 0.5)
             cam2_corr[name] = alpha * p_from_1 + (1.0 - alpha) * as_xyz(cam2[name])
         else:
             cam2_corr[name] = p_from_1
 
     for name in sorted_k2:
         p_from_2 = transform_joint_kinematic(name, cam2, cam1_corr, t21)
+        is_target_occluded = vis1 is not None and not vis1.get(name, True)
+        is_extremity = name in EXTREMITIES
+        limit = 0.75 if is_target_occluded else (0.05 if is_extremity else min(float(max_displacement), 0.15))
         if uncertainty_gating and max_displacement is not None:
             disp = float(np.linalg.norm(p_from_2 - as_xyz(cam1[name])))
-            is_target_occluded = vis1 is not None and not vis1.get(name, True)
-            limit = 0.75 if is_target_occluded else float(max_displacement)
             if disp > limit:
                 continue
         if blend and h1 and h2:
             w1 = float(h1.get(name, 0.5))
             w2 = float(h2.get(name, 1.0))
             alpha = w2 / max(w1 + w2, 1e-6)
+            if not is_target_occluded:
+                alpha = min(alpha, 0.35 if is_extremity else 0.5)
             cam1_corr[name] = alpha * p_from_2 + (1.0 - alpha) * as_xyz(cam1[name])
         else:
             cam1_corr[name] = p_from_2
@@ -210,35 +222,36 @@ def apply_rotation_mismatch_corrections(cam1_corr, cam2_corr, cam1, cam2, m_set,
             continue
         w1 = float(h1.get(name, 0.5)) if h1 else 0.5
         w2 = float(h2.get(name, 0.5)) if h2 else 0.5
+        is_extremity = name in EXTREMITIES
         if w1 >= w2:
             p_trans = transform_joint_kinematic(name, cam1, cam2_fixed, t12)
+            is_target_occluded = vis2 is not None and not vis2.get(name, True)
+            limit = 0.75 if is_target_occluded else (0.05 if is_extremity else min(float(max_displacement), 0.15))
             if uncertainty_gating and max_displacement is not None:
-                is_target_occluded = vis2 is not None and not vis2.get(name, True)
-                if not is_target_occluded and float(np.linalg.norm(p_trans - as_xyz(cam2[name]))) > max_displacement:
+                if float(np.linalg.norm(p_trans - as_xyz(cam2[name]))) > limit:
                     continue
             if blend:
                 alpha = w1 / max(w1 + w2, 1e-6)
+                if not is_target_occluded:
+                    alpha = min(alpha, 0.35 if is_extremity else 0.5)
                 cam2_fixed[name] = alpha * p_trans + (1.0 - alpha) * as_xyz(cam2[name])
             else:
                 cam2_fixed[name] = p_trans
         else:
             p_trans = transform_joint_kinematic(name, cam2, cam1_fixed, t21)
+            is_target_occluded = vis1 is not None and not vis1.get(name, True)
+            limit = 0.75 if is_target_occluded else (0.05 if is_extremity else min(float(max_displacement), 0.15))
             if uncertainty_gating and max_displacement is not None:
-                is_target_occluded = vis1 is not None and not vis1.get(name, True)
-                if not is_target_occluded and float(np.linalg.norm(p_trans - as_xyz(cam1[name]))) > max_displacement:
+                if float(np.linalg.norm(p_trans - as_xyz(cam1[name]))) > limit:
                     continue
             if blend:
                 alpha = w2 / max(w1 + w2, 1e-6)
+                if not is_target_occluded:
+                    alpha = min(alpha, 0.35 if is_extremity else 0.5)
                 cam1_fixed[name] = alpha * p_trans + (1.0 - alpha) * as_xyz(cam1[name])
             else:
                 cam1_fixed[name] = p_trans
     return cam1_fixed, cam2_fixed
-
-
-EXTREMITIES = {
-    "left_wrist", "right_wrist", "left_hand", "right_hand",
-    "left_ankle", "right_ankle", "left_toe", "right_toe", "left_foot", "right_foot"
-}
 
 
 def apply_multiview_geometric_fusion(
@@ -305,7 +318,7 @@ def apply_multiview_geometric_fusion(
         limit2 = 0.75 if not v2 else max_disp
 
         # prevent negative transfer on camera 1:
-        # primary camera observation is ground truth viewpoint; only replace if occluded or severely corrupted
+        # Keep the primary camera observation unless it is occluded or severely corrupted.
         if not v1 and v2 and disp1 <= limit1:
             cam1_fused[name] = p2_to_1
         elif v1 and v2 and disp1 <= effective_cons1:
@@ -417,103 +430,5 @@ def apply_belief_joint_replacement(
     enforce_bone_lengths(cam2_fused, cam2)
 
     return cam1_fused, cam2_fused
-
-
-def calibrate_domain_offsets(
-    fused_keypoints_dir,
-    config: dict,
-    calib_frames: int = 30,
-) -> None:
-    """
-    ponytail: domain gap offset calibration.
-    Compensates for systematic static displacement between SMPL skeleton joint definitions
-    and mocap surface markers (e.g. MPI-INF-3DHP) using initial standing frames.
-    Reduces systematic MPJPE by ~36 mm and MBLE by ~15 mm with zero accel degradation.
-    """
-    import re
-    from pathlib import Path
-    from json_io import read_json, write_json
-
-    inputs = config.get("inputs", {})
-    gt_dir_str = inputs.get("ground_truth_dir")
-    gt_dir = Path(gt_dir_str) if gt_dir_str else None
-
-    video_paths = {
-        "camera1": inputs.get("camera1_video", ""),
-        "camera2": inputs.get("camera2_video", ""),
-    }
-
-    gt_indices = {
-        "head": 6, "neck": 5, "pelvis": 4,
-        "left_shoulder": 9, "right_shoulder": 14,
-        "left_elbow": 10, "right_elbow": 15,
-        "left_wrist": 11, "right_wrist": 16,
-        "left_hip": 18, "right_hip": 23,
-        "left_knee": 19, "right_knee": 24,
-        "left_ankle": 20, "right_ankle": 25,
-        "left_foot": 21, "right_foot": 26,
-        "left_toe": 22, "right_toe": 27,
-        "left_hand": 12, "right_hand": 17,
-    }
-
-    fused_files = sorted(
-        Path(fused_keypoints_dir).glob("fused_data_*.json"),
-        key=lambda p: int(re.findall(r"\d+", p.stem)[-1]) if re.findall(r"\d+", p.stem) else -1
-    )
-    if not fused_files:
-        return
-
-    offsets = {}
-    for cam, vpath in video_paths.items():
-        match = re.search(r"(video_\d+_seg_\d+)", str(vpath))
-        gt_file = (gt_dir / f"{match.group(1)}.json") if (gt_dir and match) else None
-        if gt_file and gt_file.exists():
-            try:
-                gt_data = read_json(gt_file)
-                cam_offsets = {k: np.zeros(3) for k in gt_indices}
-                counts = {k: 0 for k in gt_indices}
-                n_used = min(calib_frames, len(fused_files), len(gt_data))
-                for t in range(n_used):
-                    frame_data = read_json(fused_files[t]).get(cam, {})
-                    if not frame_data:
-                        continue
-                    p_root = (np.array(frame_data.get("left_hip", [0, 0, 0]), dtype=float) + np.array(frame_data.get("right_hip", [0, 0, 0]), dtype=float)) / 2.0
-                    g_raw = np.array(gt_data[t]["pose3d"], dtype=float) / 1000.0
-                    g_root = (g_raw[18] + g_raw[23]) / 2.0
-                    for k, idx in gt_indices.items():
-                        if k in frame_data and idx < len(g_raw):
-                            diff = (g_raw[idx] - g_root) - (np.array(frame_data[k], dtype=float) - p_root)
-                            # ponytail: only accumulate true static domain gap; reject dynamic flipped poses (>0.35m)
-                            if np.linalg.norm(diff) < 0.35:
-                                cam_offsets[k] += diff
-                                counts[k] += 1
-                for k in gt_indices:
-                    if counts[k] > 0:
-                        cam_offsets[k] /= counts[k]
-                    else:
-                        cam_offsets[k] = np.zeros(3)
-                offsets[cam] = cam_offsets
-                print(f"[Calibration] Calibrated domain offsets for {cam} on {n_used} frames")
-            except Exception as e:
-                print(f"[Calibration] Failed to compute GT offsets for {cam}: {e}")
-
-    if not offsets:
-        return
-
-    for fpath in fused_files:
-        frame_json = read_json(fpath)
-        modified = False
-        for cam, cam_offsets in offsets.items():
-            if cam in frame_json:
-                ref_pose = {k: list(v) for k, v in frame_json[cam].items()}
-                for k, off in cam_offsets.items():
-                    if k in frame_json[cam]:
-                        cur = np.array(frame_json[cam][k], dtype=float)
-                        frame_json[cam][k] = [round(float(x), 6) for x in (cur + off)]
-                        modified = True
-                # ponytail: lock rigid bone lengths immediately after calibration
-                enforce_bone_lengths(frame_json[cam], ref_pose)
-        if modified:
-            write_json(fpath, frame_json)
 
 

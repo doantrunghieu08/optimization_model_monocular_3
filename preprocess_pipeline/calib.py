@@ -3,33 +3,19 @@ import joblib
 import numpy as np
 import cv2
 from json_io import read_json
-from config_loader import resolve_inputs
+from config_loader import resolve_inputs, resolve_preprocess_output_dir
 from json_io import write_json
-from compat import load_joblib_compat
-from config_loader import resolve_preprocess_output_dir
-
+from compat import load_joblib_compat, resolve_person_payload
 
 
 def _extract_person_payload(wham_data):
-    if isinstance(wham_data, dict):
-        if 0 in wham_data:
-            return wham_data[0]
-        if "0" in wham_data:
-            return wham_data["0"]
-        for value in wham_data.values():
-            if isinstance(value, dict):
-                return value
-    if isinstance(wham_data, list):
-        for value in wham_data:
-            if isinstance(value, dict):
-                return value
-    return None
+    return resolve_person_payload(wham_data)
 
 
-def _load_wham_camera_payload(pkl_path: Path) -> dict:
+def _load_wham_camera_payload(pkl_path: Path, target_person=None) -> dict:
     if not pkl_path.exists():
         raise FileNotFoundError(f"WHAM PKL not found: {pkl_path}")
-    person = _extract_person_payload(load_joblib_compat(pkl_path))
+    person = resolve_person_payload(load_joblib_compat(pkl_path), pkl_path=pkl_path, target_person=target_person)
     if person is None:
         raise ValueError(f"Cannot extract person payload from WHAM PKL: {pkl_path}")
     return person
@@ -45,6 +31,16 @@ def _mean_shape_over_frames(shape_value) -> list[list[float]]:
 
 
 def _estimate_intrinsics(video_path: Path) -> list[list[float]]:
+    calib_path = video_path.parent / "calib.txt"
+    if calib_path.exists():
+        values = [float(value) for value in calib_path.read_text(encoding="utf-8").split()]
+        if len(values) != 4:
+            raise ValueError(f"Expected fx fy cx cy in {calib_path}, got {len(values)} values")
+        fx, fy, cx, cy = values
+        if min(fx, fy) <= 0:
+            raise ValueError(f"Invalid focal length in {calib_path}")
+        return [[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]]
+
     if not video_path.exists():
         raise FileNotFoundError(f"Video not found: {video_path}")
 
@@ -93,7 +89,7 @@ def export_camera_jsons(config: dict, offset: int) -> None:
         wham_payload = None
         if pkl_path is not None and pkl_path.exists():
             try:
-                wham_payload = _load_wham_camera_payload(pkl_path)
+                wham_payload = _load_wham_camera_payload(pkl_path, target_person=inputs.get("target_person"))
             except Exception as exc:
                 print(f"[Preprocess] PKL skip for {cam_id}: {exc}")
 
@@ -101,7 +97,7 @@ def export_camera_jsons(config: dict, offset: int) -> None:
             "camera_id": cam_id,
             "source_pkl": source_by_id.get(cam_id, ""),
             "offset": int(offset),
-            "intrinsics_source": "intri_esti",
+            "intrinsics_source": "calib.txt" if (video_path.parent / "calib.txt").exists() else "intri_esti",
             "intrinsics_estimation": _estimate_intrinsics(video_path),
         }
 

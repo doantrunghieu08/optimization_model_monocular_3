@@ -14,6 +14,7 @@ import queue
 from config_loader import load_config
 
 VIDEO_FOLDER = "imageSequence"
+EVALUATION_PROTOCOL = "no_gt_v2_shared_shape_consensus"
 
 HAS_GSPREAD = False
 try:
@@ -203,6 +204,7 @@ def _get_header_indices(header: list) -> dict:
     aliases = {
         'Set': ['Set'],
         'Segment': ['Segment'],
+        'Protocol': ['Protocol'],
         'Rank': ['Rank'],
         'Cam Master': ['Cam Master', 'Master'],
         'Cam Slave': ['Cam Slave', 'Supplement'],
@@ -261,6 +263,7 @@ def _get_header_indices(header: list) -> dict:
 
 def _parse_history_row(row: list, idx: dict) -> tuple:
     if idx.get('Segment', -1) == -1 or idx['Segment'] >= len(row): return None, None
+    if idx.get('Protocol', -1) == -1 or idx['Protocol'] >= len(row) or row[idx['Protocol']] != EVALUATION_PROTOCOL: return None, None
     if row[idx['Segment']] == "End": return None, None
     if idx.get('mpjpe.all_method', -1) != -1 and row[idx['mpjpe.all_method']] in ("N/A", "", "inf"): return None, None
     
@@ -274,6 +277,7 @@ def _parse_history_row(row: list, idx: dict) -> tuple:
     key = (row[idx['Segment']], row[idx['Cam Master']], row[idx['Cam Slave']])
     res = {
         "set": get_val('Set', "Unknown_Set"),
+        "protocol": get_val('Protocol'),
         "master": get_val('Cam Master', "N/A"),
         "supplement": get_val('Cam Slave', "N/A"),
         "alpha": sf('Alpha'), "beta": sf('Beta'),
@@ -336,7 +340,7 @@ def load_existing_spreadsheet_results(sheet_name: str) -> dict:
             if header:
                 idx = _get_header_indices(header)
                 required = (
-                    'Segment', 'Alpha', 'Beta', 'mble.baseline', 'mble.method',
+                    'Segment', 'Protocol', 'Alpha', 'Beta', 'mble.baseline', 'mble.method',
                     'accel.baseline', 'accel.method',
                 )
                 if not any(idx.get(column, -1) == -1 for column in required):
@@ -366,7 +370,7 @@ def load_existing_spreadsheet_results(sheet_name: str) -> dict:
 
 def _build_report_rows(all_results: dict, joint_keys: list) -> list:
     header = [
-        'Set', 'Segment', 'Rank', 'Cam Master', 'Cam Slave', 'Alpha', 'Beta',
+        'Set', 'Segment', 'Protocol', 'Rank', 'Cam Master', 'Cam Slave', 'Alpha', 'Beta',
         # Key Improvement Deltas (placed side-by-side)
         '% delta_mpjpe', '% delta_pa-mpjpe', '% delta_accel', '% delta_mble',
         # MPJPE Group
@@ -400,7 +404,8 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
         valid_results = [r for r in results if r and r.get('mpjpe', float('inf')) != float('inf')]
         for rank, res in enumerate(valid_results, start=1):
             row = [
-                res.get('set', 'Unknown_Set'), seg_name, rank, res['master'], res.get('supplement', 'N/A'),
+                res.get('set', 'Unknown_Set'), seg_name, res.get('protocol', EVALUATION_PROTOCOL),
+                rank, res['master'], res.get('supplement', 'N/A'),
                 res.get('alpha', 'N/A') if res.get('alpha') != float('inf') else "N/A",
                 res.get('beta', 'N/A') if res.get('beta') != float('inf') else "N/A",
                 # Key Improvement Deltas
@@ -595,7 +600,8 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
     le_pa_mpjpe = f"{le_pa_val:.2f}" if le_pa_val != float('inf') else cam1_metrics.get("PA-MPJPE", "N/A")
 
     return {
-        "set": current_set, "master": camA_id, "supplement": camB_id,
+        "set": current_set, "protocol": EVALUATION_PROTOCOL,
+        "master": camA_id, "supplement": camB_id,
         "alpha": belief_cfg["alpha"], "beta": belief_cfg["beta"], "mpjpe": mpjpe,
         "mpjpe_occ": mpjpe_occ, "mpjpe_vis": mpjpe_vis,
         "pa_mpjpe": pa_mpjpe, "pa_mpjpe_occ": pa_mpjpe_occ, "pa_mpjpe_vis": pa_mpjpe_vis,
