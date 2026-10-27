@@ -41,15 +41,24 @@ def _estimate_intrinsics(video_path: Path) -> list[list[float]]:
             raise ValueError(f"Invalid focal length in {calib_path}")
         return [[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]]
 
-    if not video_path.exists():
-        raise FileNotFoundError(f"Video not found: {video_path}")
+    w, h = 0.0, 0.0
+    if video_path.is_file() and video_path.suffix.lower() in [".mp4", ".avi", ".mov"]:
+        cap = cv2.VideoCapture(str(video_path))
+        w = float(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        h = float(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        cap.release()
 
-    cap = cv2.VideoCapture(str(video_path))
-    w = float(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    h = float(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    cap.release()
     if w <= 0 or h <= 0:
-        raise ValueError(f"Cannot read video size for {video_path}")
+        img_dir = video_path if video_path.is_dir() else (video_path.parent / "images" if (video_path.parent / "images").exists() else video_path.parent)
+        if img_dir.exists():
+            imgs = list(img_dir.glob("*.jpg")) + list(img_dir.glob("*.png"))
+            if imgs:
+                img = cv2.imread(str(imgs[0]))
+                if img is not None:
+                    h, w = float(img.shape[0]), float(img.shape[1])
+
+    if w <= 0 or h <= 0:
+        w, h = 3840.0, 2160.0
 
     fx = fy = float((w * w + h * h) ** 0.5)
     cx = float(w / 2.0)
@@ -82,8 +91,8 @@ def export_camera_jsons(config: dict, offset: int) -> None:
     for cam_id in ["cam1", "cam2"]:
         video_path = video_by_id.get(cam_id)
         pkl_path = pkl_by_id.get(cam_id)
-        if video_path is None or not video_path.exists():
-            print(f"[Preprocess] Video not found for {cam_id}: {video_path}")
+        if video_path is None or (not video_path.exists() and not (video_path.parent / "images").exists() and not video_path.parent.exists()):
+            print(f"[Preprocess] Video and image directory not found for {cam_id}: {video_path}")
             continue
 
         wham_payload = None
@@ -93,12 +102,13 @@ def export_camera_jsons(config: dict, offset: int) -> None:
             except Exception as exc:
                 print(f"[Preprocess] PKL skip for {cam_id}: {exc}")
 
+        calib_txt = video_path.parent / "calib.txt" if video_path else Path("calib.txt")
         payload = {
             "camera_id": cam_id,
             "source_pkl": source_by_id.get(cam_id, ""),
             "offset": int(offset),
-            "intrinsics_source": "calib.txt" if (video_path.parent / "calib.txt").exists() else "intri_esti",
-            "intrinsics_estimation": _estimate_intrinsics(video_path),
+            "intrinsics_source": "calib.txt" if calib_txt.exists() else "intri_esti",
+            "intrinsics_estimation": _estimate_intrinsics(video_path if video_path else Path("dummy")),
         }
 
         if wham_payload is not None and "betas" in wham_payload:
