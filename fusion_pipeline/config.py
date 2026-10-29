@@ -29,7 +29,8 @@ ROTATION_PARENT_JOINTS = {
     "right_foot": "right_ankle",
 }
 
-NON_REPLACEABLE_ANCHORS = {"left_hip", "left_shoulder", "right_hip", "right_shoulder"}
+# ponytail: chi khoa pelvis/neck lam goc; cho phep cam phu sua vai va hong khi bi che
+NON_REPLACEABLE_ANCHORS = {"pelvis", "neck"}
 
 OCCLUSION_NEIGHBORS = 10
 TORSO_PART_IDS = {0, 3, 6, 9, 13, 14}
@@ -58,3 +59,16 @@ DEFAULT_OCCLUDED_FACTOR = 0.25
 HUBER_DELTA = 0.05
 BONE_LENGTH_MIN_SCALE = 0.95
 BONE_LENGTH_MAX_SCALE = 1.05
+
+DEFAULT_MASTER_MARGIN = 0.15
+DEFAULT_MASTER_MIN_CONFIDENCE = 0.3
+DEFAULT_MASTER_MAX_DISPLACEMENT = 0.15
+DEFAULT_MASTER_BLEND = 0.5
+HINGE_TRIPLETS = (
+    ("left_shoulder", "left_elbow", "left_wrist"),
+    ("right_shoulder", "right_elbow", "right_wrist"),
+    ("left_hip", "left_knee", "left_ankle"),
+    ("right_hip", "right_knee", "right_ankle"),
+)
+DEFAULT_MIN_COS = -0.996  # cos(175 deg): prevents hyperextension
+DEFAULT_MAX_COS = 0.866   # cos(30 deg): prevents extreme unnatural flexion

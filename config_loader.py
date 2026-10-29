@@ -255,6 +255,8 @@ def absolutize_config_paths(config: dict, workspace_dir: Path) -> dict:
     for section_name in ("inputs", "paths"):
         section = config.get(section_name, {})
         for key, value in list(section.items()):
+            if key == "target_person":
+                continue
             if not isinstance(value, str) or not value or value.startswith("/"):
                 continue
             if value.startswith("optimization_model_monocular/"):

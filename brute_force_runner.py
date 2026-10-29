@@ -14,7 +14,7 @@ import queue
 from config_loader import load_config
 
 VIDEO_FOLDER = "imageSequence"
-EVALUATION_PROTOCOL = "no_gt_v2_shared_shape_consensus"
+EVALUATION_PROTOCOL = "no_gt_v8_target_sync_master_shape"
 
 HAS_GSPREAD = False
 try:
@@ -527,6 +527,14 @@ def generate_spreadsheet_report_safe(all_results, sheet_name, worksheet_title=No
     except Exception as e:
         if not silent: print(f"[-] Lỗi khi tạo báo cáo: {e}")
 
+def _resolve_pair_mode(master_cfg: dict, master: str, slave: str) -> str:
+    mode = master_cfg.get("pair_modes", {}).get(
+        f"{master}->{slave}", master_cfg.get("default_mode", "aggressive")
+    )
+    if mode not in {"aggressive", "protected", "posed_fallback"}:
+        raise ValueError(f"Unsupported fusion pair mode: {mode}")
+    return mode
+
 def _setup_pipeline_config(base_cfg, gt_dir, camA, camB, workspace):
     import copy
     import torch
@@ -542,6 +550,11 @@ def _setup_pipeline_config(base_cfg, gt_dir, camA, camB, workspace):
     cfg.setdefault("visualization", {})["enabled"] = False
     cfg.setdefault("runtime", {})["clean_output"] = True
     cfg["runtime"]["stage"] = "default"
+    master_cfg = cfg.setdefault("fusion", {}).setdefault("master_protection", {})
+    pair_mode = _resolve_pair_mode(master_cfg, camA["id"], camB["id"])
+    master_cfg["enabled"] = pair_mode == "protected"
+    cfg["fusion"]["pair_mode"] = pair_mode
+    print(f"[Fusion] Pair mode {camA['id']}->{camB['id']}: {pair_mode}")
     device = "cuda" if torch.cuda.is_available() else "cpu"
     cfg.setdefault("learnable", {})["device"] = device
     cfg.setdefault("learnable_extra", {})["device"] = device
@@ -657,12 +670,11 @@ def _evaluate_camera_pair(camA, camB, base_cfg, gt_dir, workspace, seg_name: str
         return None
 
 def _ranking_key(result: dict) -> tuple[float, float, float]:
-    mpjpe = float(result.get("% delta_mpjpe", float("-inf")))
-    pa_mpjpe = float(result.get("% delta_pa_mpjpe", float("-inf")))
-    accel = float(result.get("% delta_accel", float("-inf")))
-    mble = float(result.get("% delta_mble", float("-inf")))
-    # Pose changes within 0.1 percentage point are a tie; Accel/MBLE then break it.
-    return round(min(mpjpe, pa_mpjpe), 1), round(0.6 * mpjpe + 0.4 * pa_mpjpe, 1), accel + mble
+    # PA-MPJPE is comparable across cameras even when exo-to-world extrinsics are unavailable.
+    pa_error = float(result.get("pa_mpjpe", float("inf")))
+    pa_gain = float(result.get("% delta_pa_mpjpe", float("-inf")))
+    motion_error = float(result.get("accel", float("inf"))) + float(result.get("mble", float("inf")))
+    return -pa_error, pa_gain, -motion_error
 
 
 def _get_timed_input(timeout: int) -> str | None:

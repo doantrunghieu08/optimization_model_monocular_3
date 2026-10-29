@@ -2,14 +2,13 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Optional
 
-import joblib
 import numpy as np
 import yaml
 from json_io import read_json
 from config_loader import resolve_inputs
 from keypoints_map import load_keypoints2d_map
 from json_io import write_json
-from compat import load_joblib_compat
+from compat import load_joblib_compat, resolve_person_payload
 from config_loader import resolve_preprocess_output_dir
 
 
@@ -19,38 +18,26 @@ def _to_numpy(value):
     return np.asarray(value)
 
 
-def _extract_person_payload(wham_data):
-    if isinstance(wham_data, Mapping):
-        if 0 in wham_data:
-            return wham_data[0]
-        if "0" in wham_data:
-            return wham_data["0"]
-        for value in wham_data.values():
-            if isinstance(value, Mapping):
-                return value
-    if isinstance(wham_data, list):
-        for value in wham_data:
-            if isinstance(value, Mapping):
-                return value
-    return None
-
-
-def _load_tracking_payload(pkl_path: Path) -> Optional[dict]:
+def _load_tracking_payload(pkl_path: Path, target_person=None) -> Optional[dict]:
     if not pkl_path.exists():
         print(f"[Preprocess] 2D skip: PKL not found: {pkl_path}")
         return None
 
-    person = _extract_person_payload(load_joblib_compat(pkl_path))
+    person = resolve_person_payload(
+        load_joblib_compat(pkl_path),
+        pkl_path=pkl_path,
+        target_person=target_person,
+    )
     if person is not None:
         tracking = person.get("tracking_results_for_reproj")
         if isinstance(tracking, Mapping):
             return dict(tracking)
 
-    # ponytail: fallback to tracking_results.pth in same folder if not embedded in pkl
-    pth_path = pkl_path.parent / "tracking_results.pth"
-    if pth_path.exists():
+    tracking_files = sorted(pkl_path.parent.glob("tracking_results*.pth"))
+    if tracking_files:
+        pth_path = tracking_files[0]
         t_raw = load_joblib_compat(pth_path)
-        t = t_raw[0] if (isinstance(t_raw, dict) and 0 in t_raw) else (next(iter(t_raw.values())) if isinstance(t_raw, dict) else t_raw)
+        t = resolve_person_payload(t_raw, pkl_path=pkl_path, target_person=target_person)
         if isinstance(t, Mapping) and "keypoints" in t:
             return dict(t)
 
@@ -127,7 +114,7 @@ def export_tracking_2d_to_camera_profiles(config: dict) -> None:
             print(f"[Preprocess] 2D skip: camera profile not found: {profile_path}")
             continue
 
-        tracking = _load_tracking_payload(pkl_path)
+        tracking = _load_tracking_payload(pkl_path, target_person=inputs.get("target_person"))
         if tracking is None:
             continue
 

@@ -9,13 +9,17 @@ preprocess:
   offset_estimation:
     max_frames: null # Số frame tối đa dùng cho ước lượng offset.
 
+pose_export:
+  enabled: true
+  use_world_coords: false # Giữ false (camera coords) để ray-casting khớp với WHAM mesh vertices
+
 inputs:
   cam1_pkl: "input/Hugging/exo/cam04/harmony4D_002_hugging_cam04_wham/wham_harmony4D_002_hugging_cam04_ffmpeg.pkl"
   cam2_pkl: "input/Hugging/exo/cam05/harmony4D_002_hugging_cam05_wham/wham_harmony4D_002_hugging_cam05_ffmpeg.pkl"
   camera1_video: "input/Hugging/exo/cam04/images/harmony4D_002_hugging_cam04_ffmpeg.mp4"
   camera2_video: "input/Hugging/exo/cam05/images/harmony4D_002_hugging_cam05_ffmpeg.mp4"
   ground_truth_dir: "input/Hugging/processed_data/smpl" # Thư mục ground-truth cho evaluation.
-  target_person: "aria01" # Chọn 1 người để fusion ("aria01" hoặc "aria02")
+  target_person: "aria02" # Chọn 1 người để fusion ("aria01" hoặc "aria02")
 
 paths:
   smpl_model: "models/SMPL_NEUTRAL.pkl"
@@ -44,11 +48,25 @@ fusion:
 
   # Cơ chế Uncertainty-Gating: ngăn chặn việc thay thế khớp nếu camera phụ không đáng tin cậy
   uncertainty_gating:
-    consensus_blend_strength: 0.25
+    consensus_blend_strength: 0.50
     enabled: true
     max_displacement: 0.35 # Khoảng cách tối đa (m) giữa tọa độ ánh xạ và mục tiêu
     min_confidence: 0.1    # Ngưỡng tin cậy tối thiểu của camera phụ
     consensus_threshold: 0.08 # Ngưỡng (m) đồng thuận đa góc nhìn để blend các khớp cùng nhìn thấy rõ
+
+  # Chỉ cho camera phụ sửa joint đang nhìn rõ khi belief cao hơn đủ lớn.
+  master_protection:
+    enabled: true
+    confidence_margin: 0.15
+    default_mode: aggressive
+    pair_modes:
+      "cam13->cam21": posed_fallback
+
+  # Cơ chế giới hạn góc giải phẫu: kiểm soát góc uốn khớp bản lề (khuỷu tay, đầu gối)
+  angle_limits:
+    enabled: true
+    min_angle_deg: 30.0   # Tránh gập ép quá mức
+    max_angle_deg: 175.0  # Tránh gập ngược / hyperextension
 
   # Bộ lọc làm mượt quỹ đạo thời gian (giảm rung giật / giảm Accel Error)
   smoothing:

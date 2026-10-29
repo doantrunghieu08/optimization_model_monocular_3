@@ -22,9 +22,11 @@ def create_smpl_model(model_path):
     return model.eval()
 
 
-def get_3d_joints_for_frame(model, person_data, frame_idx, regressor_path, map_path):
-    pose = person_data["pose"][frame_idx:frame_idx + 1]
-    trans = person_data["trans"][frame_idx:frame_idx + 1]
+def get_3d_joints_for_frame(model, person_data, frame_idx, regressor_path, map_path, use_world: bool = False):
+    pose_key = "pose_world" if use_world and "pose_world" in person_data else "pose"
+    trans_key = "trans_world" if use_world and "trans_world" in person_data else "trans"
+    pose = person_data[pose_key][frame_idx:frame_idx + 1]
+    trans = person_data[trans_key][frame_idx:frame_idx + 1]
     curr_betas = person_data["betas"][frame_idx:frame_idx + 1]
 
     curr_pose_t = torch.tensor(np.ascontiguousarray(pose), dtype=torch.float32)

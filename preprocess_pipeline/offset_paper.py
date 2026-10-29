@@ -3,33 +3,20 @@ from contextlib import redirect_stdout, redirect_stderr
 import io
 from typing import Optional
 
-import joblib
 import numpy as np
 import smplx
 import torch
 from scipy.spatial.distance import cdist
-from compat import load_joblib_compat
+from compat import load_joblib_compat, resolve_person_payload
 from keypoints_map import load_keypoints3d_map
 
 
-def _extract_person_payload(data):
-    if isinstance(data, dict) or "defaultdict" in str(type(data)):
-        if 0 in data:
-            return data[0]
-        if "0" in data:
-            return data["0"]
-        for value in data.values():
-            if isinstance(value, dict):
-                return value
-    if isinstance(data, list):
-        for value in data:
-            if isinstance(value, dict):
-                return value
-    return None
-
-
-def load_pkl_data(file_path):
-    person_data = _extract_person_payload(load_joblib_compat(file_path))
+def load_pkl_data(file_path, target_person=None):
+    person_data = resolve_person_payload(
+        load_joblib_compat(file_path),
+        pkl_path=file_path,
+        target_person=target_person,
+    )
     if person_data is None:
         raise ValueError(f"Cannot parse payload from {file_path}")
     for key in ("pose", "betas"):
@@ -113,9 +100,10 @@ def compute_offset_from_pkls(
     map_path,
     verbose=False,
     max_frames: Optional[int] = None,
+    target_person=None,
 ):
-    cam1_data = load_pkl_data(str(pkl1_path))
-    cam2_data = load_pkl_data(str(pkl2_path))
+    cam1_data = load_pkl_data(str(pkl1_path), target_person=target_person)
+    cam2_data = load_pkl_data(str(pkl2_path), target_person=target_person)
     t = min(len(cam1_data["pose"]), len(cam2_data["pose"]))
     if max_frames is not None:
         t = min(t, int(max_frames))

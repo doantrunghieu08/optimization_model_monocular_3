@@ -10,6 +10,9 @@ from fusion_pipeline.config import DEFAULT_OCCLUDED_FACTOR
 from fusion_pipeline.config import RIGID_BONES_RATIO
 from fusion_pipeline.config import HEIGHT
 from fusion_pipeline.config import HUBER_DELTA
+from fusion_pipeline.config import HINGE_TRIPLETS
+from fusion_pipeline.config import DEFAULT_MIN_COS
+from fusion_pipeline.config import DEFAULT_MAX_COS
 
 
 def get_diff_f(f_name, anchors, cam1, cam2, conf1=None, conf2=None, vis1=None, vis2=None, occluded_factor=DEFAULT_OCCLUDED_FACTOR):
@@ -238,6 +241,7 @@ def optimize_sequence_gpu(
     p2_fused_np = np.array([[frame["camera2"][j] for j in joint_names] for frame in all_fused], dtype=np.float32)
 
     # Reference bone lengths from initial pose
+    all_pose = None
     if pose_dir and Path(pose_dir).exists():
         pose_files = sorted(Path(pose_dir).glob("pose_data_*.json"), key=lambda f: int(f.stem.split("_")[-1]))
         if len(pose_files) == T:
@@ -287,20 +291,33 @@ def optimize_sequence_gpu(
     torso_anchors = [name_to_idx[n] for n in ("pelvis", "neck", "left_shoulder", "right_shoulder", "left_hip", "right_hip") if n in name_to_idx]
     anchor_idx_t = torch.tensor(torso_anchors, device=device, dtype=torch.long)
 
+    hinge_pairs = [
+        (name_to_idx[a], name_to_idx[b], name_to_idx[c])
+        for a, b, c in HINGE_TRIPLETS
+        if a in name_to_idx and b in name_to_idx and c in name_to_idx
+    ]
+
     optimizer = torch.optim.Adam([delta1, delta2], lr=0.005)
     opt_cfg = (config or {}).get("fusion", {}).get("optimization", {})
+    fusion_cfg = (config or {}).get("fusion", {})
+    master_prot_enabled = bool(fusion_cfg.get("master_protection", {}).get("enabled", False))
+    angle_limits_enabled = bool(fusion_cfg.get("angle_limits", {}).get("enabled", True))
     regularization_enabled = bool(opt_cfg.get("regularization", True))
     reg_lambda = float(opt_cfg.get("regularization_lambda", 1.0))
     temp_lambda = float(opt_cfg.get("temporal_lambda", 2.0))
     n_iters = min(int(opt_cfg.get("max_iter", 35)), 50)
 
+    mask1 = torch.where(c1_t < 0.3, torch.tensor(1.0, device=device), torch.tensor(0.0, device=device)).unsqueeze(-1) if master_prot_enabled else torch.ones_like(delta1)
+    mask2 = torch.ones_like(delta2)
+
     for _ in range(n_iters):
         optimizer.zero_grad()
-        p1 = p1_init + delta1
-        p2 = p2_init + delta2
+        p1 = p1_init + delta1 * mask1
+        p2 = p2_init + delta2 * mask2
 
-        loss_prox = (c1_t.unsqueeze(-1) * (delta1 ** 2)).sum() + (c2_t.unsqueeze(-1) * (delta2 ** 2)).sum()
-        loss_prox = loss_prox / (T * N)
+        # ponytail: anchor observations strongly to prevent drift
+        loss_prox = ((delta1 * mask1) ** 2).sum() + ((delta2 * mask2) ** 2).sum()
+        loss_prox = loss_prox / max((mask1.sum() + mask2.sum()), 1.0)
 
         loss_bone = 0.0
         for b_idx, (c_i, p_i) in enumerate(bone_pairs):
@@ -309,30 +326,52 @@ def optimize_sequence_gpu(
             loss_bone = loss_bone + (torch.relu(low1[b_idx] - d1_sq) ** 2 + torch.relu(d1_sq - up1[b_idx]) ** 2).mean()
             loss_bone = loss_bone + (torch.relu(low2[b_idx] - d2_sq) ** 2 + torch.relu(d2_sq - up2[b_idx]) ** 2).mean()
 
-        # ponytail: multi-view invariant distance loss forces inter-joint consistency between camera frames
+        # ponytail: anatomical hinge angle loss (elbows and knees)
+        loss_angle = 0.0
+        if angle_limits_enabled and hinge_pairs:
+            for a_i, b_i, c_i in hinge_pairs:
+                for p_k in (p1, p2):
+                    u = p_k[:, a_i] - p_k[:, b_i]
+                    v = p_k[:, c_i] - p_k[:, b_i]
+                    cos_th = (u * v).sum(dim=-1) / (torch.norm(u, dim=-1) * torch.norm(v, dim=-1) + 1e-6)
+                    loss_angle = loss_angle + (torch.relu(DEFAULT_MIN_COS - cos_th) ** 2 + torch.relu(cos_th - DEFAULT_MAX_COS) ** 2).mean()
+
+        # ponytail: confidence-weighted mv loss — per-joint, the more confident cam is reference
+        # prevents cam1 from being hardcoded reference when it's occluded/wrong
         d1 = torch.cdist(p1, p1[:, anchor_idx_t])
         d2 = torch.cdist(p2, p2[:, anchor_idx_t])
+        w1 = torch.clamp(c1_t, min=0.0).unsqueeze(-1)
+        w2 = torch.clamp(c2_t, min=0.0).unsqueeze(-1)
+        w_total = w1 + w2 + 1e-6
+        # cam1 weight high → cam2 pulled toward cam1; cam2 weight high → cam1 pulled toward cam2
+        # single diff, weighted blend of reference direction
         diff_mv = torch.abs(d1 - d2)
         huber_mv = torch.where(diff_mv <= 0.05, 0.5 * (diff_mv ** 2), 0.05 * (diff_mv - 0.025))
-        w_mv = torch.clamp((c1_t + c2_t) / 2.0, min=0.0).unsqueeze(-1)
+        # weight = average confidence — joints confident in either cam get optimized; low both = left alone
+        w_mv = (w1 + w2) / 2.0
         loss_mv = (w_mv * huber_mv).mean()
 
         accel1 = p1[2:] - 2.0 * p1[1:-1] + p1[:-2]
         accel2 = p2[2:] - 2.0 * p2[1:-1] + p2[:-2]
         loss_accel = (accel1 ** 2).mean() + (accel2 ** 2).mean()
 
-        total_loss = (reg_lambda * loss_prox if regularization_enabled else 0.0) + 50.0 * loss_bone + 15.0 * loss_mv + temp_lambda * 2.5 * loss_accel
+        total_loss = (reg_lambda * loss_prox if regularization_enabled else 0.0) + 50.0 * loss_bone + 5.0 * loss_mv + temp_lambda * 2.5 * loss_accel + 20.0 * loss_angle
         total_loss.backward()
         optimizer.step()
 
-    p1_opt = (p1_init + delta1).detach().cpu().numpy()
-    p2_opt = (p2_init + delta2).detach().cpu().numpy()
+    p1_opt = (p1_init + delta1 * mask1).detach().cpu().numpy()
+    p2_opt = (p2_init + delta2 * mask2).detach().cpu().numpy()
 
     for t, f in enumerate(files):
         d = all_fused[t]
         for j_idx, j_name in enumerate(joint_names):
             d["camera1"][j_name] = [round(float(x), 6) for x in p1_opt[t, j_idx]]
             d["camera2"][j_name] = [round(float(x), 6) for x in p2_opt[t, j_idx]]
+        if all_pose is not None:
+            from fusion_pipeline.executor import _enforce_bone_lengths
+            for cam in ("camera1", "camera2"):
+                if cam in d and cam in all_pose[t]:
+                    _enforce_bone_lengths(d[cam], all_pose[t][cam])
         f.write_text(json.dumps(d), encoding="utf-8")
 
     dt = time.time() - t0

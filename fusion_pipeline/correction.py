@@ -145,7 +145,11 @@ def ransac_umeyama(cam1, cam2, names, threshold, max_combos, rng=None):
 
 def estimate_bidirectional_similarity(cam1, cam2, candidate_names, threshold, max_combos):
     torso_candidates = [n for n in candidate_names if n in {"pelvis", "neck", "left_shoulder", "right_shoulder", "left_hip", "right_hip"}]
-    use_names = torso_candidates if len(torso_candidates) >= 3 else candidate_names
+    # ponytail: fallback to stable non-torso anchors when torso joints are occluded in hug/contact scenes
+    if len(torso_candidates) < 3:
+        fallback = [n for n in candidate_names if n in {"neck", "pelvis", "left_knee", "right_knee", "head", "left_elbow", "right_elbow"}]
+        torso_candidates = fallback if len(fallback) >= 3 else candidate_names
+    use_names = torso_candidates
     t12, anchor_names = ransac_umeyama(cam1, cam2, use_names, threshold=threshold, max_combos=max_combos)
     if len(anchor_names) >= 3:
         src_12 = np.array([cam1[n] for n in anchor_names], dtype=float)
@@ -158,7 +162,15 @@ def estimate_bidirectional_similarity(cam1, cam2, candidate_names, threshold, ma
     return t12, t21, anchor_names
 
 
-from fusion_pipeline.config import NON_REPLACEABLE_ANCHORS
+from fusion_pipeline.config import (
+    NON_REPLACEABLE_ANCHORS,
+    DEFAULT_MASTER_MARGIN,
+    DEFAULT_MASTER_MAX_DISPLACEMENT,
+    DEFAULT_MASTER_BLEND,
+    HINGE_TRIPLETS,
+    DEFAULT_MIN_COS,
+    DEFAULT_MAX_COS,
+)
 
 
 EXTREMITIES = {
@@ -166,8 +178,79 @@ EXTREMITIES = {
     "left_ankle", "right_ankle", "left_toe", "right_toe", "left_foot", "right_foot"
 }
 
+KINEMATIC_CHAINS = (
+    ("head", "neck"),
+    ("left_elbow", "left_shoulder"),
+    ("right_elbow", "right_shoulder"),
+    ("left_wrist", "left_elbow"),
+    ("right_wrist", "right_elbow"),
+    ("left_hand", "left_wrist"),
+    ("right_hand", "right_wrist"),
+    ("left_knee", "left_hip"),
+    ("right_knee", "right_hip"),
+    ("left_ankle", "left_knee"),
+    ("right_ankle", "right_knee"),
+    ("left_toe", "left_ankle"),
+    ("left_foot", "left_ankle"),
+    ("right_toe", "right_ankle"),
+    ("right_foot", "right_ankle"),
+)
 
-def apply_confidence_corrections(cam1, cam2, k1_set, k2_set, t12, t21, h1=None, h2=None, blend=True, uncertainty_gating=True, max_displacement=0.35, vis1=None, vis2=None):
+
+def check_bone_lengths_valid(points: dict, ref_points: dict, max_ratio_error: float = 0.20) -> bool:
+    # ponytail: 3D physical decider - rejects any candidate if bone length deviates > 20% from baseline
+    for child, parent in KINEMATIC_CHAINS:
+        if child not in points or parent not in points or child not in ref_points or parent not in ref_points:
+            continue
+        r_c = as_xyz(ref_points[child])
+        r_p = as_xyz(ref_points[parent])
+        l_ref = float(np.linalg.norm(r_c - r_p))
+        if l_ref < 0.05:
+            continue
+        p_c = as_xyz(points[child])
+        p_p = as_xyz(points[parent])
+        l_cur = float(np.linalg.norm(p_c - p_p))
+        if abs(l_cur - l_ref) / l_ref > max_ratio_error:
+            return False
+    return True
+
+
+def check_joint_angles_valid(points: dict, min_cos: float = DEFAULT_MIN_COS, max_cos: float = DEFAULT_MAX_COS) -> bool:
+    # ponytail: fast anatomical angle sanity check on hinge joints (elbows, knees)
+    for a, b, c in HINGE_TRIPLETS:
+        if a not in points or b not in points or c not in points:
+            continue
+        p_a = as_xyz(points[a])
+        p_b = as_xyz(points[b])
+        p_c = as_xyz(points[c])
+        u = p_a - p_b
+        v = p_c - p_b
+        norm_u = float(np.linalg.norm(u))
+        norm_v = float(np.linalg.norm(v))
+        if norm_u < 1e-4 or norm_v < 1e-4:
+            continue
+        cos_val = float(np.dot(u, v) / (norm_u * norm_v))
+        if not (min_cos <= cos_val <= max_cos):
+            return False
+    return True
+
+
+def apply_confidence_corrections(
+    cam1,
+    cam2,
+    k1_set,
+    k2_set,
+    t12,
+    t21,
+    h1=None,
+    h2=None,
+    blend=True,
+    uncertainty_gating=True,
+    max_displacement=0.35,
+    vis1=None,
+    vis2=None,
+    master_margin=DEFAULT_MASTER_MARGIN,
+):
     cam1_corr = dict(cam1)
     cam2_corr = dict(cam2)
     sorted_k1 = sorted(k1_set, key=lambda n: KINEMATIC_DEPTH.get(n, 99))
@@ -188,32 +271,69 @@ def apply_confidence_corrections(cam1, cam2, k1_set, k2_set, t12, t21, h1=None, 
             alpha = w1 / max(w1 + w2, 1e-6)
             if not is_target_occluded:
                 alpha = min(alpha, 0.35 if is_extremity else 0.5)
-            cam2_corr[name] = alpha * p_from_1 + (1.0 - alpha) * as_xyz(cam2[name])
+            cand = alpha * p_from_1 + (1.0 - alpha) * as_xyz(cam2[name])
         else:
-            cam2_corr[name] = p_from_1
+            cand = p_from_1
+        test_pose = dict(cam2_corr)
+        test_pose[name] = cand
+        if check_joint_angles_valid(test_pose) and check_bone_lengths_valid(test_pose, cam2):
+            cam2_corr[name] = cand
 
     for name in sorted_k2:
-        p_from_2 = transform_joint_kinematic(name, cam2, cam1_corr, t21)
         is_target_occluded = vis1 is not None and not vis1.get(name, True)
+        w1 = float(h1.get(name, 0.5)) if h1 else 0.5
+        w2 = float(h2.get(name, 1.0)) if h2 else 1.0
+        # ponytail: occluded joints skip margin check — any slave advantage is enough
+        if not is_target_occluded and w2 <= w1 + master_margin:
+            continue
+
+        p_from_2 = transform_joint_kinematic(name, cam2, cam1_corr, t21)
         is_extremity = name in EXTREMITIES
-        limit = 0.75 if is_target_occluded else (0.05 if is_extremity else min(float(max_displacement), 0.15))
+        # ponytail: occluded joints get generous limit; visible joints keep tight constraint
+        if is_target_occluded:
+            limit = 0.75
+        else:
+            limit = DEFAULT_MASTER_MAX_DISPLACEMENT if max_displacement is None else min(float(max_displacement), DEFAULT_MASTER_MAX_DISPLACEMENT)
+            if is_extremity:
+                limit = min(limit, 0.05)
         if uncertainty_gating and max_displacement is not None:
             disp = float(np.linalg.norm(p_from_2 - as_xyz(cam1[name])))
             if disp > limit:
                 continue
         if blend and h1 and h2:
-            w1 = float(h1.get(name, 0.5))
-            w2 = float(h2.get(name, 1.0))
             alpha = w2 / max(w1 + w2, 1e-6)
-            if not is_target_occluded:
-                alpha = min(alpha, 0.35 if is_extremity else 0.5)
-            cam1_corr[name] = alpha * p_from_2 + (1.0 - alpha) * as_xyz(cam1[name])
+            alpha = min(alpha, DEFAULT_MASTER_BLEND if is_target_occluded else 0.35)
+            cand = alpha * p_from_2 + (1.0 - alpha) * as_xyz(cam1[name])
         else:
-            cam1_corr[name] = p_from_2
+            alpha = DEFAULT_MASTER_BLEND if is_target_occluded else 0.35
+            cand = alpha * p_from_2 + (1.0 - alpha) * as_xyz(cam1[name])
+
+        test_pose = dict(cam1_corr)
+        test_pose[name] = cand
+        if check_joint_angles_valid(test_pose) and check_bone_lengths_valid(test_pose, cam1):
+            cam1_corr[name] = cand
     return cam1_corr, cam2_corr
 
 
-def apply_rotation_mismatch_corrections(cam1_corr, cam2_corr, cam1, cam2, m_set, k1_set, k2_set, h1, h2, t12, t21, blend=True, uncertainty_gating=True, max_displacement=0.35, vis1=None, vis2=None):
+def apply_rotation_mismatch_corrections(
+    cam1_corr,
+    cam2_corr,
+    cam1,
+    cam2,
+    m_set,
+    k1_set,
+    k2_set,
+    h1,
+    h2,
+    t12,
+    t21,
+    blend=True,
+    uncertainty_gating=True,
+    max_displacement=0.35,
+    vis1=None,
+    vis2=None,
+    master_margin=DEFAULT_MASTER_MARGIN,
+):
     cam1_fixed = dict(cam1_corr)
     cam2_fixed = dict(cam2_corr)
     sorted_m = sorted(m_set, key=lambda n: KINEMATIC_DEPTH.get(n, 99))
@@ -234,23 +354,36 @@ def apply_rotation_mismatch_corrections(cam1_corr, cam2_corr, cam1, cam2, m_set,
                 alpha = w1 / max(w1 + w2, 1e-6)
                 if not is_target_occluded:
                     alpha = min(alpha, 0.35 if is_extremity else 0.5)
-                cam2_fixed[name] = alpha * p_trans + (1.0 - alpha) * as_xyz(cam2[name])
+                cand = alpha * p_trans + (1.0 - alpha) * as_xyz(cam2[name])
             else:
-                cam2_fixed[name] = p_trans
+                cand = p_trans
+            test_pose = dict(cam2_fixed)
+            test_pose[name] = cand
+            if check_joint_angles_valid(test_pose) and check_bone_lengths_valid(test_pose, cam2):
+                cam2_fixed[name] = cand
         else:
-            p_trans = transform_joint_kinematic(name, cam2, cam1_fixed, t21)
             is_target_occluded = vis1 is not None and not vis1.get(name, True)
-            limit = 0.75 if is_target_occluded else (0.05 if is_extremity else min(float(max_displacement), 0.15))
+            if w2 <= w1 + master_margin:
+                continue
+
+            p_trans = transform_joint_kinematic(name, cam2, cam1_fixed, t21)
+            limit = DEFAULT_MASTER_MAX_DISPLACEMENT if max_displacement is None else min(float(max_displacement), DEFAULT_MASTER_MAX_DISPLACEMENT)
+            if not is_target_occluded and is_extremity:
+                limit = min(limit, 0.05)
             if uncertainty_gating and max_displacement is not None:
                 if float(np.linalg.norm(p_trans - as_xyz(cam1[name]))) > limit:
                     continue
             if blend:
                 alpha = w2 / max(w1 + w2, 1e-6)
-                if not is_target_occluded:
-                    alpha = min(alpha, 0.35 if is_extremity else 0.5)
-                cam1_fixed[name] = alpha * p_trans + (1.0 - alpha) * as_xyz(cam1[name])
+                alpha = min(alpha, DEFAULT_MASTER_BLEND if is_target_occluded else 0.35)
+                cand = alpha * p_trans + (1.0 - alpha) * as_xyz(cam1[name])
             else:
-                cam1_fixed[name] = p_trans
+                alpha = DEFAULT_MASTER_BLEND if is_target_occluded else 0.35
+                cand = alpha * p_trans + (1.0 - alpha) * as_xyz(cam1[name])
+            test_pose = dict(cam1_fixed)
+            test_pose[name] = cand
+            if check_joint_angles_valid(test_pose) and check_bone_lengths_valid(test_pose, cam1):
+                cam1_fixed[name] = cand
     return cam1_fixed, cam2_fixed
 
 
@@ -267,6 +400,7 @@ def apply_multiview_geometric_fusion(
     max_displacement=0.35,
     consensus_threshold=0.08,
     consensus_blend_strength=0.25,
+    master_margin=0.0,
 ):
     cam1_fused = dict(cam1)
     cam2_fused = dict(cam2)
@@ -310,47 +444,42 @@ def apply_multiview_geometric_fusion(
         tot = max(w1 + w2, 1e-6)
 
         is_extremity = name in EXTREMITIES
-        effective_cons1 = min(cons_thresh, 0.04) if is_extremity else cons_thresh
-        effective_cons2 = min(cons_thresh, 0.04) if is_extremity else cons_thresh
+        effective_cons1 = min(cons_thresh, 0.08) if is_extremity else cons_thresh
+        effective_cons2 = min(cons_thresh, 0.08) if is_extremity else cons_thresh
 
-        # ponytail: allow slave data for occluded joints up to anatomical limit (0.75m)
-        limit1 = 0.75 if not v1 else max_disp
+        limit1 = min(max_disp, DEFAULT_MASTER_MAX_DISPLACEMENT)
         limit2 = 0.75 if not v2 else max_disp
 
-        # prevent negative transfer on camera 1:
-        # Keep the primary camera observation unless it is occluded or severely corrupted.
-        if not v1 and v2 and disp1 <= limit1:
-            cam1_fused[name] = p2_to_1
-        elif v1 and v2 and disp1 <= effective_cons1:
-            transfer = blend_strength * w2 / tot
-            cam1_fused[name] = (1.0 - transfer) * p1 + transfer * p2_to_1
+        protect_visible = master_margin > 0.0
+        jointly_visible_consensus = (
+            v1 and v2 and (not protect_visible or w2 > w1 + master_margin)
+            and disp1 <= effective_cons1
+        )
+        # ponytail: occluded joints don't need the full margin fence; 5% slave lead is enough
+        occluded_rescue = not v1 and v2 and w2 > w1 + 0.05 and disp1 <= limit1
+        if jointly_visible_consensus or occluded_rescue:
+            transfer = min(blend_strength * w2 / tot, DEFAULT_MASTER_BLEND)
+            cand = (1.0 - transfer) * p1 + transfer * p2_to_1
+            test_pose = dict(cam1_fused)
+            test_pose[name] = cand
+            if check_joint_angles_valid(test_pose) and check_bone_lengths_valid(test_pose, cam1):
+                cam1_fused[name] = cand
 
         # prevent negative transfer on camera 2
         if not v2 and v1 and disp2 <= limit2:
-            cam2_fused[name] = p1_to_2
-        elif v1 and v2 and disp2 <= effective_cons2:
+            cand = p1_to_2
+            test_pose = dict(cam2_fused)
+            test_pose[name] = cand
+            if check_joint_angles_valid(test_pose) and check_bone_lengths_valid(test_pose, cam2):
+                cam2_fused[name] = cand
+        elif v1 and v2 and (not protect_visible or w1 > w2 + master_margin) and disp2 <= effective_cons2:
             transfer = blend_strength * w1 / tot
-            cam2_fused[name] = (1.0 - transfer) * p2 + transfer * p1_to_2
+            cand = (1.0 - transfer) * p2 + transfer * p1_to_2
+            test_pose = dict(cam2_fused)
+            test_pose[name] = cand
+            if check_joint_angles_valid(test_pose) and check_bone_lengths_valid(test_pose, cam2):
+                cam2_fused[name] = cand
     return cam1_fused, cam2_fused
-
-
-KINEMATIC_CHAINS = (
-    ("head", "neck"),
-    ("left_elbow", "left_shoulder"),
-    ("right_elbow", "right_shoulder"),
-    ("left_wrist", "left_elbow"),
-    ("right_wrist", "right_elbow"),
-    ("left_hand", "left_wrist"),
-    ("right_hand", "right_wrist"),
-    ("left_knee", "left_hip"),
-    ("right_knee", "right_hip"),
-    ("left_ankle", "left_knee"),
-    ("right_ankle", "right_knee"),
-    ("left_toe", "left_ankle"),
-    ("left_foot", "left_ankle"),
-    ("right_toe", "right_ankle"),
-    ("right_foot", "right_ankle"),
-)
 
 
 def enforce_bone_lengths(points: dict, ref_points: dict) -> None:

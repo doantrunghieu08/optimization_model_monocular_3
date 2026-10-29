@@ -22,6 +22,10 @@ from fusion_pipeline.detector import make_raw_judgement_fallback
 from fusion_pipeline.correction import apply_rotation_mismatch_corrections
 from fusion_pipeline.correction import apply_confidence_corrections
 from fusion_pipeline.correction import apply_multiview_geometric_fusion
+from fusion_pipeline.correction import apply_similarity
+from fusion_pipeline.config import DEFAULT_MASTER_BLEND
+from fusion_pipeline.config import DEFAULT_MASTER_MAX_DISPLACEMENT
+from fusion_pipeline.config import DEFAULT_MASTER_MIN_CONFIDENCE
 
 def _frame_index(path: Path) -> int:
     match = re.search(r"\d+", path.name)
@@ -49,9 +53,26 @@ def _extract_person_payload(wham_data):
     return resolve_person_payload(wham_data)
 
 
-def _load_verts_if_available(paths: dict, occlusion_enabled: bool, target_person=None):
+def _extract_other_person_verts(wham_raw, target_person=None, pkl_path=None):
+    if not isinstance(wham_raw, dict):
+        return None
+    from compat import parse_person_mapping
+    target_str = str(target_person).strip().lower() if target_person else None
+    mapping = parse_person_mapping(pkl_path) if pkl_path else {}
+    for k, v in wham_raw.items():
+        person_name = mapping.get(str(k), mapping.get(k, ""))
+        if target_str and person_name == target_str:
+            continue
+        if isinstance(v, dict):
+            verts = v.get("verts_cam", v.get("verts"))
+            if verts is not None:
+                return verts
+    return None
+
+
+def _load_verts_if_available(paths: dict, occlusion_enabled: bool, target_person=None, include_other_person=False):
     if not occlusion_enabled:
-        return False, None, None, 0, 0
+        return False, None, None, 0, 0, None, None
 
     wham_path_1 = Path(paths["cam1_pkl"])
     wham_path_2 = Path(paths["cam2_pkl"])
@@ -60,16 +81,24 @@ def _load_verts_if_available(paths: dict, occlusion_enabled: bool, target_person
     if not wham_path_2.exists():
         raise FileNotFoundError(f"WHAM PKL file not found: {wham_path_2}")
 
-    person_1 = resolve_person_payload(load_joblib_compat(wham_path_1), pkl_path=wham_path_1, target_person=target_person)
-    person_2 = resolve_person_payload(load_joblib_compat(wham_path_2), pkl_path=wham_path_2, target_person=target_person)
+    raw_1 = load_joblib_compat(wham_path_1)
+    raw_2 = load_joblib_compat(wham_path_2)
+    person_1 = resolve_person_payload(raw_1, pkl_path=wham_path_1, target_person=target_person)
+    person_2 = resolve_person_payload(raw_2, pkl_path=wham_path_2, target_person=target_person)
 
     verts_cam1 = person_1.get("verts_cam", person_1.get("verts")) if person_1 else None
     verts_cam2 = person_2.get("verts_cam", person_2.get("verts")) if person_2 else None
     if person_1 is None or person_2 is None or verts_cam1 is None or verts_cam2 is None:
         raise ValueError("Neither 'verts_cam' nor 'verts' found in WHAM PKL inputs; fusion.occlusion.enabled requires mesh vertices")
+
+    extra_1 = _extract_other_person_verts(raw_1, target_person=target_person, pkl_path=wham_path_1) if include_other_person else None
+    extra_2 = _extract_other_person_verts(raw_2, target_person=target_person, pkl_path=wham_path_2) if include_other_person else None
+    if extra_1 is not None and extra_2 is not None:
+        print(f"[Fusion] Loaded Person 2 3D mesh for multi-person occlusion ray-casting")
+
     print(f"[Fusion] WHAM cam1 verts: {verts_cam1.shape[0]} frames")
     print(f"[Fusion] WHAM cam2 verts: {verts_cam2.shape[0]} frames")
-    return True, verts_cam1, verts_cam2, verts_cam1.shape[0], verts_cam2.shape[0]
+    return True, verts_cam1, verts_cam2, verts_cam1.shape[0], verts_cam2.shape[0], extra_1, extra_2
 
 
 def _load_pose_frame(path: Path, metadata_dir: Path):
@@ -92,15 +121,20 @@ def _load_2d_profile(config: dict, cam_id: str, pkl_path: Path | None = None):
         if isinstance(payload, dict) and isinstance(payload.get("keypoints"), dict):
             return payload["keypoints"]
 
-    # ponytail: fallback directly to companion tracking_results.pth if not in preprocess JSON
+    # ponytail: fallback directly to a companion tracking-results file if preprocessing was skipped
     if pkl_path:
-        pth_path = Path(pkl_path).parent / "tracking_results.pth"
-        if pth_path.exists():
+        tracking_files = sorted(Path(pkl_path).parent.glob("tracking_results*.pth"))
+        if tracking_files:
+            pth_path = tracking_files[0]
             try:
                 from preprocess_pipeline.extract_2d import _build_2d_camera_payload, _load_keypoints2d_map
                 kmap = _load_keypoints2d_map(Path(config["paths"]["keypoints2d_map"]))
                 t_raw = load_joblib_compat(pth_path)
-                t = t_raw[0] if (isinstance(t_raw, dict) and 0 in t_raw) else (next(iter(t_raw.values())) if isinstance(t_raw, dict) else t_raw)
+                t = resolve_person_payload(
+                    t_raw,
+                    pkl_path=pkl_path,
+                    target_person=config.get("inputs", {}).get("target_person"),
+                )
                 payload, _ = _build_2d_camera_payload(t, kmap)
                 if profile_path.exists():
                     profile = read_json(profile_path)
@@ -161,6 +195,35 @@ def _source_frame_indices(data: dict, frame_idx: int) -> dict[str, int]:
     }
 
 
+def detect_adaptive_fusion_mode(cam1, cam2, t12, h1, h2, vis1, vis2, conflicts):
+    names = [name for name in cam1 if name in cam2 and vis1.get(name, True) and vis2.get(name, True)]
+    if t12 is None or len(names) < 6:
+        return "conservative", {"confidence_advantage": 0.0, "median_residual": float("inf"), "q75_residual": float("inf")}
+
+    residuals = np.array([
+        np.linalg.norm(apply_similarity(np.asarray(cam1[name], dtype=float), t12) - np.asarray(cam2[name], dtype=float))
+        for name in names
+    ])
+    confidence_advantage = float(np.mean([float(h2.get(name, 0.0)) - float(h1.get(name, 0.0)) for name in names]))
+    median_residual = float(np.median(residuals))
+    q75_residual = float(np.percentile(residuals, 75))
+    conflict_ratio = len(set(conflicts) & set(names)) / len(names)
+
+    # shortcut: thresholds are calibrated for this camera rig; recalibrate on held-out data when the rig changes.
+    aggressive = (
+        confidence_advantage >= 0.05
+        and median_residual <= 0.10
+        and q75_residual <= 0.15
+        and conflict_ratio <= 0.10
+    )
+    return ("aggressive" if aggressive else "conservative"), {
+        "confidence_advantage": confidence_advantage,
+        "median_residual": median_residual,
+        "q75_residual": q75_residual,
+        "conflict_ratio": conflict_ratio,
+    }
+
+
 def run_phase3_pipeline(
     data_in,
     map_path,
@@ -179,6 +242,8 @@ def run_phase3_pipeline(
     min_confidence=0.1,
     consensus_threshold=0.18,
     consensus_blend_strength=0.25,
+    master_margin=0.15,
+    extra_verts_by_cam=None,
 ):
     cam1 = {k: as_xyz(v) for k, v in data_in["camera1"].items()}
     cam2 = {k: as_xyz(v) for k, v in data_in["camera2"].items()}
@@ -196,13 +261,23 @@ def run_phase3_pipeline(
     if verts_by_cam is not None:
         if intrinsics_by_cam is None:
             raise ValueError("intrinsics_by_cam is required when verts_by_cam is provided")
-        vis1 = compute_visibility_from_mesh_vertices(cam1, verts_by_cam["camera1"], intrinsics_by_cam["camera1"], occlusion_tau)
-        vis2 = compute_visibility_from_mesh_vertices(cam2, verts_by_cam["camera2"], intrinsics_by_cam["camera2"], occlusion_tau)
+        extra1 = extra_verts_by_cam.get("camera1") if extra_verts_by_cam else None
+        extra2 = extra_verts_by_cam.get("camera2") if extra_verts_by_cam else None
+        vis1 = compute_visibility_from_mesh_vertices(cam1, verts_by_cam["camera1"], intrinsics_by_cam["camera1"], occlusion_tau, extra_verts=extra1)
+        vis2 = compute_visibility_from_mesh_vertices(cam2, verts_by_cam["camera2"], intrinsics_by_cam["camera2"], occlusion_tau, extra_verts=extra2)
     else:
         vis1 = {n: True for n in names}
         vis2 = {n: True for n in names}
 
     confidence2d_by_cam = confidence2d_by_cam or {}
+    # ponytail: 2D detector vote - if 2D detector sees joint is missing/occluded (score < 0.25), mark vis = False
+    for cam_k, vis_dict in (("camera1", vis1), ("camera2", vis2)):
+        c2d = confidence2d_by_cam.get(cam_k) or {}
+        for n in names:
+            val = c2d.get(n)
+            score = val[2] if isinstance(val, (list, tuple, np.ndarray)) and len(val) >= 3 else val
+            if score is not None and float(score) < 0.25:
+                vis_dict[n] = False
     if belief_alpha is None or belief_beta is None:
         raise ValueError("fusion.belief.alpha and fusion.belief.beta must be provided in config")
     detected = detect_cross_view_errors(
@@ -233,11 +308,13 @@ def run_phase3_pipeline(
         threshold=ransac_threshold,
         max_combos=ransac_max_combos,
     )
+    fusion_mode, fusion_mode_stats = detect_adaptive_fusion_mode(
+        cam1, cam2, t12, H1_all, H2_all, vis1, vis2, m_set
+    )
 
     torso_check = [n for n in ("pelvis", "neck", "left_shoulder", "right_shoulder", "left_hip", "right_hip") if n in cam1 and n in cam2]
     skip_cross_view = False
     if torso_check and t12 is not None:
-        from fusion_pipeline.correction import apply_similarity
         residuals = [float(np.linalg.norm(apply_similarity(np.asarray(cam1[n], dtype=float), t12) - np.asarray(cam2[n], dtype=float))) for n in torso_check]
         if np.mean(residuals) > 0.12:
             skip_cross_view = True
@@ -257,6 +334,7 @@ def run_phase3_pipeline(
             max_displacement=max_displacement,
             vis1=vis1,
             vis2=vis2,
+            master_margin=master_margin,
         )
         cam1_corr, cam2_corr = apply_rotation_mismatch_corrections(
             cam1_corr,
@@ -275,6 +353,7 @@ def run_phase3_pipeline(
             max_displacement=max_displacement,
             vis1=vis1,
             vis2=vis2,
+            master_margin=master_margin,
         )
         cam1_corr, cam2_corr = apply_multiview_geometric_fusion(
             cam1_corr,
@@ -287,8 +366,9 @@ def run_phase3_pipeline(
             vis1=vis1,
             vis2=vis2,
             max_displacement=max_displacement,
-            consensus_threshold=consensus_threshold,
-            consensus_blend_strength=consensus_blend_strength,
+            consensus_threshold=max(consensus_threshold, 0.15) if fusion_mode == "aggressive" else consensus_threshold,
+            consensus_blend_strength=max(consensus_blend_strength, 1.0) if fusion_mode == "aggressive" else consensus_blend_strength,
+            master_margin=master_margin,
         )
     else:
         cam1_corr, cam2_corr = dict(cam1), dict(cam2)
@@ -318,6 +398,8 @@ def run_phase3_pipeline(
         "joint_confidence": {"camera1": H1_all, "camera2": H2_all},
         "vis1": {k: bool(v) for k, v in vis1.items()},
         "vis2": {k: bool(v) for k, v in vis2.items()},
+        "fusion_mode": fusion_mode,
+        "fusion_mode_stats": fusion_mode_stats,
     }
     #end of def run_phase3_pipeline
 
@@ -359,7 +441,120 @@ def _enforce_bone_lengths(points: dict, ref_points: dict) -> None:
             points[child] = [round(float(x), 6) for x in (p_p + v * (l_ref / dist))]
 
 
-def _apply_temporal_smoothing(keypoints_dir: Path, pose_dir: Path | None = None, window_length: int = 5, polyorder: int = 2) -> None:
+def _clamp_to_baseline(points: dict, baseline: dict, vis: dict | None = None, max_radius: float = 0.08) -> None:
+    # ponytail: master safety net - only clamp joints that were visible in master; occluded joints must be allowed to be corrected by slave
+    for k, p in points.items():
+        if k not in baseline:
+            continue
+        if vis is not None and not vis.get(k, True):
+            continue
+        p_arr = np.asarray(p, dtype=float)
+        b_arr = np.asarray(baseline[k], dtype=float)
+        diff = p_arr - b_arr
+        dist = float(np.linalg.norm(diff))
+        if dist > max_radius:
+            points[k] = [round(float(x), 6) for x in (b_arr + diff * (max_radius / dist))]
+
+
+def _apply_final_master_protection(
+    points: dict,
+    baseline: dict,
+    vis1: dict,
+    vis2: dict,
+    h1: dict | None = None,
+    h2: dict | None = None,
+    master_margin: float = 0.15,
+    master_min_confidence: float = DEFAULT_MASTER_MIN_CONFIDENCE,
+    max_displacement: float = DEFAULT_MASTER_MAX_DISPLACEMENT,
+    weight: float = DEFAULT_MASTER_BLEND,
+) -> None:
+    fused = {name: np.asarray(value, dtype=float) for name, value in points.items()}
+    points.update({name: list(value) for name, value in baseline.items()})
+    eligible = {
+        name for name in fused
+        if name in baseline and vis2.get(name, True)
+        and float((h2 or {}).get(name, 0.0)) > float((h1 or {}).get(name, 1.0))
+        and (
+            not vis1.get(name, True)
+            or float((h1 or {}).get(name, 1.0)) < master_min_confidence
+            or float((h2 or {}).get(name, 0.0)) > float((h1 or {}).get(name, 1.0)) + master_margin
+        )
+    }
+    parent_by_child = dict(KINEMATIC_CHAINS)
+    children_by_parent = {}
+    for child, parent in KINEMATIC_CHAINS:
+        children_by_parent.setdefault(parent, []).append(child)
+    ordered = [child for child, _ in KINEMATIC_CHAINS]
+    ordered.extend(sorted(eligible.difference(ordered)))
+
+    for name in ordered:
+        if name not in eligible:
+            continue
+        base = np.asarray(baseline[name], dtype=float)
+        residual = fused[name] - base
+        # ponytail: cam1 cannot see this joint at all → trust slave fully, no distance cap
+        limit = float("inf") if (not vis1.get(name, True)) else float(max_displacement)
+        if float(np.linalg.norm(residual)) > limit:
+            continue
+        effective_weight = 1.0 if (not vis1.get(name, True)) else float(weight)
+        candidate = base + effective_weight * residual
+        parent = parent_by_child.get(name)
+        if parent in points and parent in baseline:
+            parent_out = np.asarray(points[parent], dtype=float)
+            parent_base = np.asarray(baseline[parent], dtype=float)
+            bone_length = float(np.linalg.norm(base - parent_base))
+            direction = candidate - parent_out
+            direction_length = float(np.linalg.norm(direction))
+            if bone_length > 1e-8 and direction_length > 1e-8:
+                candidate = parent_out + bone_length * direction / direction_length
+
+            anchored_children = [
+                child for child in children_by_parent.get(name, [])
+                if child in points and child in baseline and child not in eligible
+                and float(np.linalg.norm(
+                    np.asarray(baseline[child], dtype=float) - base
+                )) > 1e-8
+            ]
+            if len(anchored_children) == 1:
+                child = anchored_children[0]
+                child_out = np.asarray(points[child], dtype=float)
+                child_length = float(np.linalg.norm(np.asarray(baseline[child], dtype=float) - base))
+                axis = child_out - parent_out
+                anchor_distance = float(np.linalg.norm(axis))
+                if abs(bone_length - child_length) <= anchor_distance <= bone_length + child_length:
+                    axis /= max(anchor_distance, 1e-8)
+                    along = (
+                        bone_length ** 2 - child_length ** 2 + anchor_distance ** 2
+                    ) / (2.0 * max(anchor_distance, 1e-8))
+                    center = parent_out + along * axis
+                    radius = np.sqrt(max(bone_length ** 2 - along ** 2, 0.0))
+                    radial = candidate - center
+                    radial -= np.dot(radial, axis) * axis
+                    radial_length = float(np.linalg.norm(radial))
+                    if radial_length > 1e-8:
+                        candidate = center + radius * radial / radial_length
+            elif len(anchored_children) > 1:
+                candidate = base
+        points[name] = [float(x) for x in candidate]
+
+    for child, parent in KINEMATIC_CHAINS:
+        if child not in points or parent not in points or child not in baseline or parent not in baseline:
+            continue
+        base_length = float(np.linalg.norm(
+            np.asarray(baseline[child], dtype=float) - np.asarray(baseline[parent], dtype=float)
+        ))
+        if base_length <= 1e-8:
+            points[child] = list(points[parent])
+
+
+def _apply_temporal_smoothing(
+    keypoints_dir: Path,
+    pose_dir: Path | None = None,
+    metadata_dir: Path | None = None,
+    master_protection: dict | None = None,
+    window_length: int = 5,
+    polyorder: int = 2,
+) -> None:
     try:
         from scipy.signal import savgol_filter
     except ImportError:
@@ -374,6 +569,33 @@ def _apply_temporal_smoothing(keypoints_dir: Path, pose_dir: Path | None = None,
     if w_len <= polyorder:
         return
 
+    pose_map = {}
+    if pose_dir and pose_dir.exists():
+        pose_map = {
+            _frame_index(path): read_json(path)
+            for path in pose_dir.glob("*.json")
+        }
+    metadata_map = {}
+    if metadata_dir and metadata_dir.exists():
+        metadata_map = {
+            _frame_index(path): read_json(path)
+            for path in metadata_dir.glob("*.json")
+        }
+    master_cfg = master_protection or {}
+    protected_baselines = None
+    if master_cfg.get("enabled", False) and pose_map:
+        joint_names = list(all_data[0].get("camera1", {}))
+        pose_frames = [pose_map.get(_frame_index(f)) for f in files]
+        if joint_names and all(
+            frame and all(name in frame.get("camera1", {}) for name in joint_names)
+            for frame in pose_frames
+        ):
+            pose_coords = np.array([
+                [frame["camera1"][name] for name in joint_names]
+                for frame in pose_frames
+            ], dtype=float)
+            protected_baselines = savgol_filter(pose_coords, window_length=w_len, polyorder=polyorder, axis=0)
+
     for cam in ("camera1", "camera2"):
         if not all_data or cam not in all_data[0]:
             continue
@@ -382,18 +604,33 @@ def _apply_temporal_smoothing(keypoints_dir: Path, pose_dir: Path | None = None,
         if np.isnan(coords).any():
             continue
         smoothed = savgol_filter(coords, window_length=w_len, polyorder=polyorder, axis=0)
+
         for t, d in enumerate(all_data):
             for j_idx, j_name in enumerate(joint_names):
                 d[cam][j_name] = [round(float(x), 6) for x in smoothed[t, j_idx]]
 
-    if pose_dir and pose_dir.exists():
-        pose_files = sorted(pose_dir.glob("*.json"), key=_frame_index)
-        pose_map = {_frame_index(pf): read_json(pf) for pf in pose_files}
-        for f, d in zip(files, all_data):
+    if pose_map:
+        for t, (f, d) in enumerate(zip(files, all_data)):
             f_idx = _frame_index(f)
             ref_d = pose_map.get(f_idx)
             if not ref_d:
                 continue
+            if protected_baselines is not None and "camera1" in d:
+                meta = metadata_map.get(f_idx, {})
+                confidence = meta.get("joint_confidence", {})
+                baseline = {
+                    name: protected_baselines[t, j_idx]
+                    for j_idx, name in enumerate(joint_names)
+                }
+                _apply_final_master_protection(
+                    d["camera1"],
+                    baseline,
+                    meta.get("vis1", {}),
+                    meta.get("vis2", {}),
+                    confidence.get("camera1", {}),
+                    confidence.get("camera2", {}),
+                    master_margin=float(master_cfg.get("confidence_margin", 0.15)),
+                )
             for cam in ("camera1", "camera2"):
                 if cam in d and cam in ref_d:
                     _enforce_bone_lengths(d[cam], ref_d[cam])
@@ -401,6 +638,18 @@ def _apply_temporal_smoothing(keypoints_dir: Path, pose_dir: Path | None = None,
     for f, d in zip(files, all_data):
         write_json(f, d)
     print(f"[Fusion] Applied Savitzky-Golay smoothing (window={w_len}, polyorder={polyorder}) with rigid bone projection")
+
+
+def _restore_master_pose(keypoints_dir: Path, pose_dir: Path) -> None:
+    for fused_path in keypoints_dir.glob("fused_data_*.json"):
+        pose_path = pose_dir / fused_path.name.replace("fused_data_", "pose_data_")
+        if not pose_path.exists():
+            continue
+        fused = read_json(fused_path)
+        pose = read_json(pose_path)
+        if "camera1" in fused and "camera1" in pose:
+            fused["camera1"] = pose["camera1"]
+            write_json(fused_path, fused)
 
 
 def run_fusion(config: dict) -> None:
@@ -432,8 +681,9 @@ def run_fusion(config: dict) -> None:
         if load_torso_mask(paths["segmentation"]) is None:
             raise RuntimeError("fusion.occlusion.enabled requires a valid SMPL torso mask")
 
-    wham_loaded, verts_cam1, verts_cam2, n_frames_1, n_frames_2 = _load_verts_if_available(
-        inputs, occlusion_enabled, target_person=inputs.get("target_person")
+    multi_person_enabled = bool(occlusion_cfg.get("multi_person", False))
+    wham_loaded, verts_cam1, verts_cam2, n_frames_1, n_frames_2, extra_1, extra_2 = _load_verts_if_available(
+        inputs, occlusion_enabled, target_person=inputs.get("target_person"), include_other_person=multi_person_enabled
     )
     confidence2d_profiles = _load_2d_profiles(config, inputs)
     occlusion_intrinsics = _load_occlusion_intrinsics(config) if occlusion_enabled and wham_loaded else None
@@ -460,12 +710,18 @@ def run_fusion(config: dict) -> None:
             cam2_frame = source_frames["camera2"]
             if 0 <= cam1_frame < n_frames_1 and 0 <= cam2_frame < n_frames_2:
                 verts_input = {"camera1": verts_cam1[cam1_frame], "camera2": verts_cam2[cam2_frame]}
+                extra_input = None
+                if extra_1 is not None and extra_2 is not None:
+                    if 0 <= cam1_frame < len(extra_1) and 0 <= cam2_frame < len(extra_2):
+                        extra_input = {"camera1": extra_1[cam1_frame], "camera2": extra_2[cam2_frame]}
             else:
                 # Dùng tqdm.write thay cho print trong vòng lặp
                 tqdm.write(f"[Fusion] Frame {frame_idx}: WHAM frame out of range. Occlusion skipped.")
                 verts_input = None
+                extra_input = None
         else:
             verts_input = None
+            extra_input = None
 
         try:
             confidence2d_by_cam = _confidence2d_for_frame(data, frame_idx, confidence2d_profiles)
@@ -474,6 +730,7 @@ def run_fusion(config: dict) -> None:
                 map_path=paths["keypoints3d_map"],
                 verts_by_cam=verts_input,
                 intrinsics_by_cam=occlusion_intrinsics,
+                extra_verts_by_cam=extra_input,
                 occlusion_tau=occlusion_cfg["tau"],
                 ransac_threshold=ransac_cfg["threshold"],
                 ransac_max_combos=ransac_cfg["max_combos"],
@@ -487,6 +744,7 @@ def run_fusion(config: dict) -> None:
                 min_confidence=fusion_cfg.get("uncertainty_gating", {}).get("min_confidence", 0.1) if isinstance(fusion_cfg.get("uncertainty_gating"), dict) else 0.1,
                 consensus_threshold=fusion_cfg.get("uncertainty_gating", {}).get("consensus_threshold", 0.18) if isinstance(fusion_cfg.get("uncertainty_gating"), dict) else 0.18,
                 consensus_blend_strength=fusion_cfg.get("uncertainty_gating", {}).get("consensus_blend_strength", 0.25) if isinstance(fusion_cfg.get("uncertainty_gating"), dict) else 0.25,
+                master_margin=float(fusion_cfg.get("master_protection", {}).get("confidence_margin", 0.15)) if fusion_cfg.get("master_protection", {}).get("enabled", True) else 0.0,
             )
             # 1. Lấy dữ liệu an toàn
                 
@@ -516,6 +774,19 @@ def run_fusion(config: dict) -> None:
         write_json(output_dir / "keypoints3d" / out_name, fused_keypoints)
         write_json(output_dir / "metadata" / out_name, fused_metadata)
 
+    smoothing_cfg = fusion_cfg.get("smoothing", {})
+    master_cfg = fusion_cfg.get("master_protection", {})
+    smoothing_enabled = smoothing_cfg.get("enabled", True)
+    if smoothing_enabled:
+        _apply_temporal_smoothing(
+            output_dir / "keypoints3d",
+            pose_dir=input_dir / "keypoints3d",
+            metadata_dir=output_dir / "metadata",
+            master_protection=master_cfg,
+            window_length=int(smoothing_cfg.get("window_length", 5)),
+            polyorder=int(smoothing_cfg.get("polyorder", 2)),
+        )
+
     opt_cfg = fusion_cfg.get("optimization", {})
     if opt_cfg.get("enabled", True):
         from fusion_pipeline.optimization import optimize_sequence_gpu
@@ -526,14 +797,21 @@ def run_fusion(config: dict) -> None:
             config=config,
         )
 
-    smoothing_cfg = fusion_cfg.get("smoothing", {})
-    if smoothing_cfg.get("enabled", True):
-        _apply_temporal_smoothing(
-            output_dir / "keypoints3d",
-            pose_dir=input_dir / "keypoints3d",
-            window_length=int(smoothing_cfg.get("window_length", 5)),
-            polyorder=int(smoothing_cfg.get("polyorder", 2)),
-        )
+    if fusion_cfg.get("pair_mode") == "posed_fallback":
+        _restore_master_pose(output_dir / "keypoints3d", input_dir / "keypoints3d")
+
+    pose_keypoints_dir = input_dir / "keypoints3d"
+    if not smoothing_enabled and pose_keypoints_dir.exists():
+        for f_path in (output_dir / "keypoints3d").glob("fused_data_*.json"):
+            ref_path = pose_keypoints_dir / f_path.name.replace("fused_data_", "pose_data_")
+            metadata_path = output_dir / "metadata" / f_path.name
+            if ref_path.exists() and metadata_path.exists():
+                d_f = read_json(f_path)
+                d_p = read_json(ref_path)
+                d_m = read_json(metadata_path)
+                if "camera1" in d_f and "camera1" in d_p:
+                    _enforce_bone_lengths(d_f["camera1"], d_p["camera1"])
+                    write_json(f_path, d_f)
 
     print(f"\n[Fusion] Done. Output: {output_dir}")
 

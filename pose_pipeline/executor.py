@@ -143,16 +143,19 @@ def run_pose_export(config: dict) -> None:
     cam1_export_data = slice_person_frames(cam1_data, cam1_start, min_frames)
     cam2_export_data = slice_person_frames(cam2_data, cam2_start, min_frames)
     if min_frames:
-        shared_betas = _shared_betas(cam1_export_data, cam2_export_data)
+        # Keep the master baseline identical while giving both views one body shape.
+        shared_betas = _shared_betas(cam1_export_data)
         for camera_data in (cam1_export_data, cam2_export_data):
             camera_data["betas"] = np.repeat(shared_betas[None, :], min_frames, axis=0)
+
+    use_world = bool(pose_cfg.get("use_world_coords", False))
 
     # Sử dụng tqdm bọc quanh range() để tạo progress bar
     for i in tqdm(range(min_frames), desc="[Pose] Exporting JSONs", unit="frame"):
         out_frame_id = i + 1
         keypoints3d_data = {
-            "camera1": get_3d_joints_for_frame(model, cam1_export_data, i, j_regressor_path, paths["keypoints3d_map"]),
-            "camera2": get_3d_joints_for_frame(model, cam2_export_data, i, j_regressor_path, paths["keypoints3d_map"]),
+            "camera1": get_3d_joints_for_frame(model, cam1_export_data, i, j_regressor_path, paths["keypoints3d_map"], use_world=use_world),
+            "camera2": get_3d_joints_for_frame(model, cam2_export_data, i, j_regressor_path, paths["keypoints3d_map"], use_world=use_world),
         }
         metadata_data = {
             "metadata": {

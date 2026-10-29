@@ -119,6 +119,7 @@ def run_offset_estimation(
     j_regressor_path: str,
     map_path: str,
     max_frames: Optional[int] = None,
+    target_person=None,
 ) -> int:
     if not Path(pkl1).exists() or not Path(pkl2).exists():
         print(f"Bỏ qua offset: không tìm thấy đủ 2 file .pkl\n  cam1={pkl1}\n  cam2={pkl2}")
@@ -133,6 +134,7 @@ def run_offset_estimation(
         map_path,
         verbose=False,
         max_frames=max_frames,
+        target_person=target_person,
     )
 
     print(f"[Preprocess] Offset={offset}")
@@ -170,6 +172,7 @@ def run_preprocess(config: dict, extract_frames: bool = True) -> tuple[int, str]
         j_regressor_path=j_regressor_path,
         map_path=paths["keypoints3d_map"],
         max_frames=max_frames,
+        target_person=inputs.get("target_person"),
     )
 
     if extract_frames:

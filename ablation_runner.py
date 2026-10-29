@@ -189,7 +189,7 @@ def run_ablation_suite(segment="seg_4"):
     base_cfg = load_config(WS_DIR / "configs/pipeline.yml")
     
     # Configure inputs based on segment choice
-    if segment == "seg_4":
+    if segment == "seg_4" and Path("input/Seq1").exists():
         base_cfg["inputs"]["cam1_pkl"] = "input/Seq1/Segments/wham_output_video_0_seg_4/video_0_seg_4.pkl"
         base_cfg["inputs"]["cam2_pkl"] = "input/Seq1/Segments/wham_output_video_2_seg_4/video_2_seg_4.pkl"
         base_cfg["inputs"]["camera1_video"] = "input/Seq1/Segments/wham_output_video_0_seg_4/output.mp4"

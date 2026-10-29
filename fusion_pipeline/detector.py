@@ -118,7 +118,7 @@ def require_ray_casting_backend() -> None:
         ) from exc
 
 
-def compute_visibility_from_mesh_vertices(joints, verts, intrinsics=None, occlusion_tau=0.05):
+def compute_visibility_from_mesh_vertices(joints, verts, intrinsics=None, occlusion_tau=0.05, extra_verts=None):
     """
     3D Ray-casting occlusion detection:
     For each joint in OCCLUSION_CHECK_JOINTS, cast a 3D ray from camera center (0, 0, 0)
@@ -140,6 +140,14 @@ def compute_visibility_from_mesh_vertices(joints, verts, intrinsics=None, occlus
     try:
         hull_3d = ConvexHull(torso_verts)
         mesh = trimesh.Trimesh(vertices=torso_verts, faces=hull_3d.simplices, process=False)
+        if extra_verts is not None:
+            extra_v = np.asarray(extra_verts, dtype=float)
+            if extra_v.ndim == 2 and len(extra_v) == len(_TORSO_MASK):
+                extra_torso = extra_v[_TORSO_MASK]
+                if len(extra_torso) >= 4:
+                    hull_extra = ConvexHull(extra_torso)
+                    mesh_extra = trimesh.Trimesh(vertices=extra_torso, faces=hull_extra.simplices, process=False)
+                    mesh = trimesh.util.concatenate([mesh, mesh_extra])
     except Exception:
         return visibility
 
@@ -206,7 +214,8 @@ def compute_harmonic_precision(
             if name not in cam:
                 P[name] = 0.0
                 continue
-            C = 1.0 if vis.get(name, True) else 0.0
+            # ponytail: 0.1 thay vì 0.0 để không drag harmonic neighbor H về 0 oan khi joint bị che
+            C = 1.0 if vis.get(name, True) else 0.1
             p_c = as_xyz(cam[name])
             L = float(np.linalg.norm(p_c))
             P[name] = C / (1.0 + alpha * (L ** 2))
@@ -217,7 +226,7 @@ def compute_harmonic_precision(
         for name in joint_names:
             p = P[name]
             nb = [P[n] for n in neighbors.get(name, []) if n in P]
-            b = beta * (sum(nb) / len(nb)) if nb else p
+            b = (beta * (sum(nb) / len(nb)) + (1.0 - beta) * p) if nb else p
             H[name] = (2.0 * b * p) / (b + p + epsilon)
         return H
 
@@ -253,11 +262,16 @@ def _harmonic_blend(base_confidence, external_confidence, epsilon=HARMONIC_EPSIL
     return float((2.0 * base_confidence * external_confidence) / (base_confidence + external_confidence + epsilon))
 
 
-def _blend_detector_confidences(joint_names, base_confidences, external_confidences):
-    return {
-        name: _harmonic_blend(base_confidences[name], _confidence_value(external_confidences, name))
-        for name in joint_names
-    }
+def _blend_detector_confidences(joint_names, base_confidences, external_confidences, vis=None):
+    blended = {}
+    for name in joint_names:
+        ext_val = _confidence_value(external_confidences, name)
+        # ponytail: 3D geometry & physics is the decider. If 3D mesh proves joint is occluded,
+        # high 2D confidence is a hallucination (e.g. snapped to another person) -> suppress to 0.1
+        if vis is not None and not vis.get(name, True) and ext_val is not None and ext_val > 0.3:
+            ext_val = 0.1
+        blended[name] = _harmonic_blend(base_confidences[name], ext_val)
+    return blended
 
 
 def detect_cross_view_errors(
@@ -283,14 +297,22 @@ def detect_cross_view_errors(
     }
 
     _, H1_old, H2_old = compute_harmonic_precision(cam1, cam2, names, vis1, vis2, alpha=alpha, beta=beta)
-    H1_all = _blend_detector_confidences(names, H1_old, confidence2d1)
-    H2_all = _blend_detector_confidences(names, H2_old, confidence2d2)
+    H1_all = _blend_detector_confidences(names, H1_old, confidence2d1, vis=vis1)
+    H2_all = _blend_detector_confidences(names, H2_old, confidence2d2, vis=vis2)
     all_weights = {name: (H1_all[name] + H2_all[name]) / 2.0 for name in names}
     abs_diffs = [abs(H1_all[n] - H2_all[n]) for n in names]
     delta = min(float(np.percentile(abs_diffs, 75)) if abs_diffs else 0.0, CONFIDENCE_DELTA_CAP)
     if uncertainty_gating:
         k1_set = {n for n in names if H1_all[n] > H2_all[n] + delta and vis1.get(n, True) and H1_all[n] >= min_confidence}
-        k2_set = {n for n in names if H2_all[n] > H1_all[n] + delta and vis2.get(n, True) and H2_all[n] >= min_confidence}
+        # ponytail: occluded rescue — cam1 blind + cam2 sees + cam2 actually better → k2_set
+        k2_set = {
+            n for n in names
+            if H2_all[n] >= min_confidence
+            and (
+                (H2_all[n] > H1_all[n] + delta and vis2.get(n, True))                          # normal path
+                or (not vis1.get(n, True) and vis2.get(n, True) and H2_all[n] > H1_all[n])      # occluded: still require H2 > H1
+            )
+        }
     else:
         k1_set = {n for n in names if H1_all[n] > H2_all[n] + delta}
         k2_set = {n for n in names if H2_all[n] > H1_all[n] + delta}
