@@ -670,11 +670,12 @@ def _evaluate_camera_pair(camA, camB, base_cfg, gt_dir, workspace, seg_name: str
         return None
 
 def _ranking_key(result: dict) -> tuple[float, float, float]:
-    # PA-MPJPE is comparable across cameras even when exo-to-world extrinsics are unavailable.
-    pa_error = float(result.get("pa_mpjpe", float("inf")))
-    pa_gain = float(result.get("% delta_pa_mpjpe", float("-inf")))
-    motion_error = float(result.get("accel", float("inf"))) + float(result.get("mble", float("inf")))
-    return -pa_error, pa_gain, -motion_error
+    # ponytail: rank primarily by delta PA-MPJPE (highest improvement first)
+    pa_gain = float(result.get("% delta_pa_mpjpe") if result.get("% delta_pa_mpjpe") is not None else result.get("% delta_pa-mpjpe", float("-inf")))
+    pa_error = float(result.get("pa_mpjpe") if result.get("pa_mpjpe") is not None else float("inf"))
+    accel = float(result.get("accel") if result.get("accel") is not None else float("inf"))
+    mble = float(result.get("mble") if result.get("mble") is not None else float("inf"))
+    return pa_gain, -pa_error, -(accel + mble)
 
 
 def _get_timed_input(timeout: int) -> str | None:

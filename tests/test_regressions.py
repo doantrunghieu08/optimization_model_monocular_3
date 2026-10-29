@@ -312,19 +312,22 @@ class FusionOptimizationTests(unittest.TestCase):
         )
         self.assertGreater(float(c1_occ["left_wrist"][0]), 1.0)
 
-    def test_ranking_minimizes_final_pa_error_then_motion_error(self):
-        low_final_error = {
-            "pa_mpjpe": 30.0, "% delta_pa_mpjpe": -0.5,
-            "accel": 18.0, "mble": 18.0,
-        }
-        larger_gain_but_worse_result = {
+    def test_ranking_maximizes_delta_pa_mpjpe_then_minimizes_error(self):
+        larger_gain = {
             "pa_mpjpe": 50.0, "% delta_pa_mpjpe": 2.0,
             "accel": 10.0, "mble": 10.0,
         }
-        self.assertGreater(_ranking_key(low_final_error), _ranking_key(larger_gain_but_worse_result))
+        low_final_error_negative_gain = {
+            "pa_mpjpe": 30.0, "% delta_pa_mpjpe": -0.5,
+            "accel": 18.0, "mble": 18.0,
+        }
+        self.assertGreater(_ranking_key(larger_gain), _ranking_key(low_final_error_negative_gain))
 
-        same_pose_better_motion = dict(low_final_error, accel=10.0, mble=10.0)
-        self.assertGreater(_ranking_key(same_pose_better_motion), _ranking_key(low_final_error))
+        same_gain_lower_error = dict(larger_gain, pa_mpjpe=40.0)
+        self.assertGreater(_ranking_key(same_gain_lower_error), _ranking_key(larger_gain))
+
+        same_gain_and_error_better_motion = dict(larger_gain, accel=5.0, mble=5.0)
+        self.assertGreater(_ranking_key(same_gain_and_error_better_motion), _ranking_key(larger_gain))
 
 
 class LearnablePostOptimizationTests(unittest.TestCase):

@@ -307,10 +307,10 @@ def optimize_sequence_gpu(
     temp_lambda = float(opt_cfg.get("temporal_lambda", 2.0))
     n_iters = min(int(opt_cfg.get("max_iter", 35)), 50)
 
-    # ponytail: protect high-confidence (visible) joints — only allow optimizer to move occluded/low-conf joints.
-    # mask=0 → joint is locked (high confidence, master must not drift); mask=1 → optimizer free to correct.
-    mask1 = torch.where(c1_t < 0.3, torch.tensor(1.0, device=device), torch.tensor(0.0, device=device)).unsqueeze(-1) if master_prot_enabled else torch.ones_like(delta1)
-    mask2 = torch.where(c2_t < 0.3, torch.tensor(1.0, device=device), torch.tensor(0.0, device=device)).unsqueeze(-1) if master_prot_enabled else torch.ones_like(delta2)
+    # ponytail: soft mask — high-conf joints resist movement but are not fully frozen.
+    # Fully hard-locking (mask=0) both cameras simultaneously starves the optimizer of gradient.
+    mask1 = (1.0 - torch.clamp(c1_t, 0.0, 1.0)).unsqueeze(-1) if master_prot_enabled else torch.ones_like(delta1)
+    mask2 = (1.0 - torch.clamp(c2_t, 0.0, 1.0)).unsqueeze(-1) if master_prot_enabled else torch.ones_like(delta2)
 
     for _ in range(n_iters):
         optimizer.zero_grad()
@@ -346,8 +346,8 @@ def optimize_sequence_gpu(
         w2 = torch.clamp(c2_t, min=0.0).unsqueeze(-1)
         diff_mv = torch.abs(d1 - d2)
         huber_mv = torch.where(diff_mv <= 0.05, 0.5 * (diff_mv ** 2), 0.05 * (diff_mv - 0.025))
-        # ponytail: min-confidence weight prevents pulling high-confidence cam toward hallucinated/incorrect cam
-        w_mv = torch.min(w1, w2)
+        # ponytail: avg weight — gradient flows when either cam is confident; min() kills too many joints
+        w_mv = (w1 + w2) / 2.0
         loss_mv = (w_mv * huber_mv).mean()
 
         accel1 = p1[2:] - 2.0 * p1[1:-1] + p1[:-2]
