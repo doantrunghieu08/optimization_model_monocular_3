@@ -90,7 +90,28 @@ $$\hat{\mathbf{P}}_{:, j} = \text{Savitzky-Golay}\left(\mathbf{P}_{:, j}, \text{
 
 ---
 
-## 6. Tách biệt Ground Truth khỏi suy luận
+## 6. Tối Ưu Hóa Chuỗi Frame Trên GPU & Chống Suy Giảm Đa Góc Nhìn (GPU Sequence Optimization & Negative Transfer Prevention)
+
+* **Vị trí file:** [`fusion_pipeline/optimization.py`](file:///d:/optimization_model_monocular_3/fusion_pipeline/optimization.py#L205-L380)
+
+### Vấn đề của phiên bản trước
+Trong bước tối ưu hóa chuỗi toàn cục bằng PyTorch GPU (`optimize_sequence_gpu`), xuất hiện hiện tượng suy giảm độ chính xác mạnh ở một số khung hình do 2 nguyên nhân cốt lõi:
+1. **Bảo vệ bất đối xứng (Asymmetric Protection Mask):** `mask1` bảo vệ Cam 1 khỏi trôi lệch khi khớp có độ tin cậy cao, nhưng Cam 2 bị gán `mask2 = ones_like(delta2)`. Do đó Cam 2 bị kéo tự do theo các ràng buộc hình học, sau đó gián tiếp kéo lệch ngược lại Cam 1.
+2. **Kéo lệch camera chuẩn do ảo giác (Hallucination Pull via Mean-Confidence Loss):** Trọng số của hàm mất mát khoảng cách đa góc nhìn sử dụng trung bình cộng:
+   $$w_{\text{mv}} = \frac{w_1 + w_2}{2}$$
+   Khi một camera quan sát chuẩn xác ($w_1 \approx 1.0$) nhưng camera kia bị bắt nhầm đối tượng/ảo giác trong cảnh tiếp xúc ($w_2$ vẫn cao do 2D detector tự tin nhầm), $w_{\text{mv}}$ đạt giá trị cực đại. Quá trình tối ưu hóa ép khoảng cách hai camera trùng nhau, kéo khớp đúng lệch hẳn sang khớp sai (Negative Transfer).
+
+### Giải pháp cải tiến (Ponytail Minimalist Fix)
+1. **Khóa khớp tin cậy song phương (Bidirectional High-Confidence Locking):**
+   Áp dụng mặt nạ bảo vệ bình đẳng cho cả 2 camera dựa trên ngưỡng độ tin cậy:
+   $$\text{mask}_{c, t, j} = \begin{cases} 0.0 & \text{nếu } c_{t, j} \ge 0.3 \text{ (khớp rõ nét, giữ nguyên quan sát gốc)} \\ 1.0 & \text{nếu } c_{t, j} < 0.3 \text{ (khớp bị che khuất/nhiễu, cho phép tối ưu)} \end{cases}$$
+2. **Trọng số mất mát đa góc nhìn theo giá trị tối thiểu (Min-Confidence Gating):**
+   $$w_{\text{mv}} = \min(w_1, w_2)$$
+   Nếu chỉ một trong hai camera bị nghi ngờ hoặc một bên không quan sát được, $w_{\text{mv}}$ tự động hạ thấp, ngăn chặn triệt để việc cưỡng bức hội tụ kéo hỏng góc nhìn đang tốt.
+
+---
+
+## 7. Tách biệt Ground Truth khỏi suy luận
 
 Ground Truth chỉ được đọc trong `evaluation_pipeline` để tính metric sau khi dự đoán đã hoàn tất. `fusion_pipeline` không đọc GT, không tính offset từ GT và không sửa đầu ra dựa trên GT.
 
@@ -98,7 +119,7 @@ Report brute-force mang nhãn protocol `no_gt_v2_shared_shape_consensus`; các d
 
 ---
 
-## 7. Kết quả cần đo lại
+## 8. Kết quả cần đo lại
 
 Các số liệu cũ có bước hiệu chỉnh từ GT hoặc protocol fusion cũ nên không còn hợp lệ. Cần chạy lại toàn bộ benchmark với protocol `no_gt_v2_shared_shape_consensus` trước khi công bố kết quả.
 
@@ -106,7 +127,7 @@ Thử nghiệm dual-view SMPL fitting trên `cam0 -> cam2` đã bị loại kh�
 
 ---
 
-## 8. Kết Luận Kiến Trúc
+## 9. Kết Luận Kiến Trúc
 Hệ thống hiện tại loại bỏ hoàn toàn các giả định tối ưu 2D phức tạp dễ gây bất ổn định, tinh gọn theo triết lý **Ponytail**:
 * Xoay tương đối động học theo từng nhánh xương để tránh khuếch đại góc xoay.
 * Khóa cứng chiều dài xương và lọc đa thức thời gian để loại trừ hoàn toàn hiện tượng méo cơ thể và rung lắc gia tốc.

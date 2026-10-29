@@ -307,8 +307,10 @@ def optimize_sequence_gpu(
     temp_lambda = float(opt_cfg.get("temporal_lambda", 2.0))
     n_iters = min(int(opt_cfg.get("max_iter", 35)), 50)
 
+    # ponytail: protect high-confidence (visible) joints — only allow optimizer to move occluded/low-conf joints.
+    # mask=0 → joint is locked (high confidence, master must not drift); mask=1 → optimizer free to correct.
     mask1 = torch.where(c1_t < 0.3, torch.tensor(1.0, device=device), torch.tensor(0.0, device=device)).unsqueeze(-1) if master_prot_enabled else torch.ones_like(delta1)
-    mask2 = torch.ones_like(delta2)
+    mask2 = torch.where(c2_t < 0.3, torch.tensor(1.0, device=device), torch.tensor(0.0, device=device)).unsqueeze(-1) if master_prot_enabled else torch.ones_like(delta2)
 
     for _ in range(n_iters):
         optimizer.zero_grad()
@@ -342,13 +344,10 @@ def optimize_sequence_gpu(
         d2 = torch.cdist(p2, p2[:, anchor_idx_t])
         w1 = torch.clamp(c1_t, min=0.0).unsqueeze(-1)
         w2 = torch.clamp(c2_t, min=0.0).unsqueeze(-1)
-        w_total = w1 + w2 + 1e-6
-        # cam1 weight high → cam2 pulled toward cam1; cam2 weight high → cam1 pulled toward cam2
-        # single diff, weighted blend of reference direction
         diff_mv = torch.abs(d1 - d2)
         huber_mv = torch.where(diff_mv <= 0.05, 0.5 * (diff_mv ** 2), 0.05 * (diff_mv - 0.025))
-        # weight = average confidence — joints confident in either cam get optimized; low both = left alone
-        w_mv = (w1 + w2) / 2.0
+        # ponytail: min-confidence weight prevents pulling high-confidence cam toward hallucinated/incorrect cam
+        w_mv = torch.min(w1, w2)
         loss_mv = (w_mv * huber_mv).mean()
 
         accel1 = p1[2:] - 2.0 * p1[1:-1] + p1[:-2]
