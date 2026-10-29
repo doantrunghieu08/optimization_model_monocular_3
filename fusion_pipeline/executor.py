@@ -783,8 +783,10 @@ def run_fusion(config: dict) -> None:
             print(f"[Fusion] Zero-GT Fallback: Cam1(jitter={a1:.4f}), Cam2(jitter={a2:.4f}) -> master_distorted={master_is_distorted}, slave_noisy={slave_is_noisy}")
 
     master_cfg = fusion_cfg.get("master_protection", {})
-    effective_master_margin = 0.0 if master_is_distorted else (float(master_cfg.get("confidence_margin", 0.15)) if master_cfg.get("enabled", True) else 0.0)
-    print(f"[Fusion] Master Protection: margin={effective_master_margin}")
+    # ponytail: only activate master protection when slave is actually noisy/degraded
+    should_protect_master = slave_is_noisy and not master_is_distorted
+    effective_master_margin = float(master_cfg.get("confidence_margin", 0.15)) if (should_protect_master and master_cfg.get("enabled", True)) else 0.0
+    print(f"[Fusion] Master Protection: should_protect={should_protect_master}, margin={effective_master_margin}")
 
     # --- THÊM TQDM Ở ĐÂY ---
     for path in tqdm(file_paths, desc="[Fusion] Processing", unit="frame", dynamic_ncols=True):
@@ -877,7 +879,7 @@ def run_fusion(config: dict) -> None:
     if smoothing_enabled:
         smoothing_master_cfg = dict(master_cfg)
         smoothing_master_cfg["confidence_margin"] = effective_master_margin
-        if master_is_distorted:
+        if not should_protect_master:
             smoothing_master_cfg["enabled"] = False
         _apply_temporal_smoothing(
             output_dir / "keypoints3d",
