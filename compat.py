@@ -52,21 +52,36 @@ def resolve_person_payload(wham_data, pkl_path=None, target_person=None):
 
     if target_person is not None:
         target_str = str(target_person).strip().lower()
+        if target_str in ("aria1", "aria_1", "aria-1"):
+            target_str = "aria01"
+        elif target_str in ("aria2", "aria_2", "aria-2"):
+            target_str = "aria02"
+
         if pkl_path is not None:
             mapping = parse_person_mapping(pkl_path)
+            candidate_tracks = []
             for track_str, person_name in mapping.items():
                 if person_name == target_str:
                     track_id = int(track_str) if track_str.isdigit() else track_str
                     if track_id in wham_data:
-                        return wham_data[track_id]
-                    if str(track_id) in wham_data:
-                        return wham_data[str(track_id)]
+                        candidate_tracks.append(wham_data[track_id])
+                    elif str(track_id) in wham_data:
+                        candidate_tracks.append(wham_data[str(track_id)])
+            if candidate_tracks:
+                return max(candidate_tracks, key=lambda v: len(v.get("pose", [])) if isinstance(v, dict) else 0)
+            if mapping:
+                # ponytail: strict identity - mapping exists but target is missing, never substitute another person
+                return None
+
         if target_person in wham_data:
             return wham_data[target_person]
         if target_str in wham_data:
             return wham_data[target_str]
         if target_str.isdigit() and int(target_str) in wham_data:
             return wham_data[int(target_str)]
+
+        # ponytail: strict identity - do NOT guess or substitute another person when target_person is specified
+        return None
 
     if 0 in wham_data:
         return wham_data[0]

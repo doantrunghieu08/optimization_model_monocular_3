@@ -19,7 +19,7 @@ inputs:
   camera1_video: "input/Hugging/exo/cam04/images/harmony4D_002_hugging_cam04_ffmpeg.mp4"
   camera2_video: "input/Hugging/exo/cam05/images/harmony4D_002_hugging_cam05_ffmpeg.mp4"
   ground_truth_dir: "input/Hugging/processed_data/smpl" # Thư mục ground-truth cho evaluation.
-  target_person: "aria02" # Chọn 1 người để fusion ("aria01" hoặc "aria02")
+  target_person: "aria01" # Chọn 1 người để fusion ("aria01" hoặc "aria02")
 
 paths:
   smpl_model: "models/SMPL_NEUTRAL.pkl"

@@ -164,9 +164,10 @@ def _slice_person(person: dict, start: int, frame_count: int) -> dict:
             out[key] = value
     return out
 
-def load_wham_data(cam1_pkl: Path, cam2_pkl: Path, frame_count: int, offset: int) -> dict:
-    person_1 = _extract_person_payload(load_joblib_compat(cam1_pkl))
-    person_2 = _extract_person_payload(load_joblib_compat(cam2_pkl))
+def load_wham_data(cam1_pkl: Path, cam2_pkl: Path, frame_count: int, offset: int, target_person=None) -> dict:
+    from compat import resolve_person_payload
+    person_1 = resolve_person_payload(load_joblib_compat(cam1_pkl), pkl_path=cam1_pkl, target_person=target_person)
+    person_2 = resolve_person_payload(load_joblib_compat(cam2_pkl), pkl_path=cam2_pkl, target_person=target_person)
     if person_1 is None or person_2 is None:
         raise ValueError("Cannot extract person payload from WHAM PKL files")
     cam1_start = max(0, -int(offset))
@@ -551,7 +552,8 @@ def _run_learnable_smplify_stage(
     frame_ids = [int(frame.get("frame_id", idx + 1)) for idx, frame in enumerate(judgement_results)]
 
     offset, _ = resolve_selected_offset_from_camera_profile(config)
-    wham_data = load_wham_data(cam1_pkl, cam2_pkl, frame_count, offset)
+    target_person = inputs.get("target_person")
+    wham_data = load_wham_data(cam1_pkl, cam2_pkl, frame_count, offset, target_person=target_person)
     net, normalize_kp = load_netbody25(learnable_cfg, device)
 
     map_data = load_keypoints3d_map(config["paths"]["keypoints3d_map"])

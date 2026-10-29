@@ -208,6 +208,8 @@ def optimize_sequence_gpu(
     pose_dir: Path | None = None,
     config: dict = None,
     device: str = None,
+    master_only: bool = False,
+    anchor_cam: str = "camera1",
 ) -> None:
     """
     Tối ưu hóa toàn bộ chuỗi frame (Batch Sequence Optimization) bằng PyTorch Autograd trên GPU.
@@ -297,7 +299,7 @@ def optimize_sequence_gpu(
         if a in name_to_idx and b in name_to_idx and c in name_to_idx
     ]
 
-    optimizer = torch.optim.Adam([delta1, delta2], lr=0.005)
+    optimizer = torch.optim.Adam([delta1] if master_only else [delta1, delta2], lr=0.005)
     opt_cfg = (config or {}).get("fusion", {}).get("optimization", {})
     fusion_cfg = (config or {}).get("fusion", {})
     master_prot_enabled = bool(fusion_cfg.get("master_protection", {}).get("enabled", False))
@@ -307,10 +309,17 @@ def optimize_sequence_gpu(
     temp_lambda = float(opt_cfg.get("temporal_lambda", 2.0))
     n_iters = min(int(opt_cfg.get("max_iter", 35)), 50)
 
-    # ponytail: soft mask — high-conf joints resist movement but are not fully frozen.
-    # Fully hard-locking (mask=0) both cameras simultaneously starves the optimizer of gradient.
-    mask1 = (1.0 - torch.clamp(c1_t, 0.0, 1.0)).unsqueeze(-1) if master_prot_enabled else torch.ones_like(delta1)
-    mask2 = (1.0 - torch.clamp(c2_t, 0.0, 1.0)).unsqueeze(-1) if master_prot_enabled else torch.ones_like(delta2)
+    # ponytail: asymmetric anchor mask — anchor camera resists movement to prevent drift, while the other camera adjusts
+    if master_prot_enabled:
+        if anchor_cam == "camera2":
+            mask1 = torch.ones_like(delta1)
+            mask2 = torch.zeros_like(delta2) if master_only else (1.0 - torch.clamp(c2_t, 0.0, 1.0)).unsqueeze(-1)
+        else:
+            mask1 = (1.0 - torch.clamp(c1_t, 0.0, 1.0)).unsqueeze(-1)
+            mask2 = torch.zeros_like(delta2) if master_only else torch.ones_like(delta2)
+    else:
+        mask1 = torch.ones_like(delta1)
+        mask2 = torch.zeros_like(delta2) if master_only else torch.ones_like(delta2)
 
     for _ in range(n_iters):
         optimizer.zero_grad()
@@ -326,13 +335,14 @@ def optimize_sequence_gpu(
             d1_sq = ((p1[:, c_i] - p1[:, p_i]) ** 2).sum(dim=-1)
             d2_sq = ((p2[:, c_i] - p2[:, p_i]) ** 2).sum(dim=-1)
             loss_bone = loss_bone + (torch.relu(low1[b_idx] - d1_sq) ** 2 + torch.relu(d1_sq - up1[b_idx]) ** 2).mean()
-            loss_bone = loss_bone + (torch.relu(low2[b_idx] - d2_sq) ** 2 + torch.relu(d2_sq - up2[b_idx]) ** 2).mean()
+            if not master_only:
+                loss_bone = loss_bone + (torch.relu(low2[b_idx] - d2_sq) ** 2 + torch.relu(d2_sq - up2[b_idx]) ** 2).mean()
 
         # ponytail: anatomical hinge angle loss (elbows and knees)
         loss_angle = 0.0
         if angle_limits_enabled and hinge_pairs:
             for a_i, b_i, c_i in hinge_pairs:
-                for p_k in (p1, p2):
+                for p_k in ((p1,) if master_only else (p1, p2)):
                     u = p_k[:, a_i] - p_k[:, b_i]
                     v = p_k[:, c_i] - p_k[:, b_i]
                     cos_th = (u * v).sum(dim=-1) / (torch.norm(u, dim=-1) * torch.norm(v, dim=-1) + 1e-6)
@@ -340,19 +350,23 @@ def optimize_sequence_gpu(
 
         # ponytail: confidence-weighted mv loss — per-joint, the more confident cam is reference
         # prevents cam1 from being hardcoded reference when it's occluded/wrong
-        d1 = torch.cdist(p1, p1[:, anchor_idx_t])
-        d2 = torch.cdist(p2, p2[:, anchor_idx_t])
-        w1 = torch.clamp(c1_t, min=0.0).unsqueeze(-1)
-        w2 = torch.clamp(c2_t, min=0.0).unsqueeze(-1)
-        diff_mv = torch.abs(d1 - d2)
-        huber_mv = torch.where(diff_mv <= 0.05, 0.5 * (diff_mv ** 2), 0.05 * (diff_mv - 0.025))
-        # ponytail: avg weight — gradient flows when either cam is confident; min() kills too many joints
-        w_mv = (w1 + w2) / 2.0
-        loss_mv = (w_mv * huber_mv).mean()
+        loss_mv = torch.zeros((), device=device)
+        if not master_only:
+            d1 = torch.cdist(p1, p1[:, anchor_idx_t])
+            d2 = torch.cdist(p2, p2[:, anchor_idx_t])
+            w1 = torch.clamp(c1_t, min=0.0).unsqueeze(-1)
+            w2 = torch.clamp(c2_t, min=0.0).unsqueeze(-1)
+            diff_mv = torch.abs(d1 - d2)
+            huber_mv = torch.where(diff_mv <= 0.05, 0.5 * (diff_mv ** 2), 0.05 * (diff_mv - 0.025))
+            # ponytail: min-confidence weight prevents pulling high-confidence cam toward hallucinated/noisy cam
+            w_mv = torch.min(w1, w2)
+            loss_mv = (w_mv * huber_mv).mean()
 
         accel1 = p1[2:] - 2.0 * p1[1:-1] + p1[:-2]
         accel2 = p2[2:] - 2.0 * p2[1:-1] + p2[:-2]
-        loss_accel = (accel1 ** 2).mean() + (accel2 ** 2).mean()
+        loss_accel = (accel1 ** 2).mean()
+        if not master_only:
+            loss_accel = loss_accel + (accel2 ** 2).mean()
 
         total_loss = (reg_lambda * loss_prox if regularization_enabled else 0.0) + 50.0 * loss_bone + 5.0 * loss_mv + temp_lambda * 2.5 * loss_accel + 20.0 * loss_angle
         total_loss.backward()
@@ -368,7 +382,7 @@ def optimize_sequence_gpu(
             d["camera2"][j_name] = [round(float(x), 6) for x in p2_opt[t, j_idx]]
         if all_pose is not None:
             from fusion_pipeline.executor import _enforce_bone_lengths
-            for cam in ("camera1", "camera2"):
+            for cam in (("camera1",) if master_only else ("camera1", "camera2")):
                 if cam in d and cam in all_pose[t]:
                     _enforce_bone_lengths(d[cam], all_pose[t][cam])
         f.write_text(json.dumps(d), encoding="utf-8")

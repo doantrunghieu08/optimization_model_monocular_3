@@ -11,8 +11,8 @@ import torch
 from evaluation_pipeline.executor import _compute_pa_mpjpe, _compute_pck
 from brute_force_runner import EVALUATION_PROTOCOL, _get_header_indices, _parse_history_row, _ranking_key, _resolve_pair_mode
 from fusion_pipeline.correction import apply_multiview_geometric_fusion
-from fusion_pipeline.executor import _source_frame_indices, _restore_master_pose
-from fusion_pipeline.executor import detect_adaptive_fusion_mode
+from fusion_pipeline.executor import _source_frame_indices, _restore_master_pose, _restore_pair_pose
+from fusion_pipeline.executor import detect_adaptive_fusion_mode, detect_pair_fusion_gate
 from fusion_pipeline.detector import require_ray_casting_backend
 from fusion_pipeline.optimization import optimize_sequence_gpu
 from learnable_pipeline.executor import _slice_person
@@ -147,6 +147,30 @@ class FusionOptimizationTests(unittest.TestCase):
     def test_regularization_flag_changes_sequence_optimizer(self):
         self.assertLess(self._run(True), self._run(False))
 
+    def test_master_only_optimizer_smooths_master_without_touching_slave(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            keypoints = root / "keypoints3d"
+            metadata = root / "metadata"
+            keypoints.mkdir()
+            metadata.mkdir()
+            for frame, x in enumerate((0.0, 1.0, 0.0), 1):
+                payload = {
+                    "camera1": {"pelvis": [x, 0.0, 0.0]},
+                    "camera2": {"pelvis": [10.0, 0.0, 0.0]},
+                }
+                (keypoints / f"fused_data_{frame}.json").write_text(json.dumps(payload), encoding="utf-8")
+
+            config = {"fusion": {
+                "optimization": {"regularization": False, "temporal_lambda": 2.0, "max_iter": 10},
+                "angle_limits": {"enabled": False},
+            }}
+            optimize_sequence_gpu(keypoints, metadata, config=config, device="cpu", master_only=True)
+
+            middle = json.loads((keypoints / "fused_data_2.json").read_text(encoding="utf-8"))
+            self.assertLess(middle["camera1"]["pelvis"][0], 1.0)
+            self.assertEqual(middle["camera2"]["pelvis"], [10.0, 0.0, 0.0])
+
     def test_fusion_package_has_no_learnable_backend(self):
         fusion_dir = Path(__file__).resolve().parents[1] / "fusion_pipeline"
         source = "\n".join(path.read_text(encoding="utf-8").lower() for path in fusion_dir.glob("*.py"))
@@ -173,7 +197,7 @@ class FusionOptimizationTests(unittest.TestCase):
         header = ["Set", "Segment", "Protocol", "Cam Master", "Cam Slave"]
         stale = ["S1", "seg1", "no_gt_v6_visible_confidence_transfer", "cam1", "cam2"]
         self.assertEqual(_parse_history_row(stale, _get_header_indices(header)), (None, None))
-        self.assertEqual(EVALUATION_PROTOCOL, "no_gt_v8_target_sync_master_shape")
+        self.assertEqual(EVALUATION_PROTOCOL, "no_gt_v10_master_only_postopt")
 
     def test_adaptive_detector_uses_aggressive_mode_only_for_reliable_slave(self):
         names = [f"joint_{idx}" for idx in range(8)]
@@ -196,6 +220,21 @@ class FusionOptimizationTests(unittest.TestCase):
             visible, visible, set(),
         )
         self.assertEqual(mode, "conservative")
+
+    def test_pair_quality_gate_fuses_only_when_slave_is_better(self):
+        def result(master, slave):
+            return {"joint_confidence": {
+                "camera1": {"left_wrist": master, "right_ankle": master},
+                "camera2": {"left_wrist": slave, "right_ankle": slave},
+            }}
+
+        should_fuse, summary = detect_pair_fusion_gate([result(0.9, 0.8), result(0.8, 0.8)])
+        self.assertFalse(should_fuse)
+        self.assertEqual(summary["reason"], "master_better_or_equal")
+
+        should_fuse, summary = detect_pair_fusion_gate([result(0.6, 0.9), result(0.7, 0.9)])
+        self.assertTrue(should_fuse)
+        self.assertEqual(summary["reason"], "slave_better")
 
     def test_visible_consensus_requires_confidence_margin(self):
         cam1 = {"left_elbow": [0.0, 0.0, 0.0], "left_wrist": [1.0, 0.0, 0.0]}
@@ -287,6 +326,11 @@ class FusionOptimizationTests(unittest.TestCase):
             restored = json.loads((fused_dir / "fused_data_1.json").read_text(encoding="utf-8"))
             self.assertEqual(restored["camera1"]["joint"], [1, 0, 0])
             self.assertEqual(restored["camera2"]["joint"], [2, 0, 0])
+
+            _restore_pair_pose(fused_dir, pose_dir)
+            restored = json.loads((fused_dir / "fused_data_1.json").read_text(encoding="utf-8"))
+            self.assertEqual(restored["camera1"]["joint"], [1, 0, 0])
+            self.assertEqual(restored["camera2"]["joint"], [8, 0, 0])
 
     def test_confidence_corrections_protects_visible_extremities_from_negative_transfer(self):
         from fusion_pipeline.correction import apply_confidence_corrections
@@ -635,6 +679,63 @@ class MasterProtectionAndAngleLimitTests(unittest.TestCase):
         self.assertAlmostEqual(points["joint_vis"][0], 0.08, places=5)
         # Occluded joint is spared and remains at 0.30m
         self.assertAlmostEqual(points["joint_occ"][0], 0.30, places=5)
+
+    def test_strict_person_isolation_never_substitutes_different_person(self):
+        from compat import resolve_person_payload
+        import tempfile
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "person_mapping.txt").write_text("0 = aria02", encoding="utf-8")
+            pkl_path = root / "cam.pkl"
+            wham_data = {
+                0: {"pose": np.zeros((10, 72)), "name": "person2"},
+            }
+            # Requesting aria01 when only aria02 exists must return None, NOT person2
+            self.assertIsNone(resolve_person_payload(wham_data, pkl_path=pkl_path, target_person="aria01"))
+            # Alias aria1 must resolve to aria01
+            (root / "person_mapping.txt").write_text("0 = aria01", encoding="utf-8")
+            self.assertEqual(resolve_person_payload(wham_data, pkl_path=pkl_path, target_person="aria1")["name"], "person2")
+
+    def test_adaptive_master_protection_and_bone_distortion(self):
+        from fusion_pipeline.detector import compute_bone_distortion_score
+        # Perfectly proportional points
+        good_pts = {
+            "neck": [0.0, 0.32, 0.0], "pelvis": [0.0, 0.0, 0.0],
+            "left_shoulder": [-0.16, 0.32, 0.0], "left_elbow": [-0.32, 0.32, 0.0], "left_wrist": [-0.47, 0.32, 0.0],
+            "right_shoulder": [0.16, 0.32, 0.0], "right_elbow": [0.32, 0.32, 0.0], "right_wrist": [0.47, 0.32, 0.0],
+            "left_hip": [-0.1, 0.0, 0.0], "left_knee": [-0.1, -0.25, 0.0], "left_ankle": [-0.1, -0.49, 0.0],
+            "right_hip": [0.1, 0.0, 0.0], "right_knee": [0.1, -0.25, 0.0], "right_ankle": [0.1, -0.49, 0.0],
+        }
+        # Distorted points (arms stretched x3)
+        bad_pts = dict(good_pts)
+        bad_pts["left_wrist"] = [-1.5, 0.32, 0.0]
+        bad_pts["right_wrist"] = [1.5, 0.32, 0.0]
+
+        good_score = compute_bone_distortion_score(good_pts)
+        bad_score = compute_bone_distortion_score(bad_pts)
+        self.assertLess(good_score, bad_score)
+
+        # Pair gate allows fusion when master is distorted even if slave confidence is lower
+        from fusion_pipeline.executor import detect_pair_fusion_gate
+        dummy_results = [{"joint_confidence": {"camera1": {"pelvis": 0.9}, "camera2": {"pelvis": 0.7}}}]
+        should_fuse, summary = detect_pair_fusion_gate(dummy_results, master_distorted=True)
+        self.assertTrue(should_fuse)
+        self.assertEqual(summary["reason"], "slave_structurally_better")
+
+    def test_zero_gt_quality_jitter_and_continuity(self):
+        # ponytail: zero-GT tracker jitter detection unit test
+        pts_smooth = np.zeros((10, 21, 3))
+        for t in range(10):
+            pts_smooth[t] = t * 0.01
+        np.random.seed(42)
+        pts_noisy = pts_smooth + np.random.normal(0, 0.05, pts_smooth.shape)
+        a1 = float(np.mean(np.linalg.norm(pts_smooth[2:] - 2 * pts_smooth[1:-1] + pts_smooth[:-2], axis=-1))) * 1000.0
+        a2 = float(np.mean(np.linalg.norm(pts_noisy[2:] - 2 * pts_noisy[1:-1] + pts_noisy[:-2], axis=-1))) * 1000.0
+        self.assertLess(a1, 1.0)
+        self.assertGreater(a2, 25.0)
+        slave_is_noisy = (10 >= 10 and 10 >= 10) and (a2 > 1.4 * a1 and a2 > 25.0)
+        self.assertTrue(slave_is_noisy)
+
 
 
 if __name__ == "__main__":

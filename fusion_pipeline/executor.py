@@ -58,7 +58,19 @@ def _extract_other_person_verts(wham_raw, target_person=None, pkl_path=None):
         return None
     from compat import parse_person_mapping
     target_str = str(target_person).strip().lower() if target_person else None
+    if target_str in ("aria1", "aria_1", "aria-1"):
+        target_str = "aria01"
+    elif target_str in ("aria2", "aria_2", "aria-2"):
+        target_str = "aria02"
     mapping = parse_person_mapping(pkl_path) if pkl_path else {}
+    other_person = "aria02" if target_str == "aria01" else ("aria01" if target_str == "aria02" else None)
+    if other_person and mapping:
+        for k, v in wham_raw.items():
+            if mapping.get(str(k), mapping.get(k, "")) == other_person and isinstance(v, dict):
+                verts = v.get("verts_cam", v.get("verts"))
+                if verts is not None:
+                    return verts
+        return None
     for k, v in wham_raw.items():
         person_name = mapping.get(str(k), mapping.get(k, ""))
         if target_str and person_name == target_str:
@@ -221,6 +233,39 @@ def detect_adaptive_fusion_mode(cam1, cam2, t12, h1, h2, vis1, vis2, conflicts):
         "median_residual": median_residual,
         "q75_residual": q75_residual,
         "conflict_ratio": conflict_ratio,
+    }
+
+
+def detect_pair_fusion_gate(frame_results, min_slave_advantage: float = 0.05, master_distorted: bool = False):
+    if master_distorted:
+        return True, {
+            "fusion_applied": True,
+            "median_slave_advantage": None,
+            "mean_slave_advantage": None,
+            "min_slave_advantage": float(min_slave_advantage),
+            "valid_frames": len(frame_results),
+            "reason": "slave_structurally_better",
+        }
+    frame_advantages = []
+    for result in frame_results:
+        confidence = result.get("joint_confidence", {})
+        master = confidence.get("camera1", {})
+        slave = confidence.get("camera2", {})
+        names = set(master) & set(slave)
+        if names:
+            frame_advantages.append(float(np.mean([
+                float(slave[name]) - float(master[name]) for name in names
+            ])))
+
+    median_advantage = float(np.median(frame_advantages)) if frame_advantages else float("-inf")
+    slave_better = median_advantage >= float(min_slave_advantage)
+    return slave_better, {
+        "fusion_applied": slave_better,
+        "median_slave_advantage": median_advantage if frame_advantages else None,
+        "mean_slave_advantage": float(np.mean(frame_advantages)) if frame_advantages else None,
+        "min_slave_advantage": float(min_slave_advantage),
+        "valid_frames": len(frame_advantages),
+        "reason": "slave_better" if slave_better else "master_better_or_equal",
     }
 
 
@@ -641,14 +686,26 @@ def _apply_temporal_smoothing(
 
 
 def _restore_master_pose(keypoints_dir: Path, pose_dir: Path) -> None:
+    _restore_pose_cameras(keypoints_dir, pose_dir, ("camera1",))
+
+
+def _restore_pair_pose(keypoints_dir: Path, pose_dir: Path) -> None:
+    _restore_pose_cameras(keypoints_dir, pose_dir, ("camera1", "camera2"))
+
+
+def _restore_pose_cameras(keypoints_dir: Path, pose_dir: Path, cameras: tuple[str, ...]) -> None:
     for fused_path in keypoints_dir.glob("fused_data_*.json"):
         pose_path = pose_dir / fused_path.name.replace("fused_data_", "pose_data_")
         if not pose_path.exists():
             continue
         fused = read_json(fused_path)
         pose = read_json(pose_path)
-        if "camera1" in fused and "camera1" in pose:
-            fused["camera1"] = pose["camera1"]
+        changed = False
+        for camera in cameras:
+            if camera in fused and camera in pose:
+                fused[camera] = pose[camera]
+                changed = True
+        if changed:
             write_json(fused_path, fused)
 
 
@@ -698,6 +755,37 @@ def run_fusion(config: dict) -> None:
     print(f"[Fusion] Found {len(file_paths)} pose JSON files")
 
     ransac_cfg = fusion_cfg["ransac"]
+    frame_results = []
+
+    # ponytail: zero-GT temporal jitter & tracking continuity check to select anchor camera
+    master_is_distorted = False
+    slave_is_noisy = False
+    if wham_loaded and verts_cam1 is not None and verts_cam2 is not None and n_frames_1 > 2 and n_frames_2 > 2:
+        n_chk = min(n_frames_1, n_frames_2, 60)
+        a1 = float(np.mean(np.linalg.norm(verts_cam1[2:n_chk] - 2 * verts_cam1[1:n_chk - 1] + verts_cam1[:n_chk - 2], axis=-1))) * 1000.0
+        a2 = float(np.mean(np.linalg.norm(verts_cam2[2:n_chk] - 2 * verts_cam2[1:n_chk - 1] + verts_cam2[:n_chk - 2], axis=-1))) * 1000.0
+        master_is_distorted = (n_frames_1 < 250 and n_frames_2 >= 250) or (a1 > 1.4 * a2 and a1 > 25.0)
+        slave_is_noisy = (n_frames_1 >= 250 and n_frames_2 < 250) or (a2 > 1.4 * a1 and a2 > 25.0)
+        print(f"[Fusion] Zero-GT Quality: Cam1(jitter={a1:.1f}, frames={n_frames_1}), Cam2(jitter={a2:.1f}, frames={n_frames_2}) -> master_distorted={master_is_distorted}, slave_noisy={slave_is_noisy}")
+    else:
+        d1_pts, d2_pts = [], []
+        for p in file_paths[:min(len(file_paths), 50)]:
+            raw_pose = _load_pose_frame(p, metadata_dir=metadata_dir)
+            if "camera1" in raw_pose and "camera2" in raw_pose:
+                d1_pts.append([raw_pose["camera1"][j] for j in sorted(raw_pose["camera1"])])
+                d2_pts.append([raw_pose["camera2"][j] for j in sorted(raw_pose["camera2"])])
+        if len(d1_pts) > 2 and len(d2_pts) > 2:
+            p1, p2 = np.array(d1_pts), np.array(d2_pts)
+            a1 = float(np.mean(np.linalg.norm(p1[2:] - 2 * p1[1:-1] + p1[:-2], axis=-1)))
+            a2 = float(np.mean(np.linalg.norm(p2[2:] - 2 * p2[1:-1] + p2[:-2], axis=-1)))
+            master_is_distorted = a1 > 1.4 * a2 and a1 > 0.025
+            slave_is_noisy = a2 > 1.4 * a1 and a2 > 0.025
+            print(f"[Fusion] Zero-GT Fallback: Cam1(jitter={a1:.4f}), Cam2(jitter={a2:.4f}) -> master_distorted={master_is_distorted}, slave_noisy={slave_is_noisy}")
+
+    master_cfg = fusion_cfg.get("master_protection", {})
+    effective_master_margin = 0.0 if master_is_distorted else (float(master_cfg.get("confidence_margin", 0.15)) if master_cfg.get("enabled", True) else 0.0)
+    print(f"[Fusion] Master Protection: margin={effective_master_margin}")
+
     # --- THÊM TQDM Ở ĐÂY ---
     for path in tqdm(file_paths, desc="[Fusion] Processing", unit="frame", dynamic_ncols=True):
         frame_idx = _frame_index(path)
@@ -744,7 +832,7 @@ def run_fusion(config: dict) -> None:
                 min_confidence=fusion_cfg.get("uncertainty_gating", {}).get("min_confidence", 0.1) if isinstance(fusion_cfg.get("uncertainty_gating"), dict) else 0.1,
                 consensus_threshold=fusion_cfg.get("uncertainty_gating", {}).get("consensus_threshold", 0.18) if isinstance(fusion_cfg.get("uncertainty_gating"), dict) else 0.18,
                 consensus_blend_strength=fusion_cfg.get("uncertainty_gating", {}).get("consensus_blend_strength", 0.25) if isinstance(fusion_cfg.get("uncertainty_gating"), dict) else 0.25,
-                master_margin=float(fusion_cfg.get("master_protection", {}).get("confidence_margin", 0.15)) if fusion_cfg.get("master_protection", {}).get("enabled", True) else 0.0,
+                master_margin=effective_master_margin,
             )
             # 1. Lấy dữ liệu an toàn
                 
@@ -773,16 +861,29 @@ def run_fusion(config: dict) -> None:
         fused_metadata = {k: v for k, v in result.items() if k not in ("camera1", "camera2", "optimized")}
         write_json(output_dir / "keypoints3d" / out_name, fused_keypoints)
         write_json(output_dir / "metadata" / out_name, fused_metadata)
+        frame_results.append(result)
+
+    slave_better, pair_gate = detect_pair_fusion_gate(frame_results, master_distorted=master_is_distorted)
+    for metadata_path in (output_dir / "metadata").glob("fused_data_*.json"):
+        metadata = read_json(metadata_path)
+        metadata["pair_quality_gate"] = pair_gate
+        write_json(metadata_path, metadata)
+
+    # ponytail: do NOT blindly destroy cross-view fusion; joint-level gating and min-confidence loss protect master.
+    # only fallback when explicitly requested by pair_mode == "posed_fallback".
 
     smoothing_cfg = fusion_cfg.get("smoothing", {})
-    master_cfg = fusion_cfg.get("master_protection", {})
     smoothing_enabled = smoothing_cfg.get("enabled", True)
     if smoothing_enabled:
+        smoothing_master_cfg = dict(master_cfg)
+        smoothing_master_cfg["confidence_margin"] = effective_master_margin
+        if master_is_distorted:
+            smoothing_master_cfg["enabled"] = False
         _apply_temporal_smoothing(
             output_dir / "keypoints3d",
             pose_dir=input_dir / "keypoints3d",
             metadata_dir=output_dir / "metadata",
-            master_protection=master_cfg,
+            master_protection=smoothing_master_cfg,
             window_length=int(smoothing_cfg.get("window_length", 5)),
             polyorder=int(smoothing_cfg.get("polyorder", 2)),
         )
@@ -795,6 +896,8 @@ def run_fusion(config: dict) -> None:
             metadata_dir=output_dir / "metadata",
             pose_dir=input_dir / "keypoints3d",
             config=config,
+            master_only=not slave_better,
+            anchor_cam="camera2" if master_is_distorted else "camera1",
         )
 
     if fusion_cfg.get("pair_mode") == "posed_fallback":

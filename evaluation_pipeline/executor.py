@@ -196,6 +196,10 @@ def _load_ground_truth(path: Path, truth_dir: Path = None, target_person: str = 
     if npy_files:
         gt_map = {}
         person_key = str(target_person or "aria01").lower()
+        if person_key in ("aria1", "aria_1", "aria-1"):
+            person_key = "aria01"
+        elif person_key in ("aria2", "aria_2", "aria-2"):
+            person_key = "aria02"
         for idx, p in enumerate(npy_files):
             fid = int(p.stem) - 1 if p.stem.isdigit() else idx
             try:
@@ -203,7 +207,7 @@ def _load_ground_truth(path: Path, truth_dir: Path = None, target_person: str = 
             except Exception:
                 continue
             matched_person = next((k for k in d.keys() if str(k).lower() == person_key), None)
-            if matched_person is None:
+            if matched_person is None and not target_person:
                 matched_person = next(iter(d.keys())) if d else None
             if matched_person and matched_person in d:
                 pdata = d[matched_person]

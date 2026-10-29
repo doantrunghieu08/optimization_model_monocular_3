@@ -14,7 +14,7 @@ import queue
 from config_loader import load_config
 
 VIDEO_FOLDER = "imageSequence"
-EVALUATION_PROTOCOL = "no_gt_v8_target_sync_master_shape"
+EVALUATION_PROTOCOL = "no_gt_v10_master_only_postopt"
 
 HAS_GSPREAD = False
 try:
@@ -552,7 +552,7 @@ def _setup_pipeline_config(base_cfg, gt_dir, camA, camB, workspace):
     cfg["runtime"]["stage"] = "default"
     master_cfg = cfg.setdefault("fusion", {}).setdefault("master_protection", {})
     pair_mode = _resolve_pair_mode(master_cfg, camA["id"], camB["id"])
-    master_cfg["enabled"] = pair_mode == "protected"
+    master_cfg["enabled"] = master_cfg.get("enabled", True) if pair_mode != "disabled" else False
     cfg["fusion"]["pair_mode"] = pair_mode
     print(f"[Fusion] Pair mode {camA['id']}->{camB['id']}: {pair_mode}")
     device = "cuda" if torch.cuda.is_available() else "cpu"

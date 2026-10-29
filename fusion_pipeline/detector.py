@@ -365,3 +365,21 @@ def make_raw_judgement_fallback(data, index, error=None):
         "vis1": {j: True for j in common},
         "vis2": {j: True for j in common},
     }
+
+
+def compute_bone_distortion_score(cam_points: dict) -> float:
+    # ponytail: anthropometric bone proportion distortion score without GT
+    sum_len, sum_ratio = 0.0, 0.0
+    for (c, p), r in RIGID_BONES_RATIO.items():
+        if c in cam_points and p in cam_points:
+            sum_len += float(np.linalg.norm(as_xyz(cam_points[c]) - as_xyz(cam_points[p])))
+            sum_ratio += r
+    scale = sum_len / max(sum_ratio, 1e-6)
+    errs = []
+    for (c, p), r in RIGID_BONES_RATIO.items():
+        if c in cam_points and p in cam_points:
+            act = float(np.linalg.norm(as_xyz(cam_points[c]) - as_xyz(cam_points[p])))
+            exp = r * scale
+            errs.append(abs(act - exp) / max(exp, 1e-6))
+    return float(np.mean(errs)) if errs else 0.0
+

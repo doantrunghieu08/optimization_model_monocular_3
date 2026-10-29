@@ -14,36 +14,15 @@ segments:
   - id: cam05
     pkl: input/Hugging/exo/cam05/harmony4D_002_hugging_cam05_wham/wham_harmony4D_002_hugging_cam05_ffmpeg.pkl
     video: input/Hugging/exo/cam05/images/harmony4D_002_hugging_cam05_ffmpeg.mp4
-  - id: cam08
-    pkl: input/Hugging/exo/cam08/harmony4D_002_hugging_cam08_wham/wham_harmony4D_002_hugging_cam08_ffmpeg.pkl
-    video: input/Hugging/exo/cam08/images/harmony4D_002_hugging_cam08_ffmpeg.mp4
-  - id: cam09
-    pkl: input/Hugging/exo/cam09/harmony4D_002_hugging_cam09_wham/wham_harmony4D_002_hugging_cam09_ffmpeg.pkl
-    video: input/Hugging/exo/cam09/images/harmony4D_002_hugging_cam09_ffmpeg.mp4
-  - id: cam10
-    pkl: input/Hugging/exo/cam10/harmony4D_002_hugging_cam10_wham/wham_harmony4D_002_hugging_cam10_ffmpeg.pkl
-    video: input/Hugging/exo/cam10/images/harmony4D_002_hugging_cam10_ffmpeg.mp4
-  - id: cam11
-    pkl: input/Hugging/exo/cam11/harmony4D_002_hugging_cam11_wham/wham_harmony4D_002_hugging_cam11_ffmpeg.pkl
-    video: input/Hugging/exo/cam11/images/harmony4D_002_hugging_cam11_ffmpeg.mp4
   - id: cam13
     pkl: input/Hugging/exo/cam13/harmony4D_002_hugging_cam13_wham/wham_harmony4D_002_hugging_cam13_ffmpeg.pkl
     video: input/Hugging/exo/cam13/images/harmony4D_002_hugging_cam13_ffmpeg.mp4
   - id: cam17
     pkl: input/Hugging/exo/cam17/harmony4D_002_hugging_cam17_wham/wham_harmony4D_002_hugging_cam17_ffmpeg.pkl
     video: input/Hugging/exo/cam17/images/harmony4D_002_hugging_cam17_ffmpeg.mp4
-  - id: cam18
-    pkl: input/Hugging/exo/cam18/harmony4D_002_hugging_cam18_wham/wham_harmony4D_002_hugging_cam18_ffmpeg.pkl
-    video: input/Hugging/exo/cam18/images/harmony4D_002_hugging_cam18_ffmpeg.mp4
   - id: cam19
     pkl: input/Hugging/exo/cam19/harmony4D_002_hugging_cam19_wham/wham_harmony4D_002_hugging_cam19_ffmpeg.pkl
     video: input/Hugging/exo/cam19/images/harmony4D_002_hugging_cam19_ffmpeg.mp4
   - id: cam20
     pkl: input/Hugging/exo/cam20/harmony4D_002_hugging_cam20_wham/wham_harmony4D_002_hugging_cam20_ffmpeg.pkl
     video: input/Hugging/exo/cam20/images/harmony4D_002_hugging_cam20_ffmpeg.mp4
-  - id: cam21
-    pkl: input/Hugging/exo/cam21/harmony4D_002_hugging_cam21_wham/wham_harmony4D_002_hugging_cam21_ffmpeg.pkl
-    video: input/Hugging/exo/cam21/images/harmony4D_002_hugging_cam21_ffmpeg.mp4
-  - id: cam22
-    pkl: input/Hugging/exo/cam22/harmony4D_002_hugging_cam22_wham/wham_harmony4D_002_hugging_cam22_ffmpeg.pkl
-    video: input/Hugging/exo/cam22/images/harmony4D_002_hugging_cam22_ffmpeg.mp4
