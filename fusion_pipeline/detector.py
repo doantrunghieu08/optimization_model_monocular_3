@@ -194,14 +194,25 @@ def compute_harmonic_precision(
         alpha = float(alpha)
     except (TypeError, ValueError):
         import re
-        m = re.search(r"[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?", str(alpha))
-        alpha = float(m.group(0)) if m else 0.0
+        # handle bash/yaml default syntax like ${ALPHA:-0.001} or :-0.001
+        m = re.search(r":-?([0-9]*\.?[0-9]+(?:[eE][-+]?\d+)?)", str(alpha))
+        if m:
+            alpha = float(m.group(1))
+        else:
+            m = re.search(r"([0-9]*\.?[0-9]+(?:[eE][-+]?\d+)?)", str(alpha))
+            alpha = float(m.group(1)) if m else 0.0
+    alpha = max(0.0, alpha)
     try:
         beta = float(beta)
     except (TypeError, ValueError):
         import re
-        m = re.search(r"[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?", str(beta))
-        beta = float(m.group(0)) if m else 0.8
+        m = re.search(r":-?([0-9]*\.?[0-9]+(?:[eE][-+]?\d+)?)", str(beta))
+        if m:
+            beta = float(m.group(1))
+        else:
+            m = re.search(r"([0-9]*\.?[0-9]+(?:[eE][-+]?\d+)?)", str(beta))
+            beta = float(m.group(1)) if m else 0.8
+    beta = max(0.0, min(1.0, beta))
 
     neighbors = {}
     for child, parent in RIGID_BONES_RATIO.keys():

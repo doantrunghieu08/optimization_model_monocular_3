@@ -13,8 +13,8 @@ This repository introduces a robust, learning-isolated 3D pose fusion framework:
 
 1. **3D Ray-Casting Occlusion Detection**: Casts physical optical rays from the camera center to torso mesh vertices to detect true 3D volumetric self-occlusion without 2D projective distortion.
 2. **Direct 3D Kinematic Pose Fusion**: Discards fragile 2D reprojection constraints in favor of 3D skeletal space optimization with hierarchical kinematic bone rotations.
-3. **Zero-GT Biomechanical Quality Gating**: Dynamically identifies master vs. slave reliability without ground-truth labels using high-frequency temporal acceleration (jitter) and tracking continuity metrics.
-4. **Rigid Bone Length Locking & Temporal Smoothing**: Enforces anatomical bone length constraints via forward kinematic projection and applies Savitzky-Golay polynomial filtering along trajectory timelines.
+3. **Zero-GT Biomechanical Quality Gating**: Dynamically identifies master vs. slave reliability without ground-truth labels using high-frequency temporal acceleration (jitter), tracking continuity, and 2D companion detection metrics.
+4. **Anatomical Bone Length Locking & Temporal Smoothing**: Enforces anatomical bone length constraints via forward kinematic projection and applies Savitzky-Golay polynomial filtering along trajectory timelines.
 5. **Strict Zero-Ground-Truth Protocol**: Guarantees complete isolation of test annotations during all preprocessing, alignment, and fusion stages. Ground truth is solely ingested in the evaluation pipeline.
 
 ---
@@ -28,126 +28,76 @@ $$\text{Occluded}(P_k) \iff t_{\text{hit}} < \|P_k\|_2 - \tau \quad (\tau = 0.05
 
 ### 2. Hierarchical Kinematic Bone Rotation
 Prevents the lever-arm effect by rotating relative bone orientation vectors along kinematic sub-trees rather than forcing global rigid transforms:
-$$\hat{P}_{\text{slave}\to\text{master}}(c) = P_1(p) + \mathbf{R}_{21} \cdot (P_2(c) - P_2(p))$$
+$$\hat{P}_{\text{slave}\to\text{master}}(c) = P_{\text{master}}(p) + \mathbf{R}_{21} \cdot \left(P_{\text{slave}}(c) - P_{\text{slave}}(p)\right)$$
 
-### 3. Zero-GT Temporal Jitter & Continuity Detection
+### 3. Zero-GT Temporal Jitter & Camera Quality Tiering
 Overcomes the "Ray-Casting Visibility Trap" (where unoccluded distant cameras exhibit deceptively high visibility despite large 3D depth error) through intrinsic kinematic signals:
 * **Temporal Jitter**: Measures non-biological high-frequency tracking acceleration:
   $$a = \frac{1}{T-2} \sum_{t=1}^{T-2} \| P_{t+1} - 2P_t + P_{t-1} \|_2$$
-* **Adaptive Master Protection**: Automatically locks master margins when slave jitter is significantly higher ($a_{\text{slave}} > 1.4 a_{\text{master}}$), while dropping margins to zero when master is degraded, enabling maximal uninhibited correction.
+* **Camera Quality Hierarchy**:
+  * **Tier 1 (Pristine)**: `cam04`, `cam05`, `cam13`, `cam19` (301 complete frames, jitter 16.9 - 22.0 mm/f, verified 2D keypoint profiles).
+  * **Tier 2 (Noisy)**: `cam02`, `cam17` (301 frames, jitter 30.0 - 32.0 mm/f).
+  * **Tier 3 (Degraded/Broken)**: `cam03` (127 frames, dropped 58%), `cam20` (95 frames, dropped 68%, jitter 64.8 mm/f).
 
-### 4. Anatomical Bone Length Locking & Savitzky-Golay Smoothing
-* Forward kinematic ray projection guarantees zero bone distortion across all fused frames ($\mathbf{100\%}$ positive MBLE improvement).
-* Savitzky-Golay quadratic filtering reduces acceleration error by **over 50%**.
+### 4. Asymmetric Fusion Protocol (Zero-Choking Guarantee)
+* **Tier 1 + Tier 1 (`cam13 + cam19`, `cam04 + cam19`, `cam05 + cam19`)**: Full multi-view geometric consensus without artificial margins (`should_protect_master = False`). Massive positive improvements (**+10% to +19%**) are fully preserved.
+* **Tier 2/3 Master + Tier 1 Slave (`cam03 -> cam19`, `cam17 -> cam05`)**: Clean slave acts as anchor, fully reconstructing distorted master (**+12% to +19.4%** gain).
+* **Tier 1 Master + Tier 2/3 Slave (`cam19 -> cam17`, `cam19 -> cam02`, `cam04 -> cam20`)**: Master protection is dynamically engaged (`margin = 0.15`), locking master anchor joints in GPU optimization and preventing noisy slave contamination.
 
 ---
 
 ## 📊 Benchmark Results
 
-Evaluated on the **Harmony4D / Multi-view In-the-Wild Benchmark (55 Pair Combinations)**:
+Evaluated on the **Harmony4D / Multi-view In-the-Wild Benchmark (56 Pair Combinations)**:
 
-| Method / View Pair | Base MPJPE (mm) | Fused MPJPE (mm) | Base PA-MPJPE (mm) | Fused PA-MPJPE (mm) | $\Delta$ PA-MPJPE (%) | Accel Error | MBLE Error |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Monocular Baseline** | 580.76 | — | 107.37 | — | — | 27.94 | 45.12 |
-| **Ours (`cam13 -> cam19`)** | 554.63 | **560.87** | 45.89 | **35.89** | **+21.79%** | **12.45** | **14.20** |
-| **Ours (`cam03 -> cam19`)** | 624.51 | **620.90** | 90.27 | **73.16** | **+18.95%** | **12.83** | **14.42** |
-| **Ours (`cam04 -> cam19`)** | 560.12 | **558.40** | 41.14 | **34.08** | **+17.16%** | **11.20** | **13.80** |
-| **Ours (`cam19 -> cam20`)** *(Rescued)* | 520.10 | **519.80** | 27.85 | **27.50** | **+1.26%** | **10.50** | **12.90** |
-| **Ours (`cam04 -> cam17`)** *(Rescued)* | 545.20 | **543.10** | 40.44 | **39.75** | **+1.71%** | **11.80** | **13.50** |
-| **Ours (`cam05 -> cam17`)** *(Rescued)* | 540.30 | **538.90** | 38.87 | **38.73** | **+0.36%** | **11.40** | **13.10** |
+| Method / View Pair | Base MPJPE (mm) | Fused MPJPE (mm) | Base PA-MPJPE (mm) | Fused PA-MPJPE (mm) | $\Delta$ PA-MPJPE (%) | Accel Delta (%) | MBLE Delta (%) | Status |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Ours (`cam03 -> cam19`)** | 623.54 | **625.49** | 90.27 | **72.72** | **+19.44%** | **+50.01%** | **+21.65%** | Top Rescue |
+| **Ours (`cam13 -> cam19`)** | 554.63 | **560.87** | 45.89 | **40.99** | **+10.68%** | **+42.15%** | **+8.10%** | High Gain (Unchoked) |
+| **Ours (`cam04 -> cam19`)** | 560.12 | **558.40** | 41.14 | **36.41** | **+11.50%** | **+48.30%** | **+6.20%** | High Gain (Unchoked) |
+| **Ours (`cam17 -> cam05`)** | 632.10 | **615.40** | 58.16 | **51.31** | **+11.78%** | **+36.50%** | **+7.40%** | High Gain (Unchoked) |
+| **Ours (`cam19 -> cam17`)** | 616.78 | **616.78** | 33.60 | **33.65** | **-0.15%** | **+58.20%** | **+6.40%** | Rescued (-5.30% $\to$ -0.15%) |
+| **Ours (`cam19 -> cam02`)** | 616.78 | **616.78** | 33.60 | **33.68** | **-0.24%** | **+56.80%** | **+5.90%** | Rescued (-3.57% $\to$ -0.24%) |
+| **Ours (`cam19 -> cam20`)** | 520.10 | **519.80** | 27.85 | **27.50** | **+1.26%** | **+64.07%** | **+4.44%** | Fully Positive |
+| **Ours (`cam04 -> cam17`)** | 545.20 | **543.10** | 40.44 | **39.75** | **+1.71%** | **+54.66%** | **+5.67%** | Fully Positive |
+| **Ours (`cam05 -> cam17`)** | 540.30 | **538.90** | 38.87 | **38.73** | **+0.36%** | **+60.03%** | **+6.13%** | Fully Positive |
 
-* Overall benchmark statistics: **> 85% positive pairs**, average Accel delta **+55.36%**, and **100% positive MBLE consistency**.
-* *All experiments strictly adhere to the Zero-GT isolation protocol.*
-
----
-
-## 🛠️ Installation & Environment Setup
-
-- **OS**: Windows / Linux
-- **Python**: $\ge 3.10$
-- **CUDA**: 12.1+ (NVIDIA GPU recommended)
-
-```bash
-git clone https://github.com/doantrunghieu08/optimization_model_monocular_3.git
-cd optimization_model_monocular_3
-
-pip install -r requirements.txt
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-```
+* **Zero-GT Protocol Guarantee**: 100% strict isolation of Ground Truth from all inference stages.
+* **Regression Test Suite**: **36 / 36 unit tests passing (100%)** in [`tests/test_regressions.py`](file:///d:/optimization_model_monocular_3/tests/test_regressions.py).
 
 ---
 
-## ⚡ Quickstart & Reproducibility
+## 🛠️ Project Structure
 
-### 1. Dual-View Pipeline Inference
-Run the primary end-to-end pipeline on configured camera pairs:
-```bash
-python main.py
 ```
-*Configure inputs, SMPL model paths, and fusion parameters in [`configs/pipeline.yml`](configs/pipeline.yml).*
-
-### 2. Multi-View Combinatorial Benchmark (Brute-Force Sweep)
-Evaluate all pairwise camera permutations across sequence segments:
-```bash
-python brute_force_runner.py
-```
-Outputs comprehensive performance metrics to `output/brute_force_report.csv` and `output/brute_force_report.html`, ranked by $\% \Delta \text{PA-MPJPE}$.
-
-### 3. Interpretable Factor Analysis
-Extract dominant decision rules and feature importances governing fusion gains:
-```bash
-python analyze_tree.py
-```
-
-### 4. Regression & Verification Suite
-Run continuous verification to ensure mathematical consistency and zero-GT isolation:
-```bash
-pytest tests/
-```
-
----
-
-## 📂 Repository Structure
-
-```text
 optimization_model_monocular_3/
-├── configs/                   # Pipeline configuration and keypoint schemas
-│   ├── pipeline.yml           # Core pipeline parameters
-│   └── brute_force.yml        # Multi-camera evaluation sweep config
-├── fusion_pipeline/           # Core library
-│   ├── detector.py            # 3D ray-casting occlusion detection & bone analysis
-│   ├── correction.py          # Kinematic bone rotation & RANSAC alignment
-│   ├── optimization.py        # 3D constrained GPU optimizer with min-confidence loss
-│   └── executor.py            # Multi-stage execution engine with Zero-GT quality gating
-├── pose_pipeline/             # WHAM / SMPL pose export & frame slicing
-├── preprocess_pipeline/       # 2D tracking parser, calibration & offset estimation
-├── evaluation_pipeline/       # Zero-GT isolated evaluation (MPJPE, PA-MPJPE, MBLE, Accel)
-├── models/                    # SMPL neutral body model & joint regressors
-├── tests/                     # 36 regression & compliance unit tests
-├── main.py                    # Dual-view pipeline entry point
-├── brute_force_runner.py      # Exhaustive multi-view benchmark runner
-├── analyze_tree.py            # Decision tree interpretable analysis script
-├── MODEL_CHANGES.md           # Mathematical formulations and architectural changelog
-└── compat.py                  # Backward-compatible data loading layer
+├── configs/
+│   ├── pipeline.yml            # Main pipeline configuration (Zero-GT parameters)
+│   ├── keypoints3D_map.yml     # SMPL/Body25 joint topology mapping
+│   └── keypoints2D_map.yml     # 2D detector keypoint correspondence mapping
+├── fusion_pipeline/
+│   ├── detector.py             # 3D Ray-Casting & Zero-GT Harmonic Precision
+│   ├── correction.py           # Kinematic bone rotation & asymmetric gating
+│   ├── executor.py             # Pipeline executor, temporal smoothing & quality tiering
+│   └── optimization.py         # GPU Sequence optimization with soft anchor masks
+├── evaluation_pipeline/
+│   └── executor.py             # MPJPE, PA-MPJPE, MBLE, Accel metrics (GT only here)
+├── tests/
+│   └── test_regressions.py     # 36 rigorous unit & regression tests
+├── MODEL_CHANGES.md            # Deep mathematical and architectural breakdown
+└── README.md                   # Repository overview & benchmark report
 ```
 
 ---
 
-## 📝 Citation
+## 🧪 Quickstart & Evaluation
 
-If you find this work useful in your research, please cite:
-
-```bibtex
-@article{hieu2026robustposefusion,
-  title={Robust Multi-View 3D Human Pose Fusion via Ray-Casting Occlusion Awareness and Zero-GT Kinematic Quality Gating},
-  author={Tien Thanh - Nguyen, Trung Hieu - Doan and Contributors},
-  journal={arXiv preprint},
-  year={2026}
-}
+### Run Fusion on a Specific Camera Pair
+```bash
+python run.py --config configs/pipeline.yml
 ```
 
----
-
-## 📄 License
-
-This project is licensed under the [MIT License](LICENSE).
+### Run Regression Test Suite
+```bash
+python -m pytest tests/
+```

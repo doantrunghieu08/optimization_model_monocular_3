@@ -289,13 +289,7 @@ def apply_confidence_corrections(
 
         p_from_2 = transform_joint_kinematic(name, cam2, cam1_corr, t21)
         is_extremity = name in EXTREMITIES
-        # ponytail: occluded joints get generous limit; visible joints keep tight constraint
-        if is_target_occluded:
-            limit = 0.75
-        else:
-            limit = DEFAULT_MASTER_MAX_DISPLACEMENT if max_displacement is None else min(float(max_displacement), DEFAULT_MASTER_MAX_DISPLACEMENT)
-            if is_extremity:
-                limit = min(limit, 0.05)
+        limit = 0.75 if is_target_occluded else (0.05 if is_extremity else min(float(max_displacement), 0.15))
         if uncertainty_gating and max_displacement is not None:
             disp = float(np.linalg.norm(p_from_2 - as_xyz(cam1[name])))
             if disp > limit:

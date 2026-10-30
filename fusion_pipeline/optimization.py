@@ -313,9 +313,9 @@ def optimize_sequence_gpu(
     if master_prot_enabled:
         if anchor_cam == "camera2":
             mask1 = torch.ones_like(delta1)
-            mask2 = torch.zeros_like(delta2) if master_only else (1.0 - torch.clamp(c2_t, 0.0, 1.0)).unsqueeze(-1)
+            mask2 = torch.zeros_like(delta2) if master_only else torch.where(c2_t >= 0.5, torch.zeros_like(c2_t), 1.0 - c2_t).unsqueeze(-1)
         else:
-            mask1 = (1.0 - torch.clamp(c1_t, 0.0, 1.0)).unsqueeze(-1)
+            mask1 = torch.where(c1_t >= 0.5, torch.zeros_like(c1_t), 1.0 - c1_t).unsqueeze(-1)
             mask2 = torch.zeros_like(delta2) if master_only else torch.ones_like(delta2)
     else:
         mask1 = torch.ones_like(delta1)

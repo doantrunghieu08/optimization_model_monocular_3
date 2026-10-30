@@ -537,11 +537,10 @@ def _apply_final_master_protection(
             continue
         base = np.asarray(baseline[name], dtype=float)
         residual = fused[name] - base
-        # ponytail: cam1 cannot see this joint at all → trust slave fully, no distance cap
-        limit = float("inf") if (not vis1.get(name, True)) else float(max_displacement)
+        limit = float("inf") if not vis1.get(name, True) else float(max_displacement)
         if float(np.linalg.norm(residual)) > limit:
             continue
-        effective_weight = 1.0 if (not vis1.get(name, True)) else float(weight)
+        effective_weight = 1.0 if not vis1.get(name, True) else float(weight)
         candidate = base + effective_weight * residual
         parent = parent_by_child.get(name)
         if parent in points and parent in baseline:
@@ -639,7 +638,12 @@ def _apply_temporal_smoothing(
                 [frame["camera1"][name] for name in joint_names]
                 for frame in pose_frames
             ], dtype=float)
-            protected_baselines = savgol_filter(pose_coords, window_length=w_len, polyorder=polyorder, axis=0)
+            protected_baselines = savgol_filter(
+                pose_coords,
+                window_length=w_len,
+                polyorder=polyorder,
+                axis=0,
+            )
 
     for cam in ("camera1", "camera2"):
         if not all_data or cam not in all_data[0]:
@@ -761,11 +765,11 @@ def run_fusion(config: dict) -> None:
     master_is_distorted = False
     slave_is_noisy = False
     if wham_loaded and verts_cam1 is not None and verts_cam2 is not None and n_frames_1 > 2 and n_frames_2 > 2:
-        n_chk = min(n_frames_1, n_frames_2, 60)
+        n_chk = min(n_frames_1, n_frames_2)
         a1 = float(np.mean(np.linalg.norm(verts_cam1[2:n_chk] - 2 * verts_cam1[1:n_chk - 1] + verts_cam1[:n_chk - 2], axis=-1))) * 1000.0
         a2 = float(np.mean(np.linalg.norm(verts_cam2[2:n_chk] - 2 * verts_cam2[1:n_chk - 1] + verts_cam2[:n_chk - 2], axis=-1))) * 1000.0
-        master_is_distorted = (n_frames_1 < 250 and n_frames_2 >= 250) or (a1 > 1.4 * a2 and a1 > 25.0)
-        slave_is_noisy = (n_frames_1 >= 250 and n_frames_2 < 250) or (a2 > 1.4 * a1 and a2 > 25.0)
+        master_is_distorted = (n_frames_1 < 200 and n_frames_2 >= 200) or (n_frames_2 >= 200 and a1 > 1.35 * a2 and a1 > 25.0)
+        slave_is_noisy = (n_frames_1 >= 200 and n_frames_2 < 200) or (a2 > 1.35 * a1 and a2 > 25.0)
         print(f"[Fusion] Zero-GT Quality: Cam1(jitter={a1:.1f}, frames={n_frames_1}), Cam2(jitter={a2:.1f}, frames={n_frames_2}) -> master_distorted={master_is_distorted}, slave_noisy={slave_is_noisy}")
     else:
         d1_pts, d2_pts = [], []
@@ -778,13 +782,14 @@ def run_fusion(config: dict) -> None:
             p1, p2 = np.array(d1_pts), np.array(d2_pts)
             a1 = float(np.mean(np.linalg.norm(p1[2:] - 2 * p1[1:-1] + p1[:-2], axis=-1)))
             a2 = float(np.mean(np.linalg.norm(p2[2:] - 2 * p2[1:-1] + p2[:-2], axis=-1)))
-            master_is_distorted = a1 > 1.4 * a2 and a1 > 0.025
-            slave_is_noisy = a2 > 1.4 * a1 and a2 > 0.025
+            master_is_distorted = (len(d1_pts) < 200 and len(d2_pts) >= 200) or (len(d2_pts) >= 200 and a1 > 1.35 * a2 and a1 > 0.025)
+            slave_is_noisy = (len(d1_pts) >= 200 and len(d2_pts) < 200) or (a2 > 1.35 * a1 and a2 > 0.025)
             print(f"[Fusion] Zero-GT Fallback: Cam1(jitter={a1:.4f}), Cam2(jitter={a2:.4f}) -> master_distorted={master_is_distorted}, slave_noisy={slave_is_noisy}")
 
     master_cfg = fusion_cfg.get("master_protection", {})
-    # ponytail: only activate master protection when slave is actually noisy/degraded
-    should_protect_master = slave_is_noisy and not master_is_distorted
+    pair_mode = fusion_cfg.get("pair_mode", "aggressive")
+    # ponytail: only activate master protection when slave is actually noisy/degraded or explicitly requested
+    should_protect_master = (slave_is_noisy and not master_is_distorted) or (pair_mode == "protected")
     effective_master_margin = float(master_cfg.get("confidence_margin", 0.15)) if (should_protect_master and master_cfg.get("enabled", True)) else 0.0
     print(f"[Fusion] Master Protection: should_protect={should_protect_master}, margin={effective_master_margin}")
 

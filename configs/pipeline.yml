@@ -39,8 +39,8 @@ paths:
 fusion:
   enabled: true
   belief:
-    alpha: ${ALPHA:-0.001} # alpha: hệ số phạt theo khoảng cách 3D (0.001 để phân biệt nhẹ góc nhìn gần/xa)
-    beta: ${BETA:-0.8} # beta: hệ số trộn tin cậy của láng giềng xương trong harmonic mean, càng lớn thì belief càng chịu ảnh hưởng bởi skeleton lân cận.
+    alpha: 0.001 # alpha: hệ số phạt theo khoảng cách 3D (0.001 để phân biệt nhẹ góc nhìn gần/xa)
+    beta: 0.8 # beta: hệ số trộn tin cậy của láng giềng xương trong harmonic mean, càng lớn thì belief càng chịu ảnh hưởng bởi skeleton lân cận.
 
   occlusion:
     enabled: true  # Phát hiện che khuất bằng 3D ray-casting
