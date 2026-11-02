@@ -176,6 +176,8 @@ def apply_adaptive_joint_fusion(
         "transform_reliability": 0.0,
         "rejected_alignment": 0,
         "rejected_occluded_bone": 0,
+        "rejected_visible_risk": 0,
+        "mean_visible_risk_multiplier": None,
         "rejected_kinematic_projection": 0,
         "rejected_nonfinite": 0,
     }
@@ -202,6 +204,9 @@ def apply_adaptive_joint_fusion(
     min_alignment_quality = float(cfg.get("min_occluded_alignment_reliability", 0.35))
     min_source_bone_quality = float(cfg.get("min_occluded_source_bone_quality", 0.35))
     max_projection_ratio = max(float(cfg.get("max_kinematic_projection_ratio", 0.55)), 0.0)
+    risk_enabled = bool(cfg.get("risk_aware_enabled", True))
+    visible_risk_enabled = risk_enabled and bool(cfg.get("visible_risk_enabled", True))
+    visible_risk_factors = []
 
     for name in sorted(names, key=lambda n: KINEMATIC_DEPTH.get(n, 99)):
         if name in NON_REPLACEABLE_ANCHORS or name not in cam1 or name not in cam2:
@@ -224,19 +229,18 @@ def apply_adaptive_joint_fusion(
                 continue
             if key == "camera1" and master_protected and tgt_visible:
                 continue
-            if not tgt_visible and source_bone < min_source_bone_quality:
+            if risk_enabled and not tgt_visible and source_bone < min_source_bone_quality:
                 stats["rejected_occluded_bone"] += 1
                 continue
-            if not tgt_visible and transform_reliability < min_alignment_quality:
+            if risk_enabled and not tgt_visible and transform_reliability < min_alignment_quality:
                 stats["rejected_alignment"] += 1
                 continue
             weight = _transfer_weight(
                 source_score, target_score, src_visible, tgt_visible,
                 disagreement, transform_reliability, cfg,
             )
-            if not tgt_visible:
-                # M4: the occluded target supplies weak evidence; limit rescue
-                # by *independent* source bone quality and alignment reliability.
+            if risk_enabled and not tgt_visible:
+                # Occluded rescue: independent source bone and alignment evidence.
                 weight = min(
                     weight,
                     float(cfg.get("max_occluded_transfer", 0.90))
@@ -244,6 +248,28 @@ def apply_adaptive_joint_fusion(
                     * math.sqrt(transform_reliability),
                 )
                 weight *= source_bone
+            elif visible_risk_enabled and tgt_visible:
+                # M4 v2: visible target is protected per joint/frame, never by
+                # globally locking the master camera.
+                protect_score = float(cfg.get("visible_protect_quality", 0.65))
+                gap_ratio = float(cfg.get("visible_max_source_deficit", 0.12))
+                outlier_m = float(cfg.get("visible_hard_conflict_m", 0.16))
+                if (target_score >= protect_score
+                        and source_score < target_score * (1.0 - gap_ratio)
+                        and disagreement >= outlier_m):
+                    stats["rejected_visible_risk"] += 1
+                    continue
+                excess = max(
+                    0.0, disagreement - float(cfg.get("visible_safe_disagreement_m", 0.04))
+                )
+                risk_scale = max(float(cfg.get("visible_risk_scale_m", 0.10)), 1e-6)
+                target_advantage = max(0.0, target_score - source_score)
+                penalty = 1.0 + target_advantage / max(
+                    float(cfg.get("visible_quality_gap_scale", 0.15)), 1e-6
+                )
+                risk_factor = 1.0 / (1.0 + (excess / risk_scale) ** 2 * penalty)
+                weight *= risk_factor * math.sqrt(source_bone)
+                visible_risk_factors.append(risk_factor)
             if weight <= 1e-7:
                 continue
             if not np.isfinite(source).all():
@@ -281,6 +307,8 @@ def apply_adaptive_joint_fusion(
             output[name] = projected
             transfers[key][name] = float(weight)
             stats[f"accepted_{key}"] += 1
+    if visible_risk_factors:
+        stats["mean_visible_risk_multiplier"] = float(np.mean(visible_risk_factors))
     return out1, out2, {
         "joint_transfer": transfers, "adaptive_stats": stats,
     }

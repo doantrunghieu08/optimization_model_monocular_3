@@ -82,6 +82,15 @@ fusion:
     min_occluded_alignment_reliability: 0.35
     # M5: reject transfers requiring excessive kinematic projection
     max_kinematic_projection_ratio: 0.55
+    # Full Model v2 M4: joint/frame risk-aware visible and occluded transfers
+    risk_aware_enabled: true
+    visible_risk_enabled: true
+    visible_protect_quality: 0.65
+    visible_max_source_deficit: 0.12
+    visible_hard_conflict_m: 0.16
+    visible_safe_disagreement_m: 0.04
+    visible_risk_scale_m: 0.10
+    visible_quality_gap_scale: 0.15
 
   # Legacy ablation: chỉ được áp dụng khi adaptive_protection.enabled=false.
   master_protection:
