@@ -23,7 +23,10 @@ from fusion_pipeline.detector import compute_bone_distortion_score
 from fusion_pipeline.correction import apply_rotation_mismatch_corrections
 from fusion_pipeline.correction import apply_confidence_corrections
 from fusion_pipeline.correction import apply_multiview_geometric_fusion
-from fusion_pipeline.correction import apply_similarity
+from fusion_pipeline.correction import apply_similarity, PARENT_JOINTS
+from fusion_pipeline.adaptive_gate import temporal_joint_quality, apply_adaptive_joint_fusion
+from fusion_pipeline.bone_quality import estimate_bone_quality
+from fusion_pipeline.motion_quality import motion_aware_smooth, synchronized_segment_ids
 from fusion_pipeline.config import DEFAULT_MASTER_BLEND
 from fusion_pipeline.config import DEFAULT_MASTER_MAX_DISPLACEMENT
 from fusion_pipeline.config import DEFAULT_MASTER_MIN_CONFIDENCE
@@ -348,7 +351,13 @@ def run_phase3_pipeline(
     consensus_blend_strength=0.25,
     master_margin=0.15,
     extra_verts_by_cam=None,
+    adaptive_protection=False,
+    adaptive_config=None,
+    joint_quality=None,
+    bone_quality=None,
+    bone_references=None,
     master_distorted=False,
+    master_protected=False,
 ):
     cam1 = {k: as_xyz(v) for k, v in data_in["camera1"].items()}
     cam2 = {k: as_xyz(v) for k, v in data_in["camera2"].items()}
@@ -425,7 +434,20 @@ def run_phase3_pipeline(
         if np.mean(residuals) > 0.12:
             skip_cross_view = True
 
-    if not skip_cross_view:
+    adaptive_details = {}
+    if adaptive_protection:
+        # Per-joint continuous reliability and consensus replace the legacy
+        # pair-wide margin and discontinuous correction distance cutoffs.
+        cam1_corr, cam2_corr, adaptive_details = apply_adaptive_joint_fusion(
+            cam1, cam2, names, t12, t21, H1_all, H2_all,
+            vis1, vis2, joint_quality=joint_quality,
+            config=adaptive_config,
+            bone_quality=bone_quality,
+            bone_references=bone_references,
+            anchor_names=a_list,
+            master_protected=master_protected,
+        )
+    elif not skip_cross_view:
         cam1_corr, cam2_corr = apply_confidence_corrections(
             cam1,
             cam2,
@@ -506,6 +528,11 @@ def run_phase3_pipeline(
         "vis2": {k: bool(v) for k, v in vis2.items()},
         "fusion_mode": fusion_mode,
         "fusion_mode_stats": fusion_mode_stats,
+        "adaptive_protection": bool(adaptive_protection),
+        "joint_quality": joint_quality or {},
+        "bone_quality": bone_quality or {},
+        "joint_transfer": adaptive_details.get("joint_transfer", {}),
+        "adaptive_stats": adaptive_details.get("adaptive_stats", {}),
     }
     #end of def run_phase3_pipeline
 
@@ -528,21 +555,70 @@ KINEMATIC_CHAINS = (
     ("right_foot", "right_ankle"),
 )
 
+# Exactly the evaluation skeleton's 20 directed child/parent edges.
+# Order is topological (pelvis -> neck, shoulders/hips -> extremities).
+KINEMATIC_CHAINS_FULL = (
+    ("neck", "pelvis"),
+    ("head", "neck"),
+    ("left_shoulder", "neck"),
+    ("right_shoulder", "neck"),
+    ("left_hip", "pelvis"),
+    ("right_hip", "pelvis"),
+    ("left_elbow", "left_shoulder"),
+    ("right_elbow", "right_shoulder"),
+    ("left_knee", "left_hip"),
+    ("right_knee", "right_hip"),
+    ("left_wrist", "left_elbow"),
+    ("right_wrist", "right_elbow"),
+    ("left_ankle", "left_knee"),
+    ("right_ankle", "right_knee"),
+    ("left_hand", "left_wrist"),
+    ("right_hand", "right_wrist"),
+    ("left_toe", "left_ankle"),
+    ("left_foot", "left_ankle"),
+    ("right_toe", "right_ankle"),
+    ("right_foot", "right_ankle"),
+)
 
-def _enforce_bone_lengths(points: dict, ref_points: dict) -> None:
-    # ponytail: minimal forward kinematic bone projection, locks lengths to SMPL baseline
-    for child, parent in KINEMATIC_CHAINS:
+
+def _enforce_bone_lengths(
+    points: dict, ref_points: dict,
+    reference_lengths: dict | None = None, full_skeleton: bool = False,
+    bilateral_symmetry: bool = False,
+) -> None:
+    # Never use GT. Full skeleton is opt-in for adaptive v2; historical
+    # legacy ablations retain the original 15-segment projection.
+    reference_lengths = reference_lengths or {}
+    chains = KINEMATIC_CHAINS_FULL if full_skeleton else KINEMATIC_CHAINS
+    for child, parent in chains:
         if child not in points or parent not in points or child not in ref_points or parent not in ref_points:
             continue
         p_c = np.asarray(points[child], dtype=float)
         p_p = np.asarray(points[parent], dtype=float)
         r_c = np.asarray(ref_points[child], dtype=float)
         r_p = np.asarray(ref_points[parent], dtype=float)
-        l_ref = float(np.linalg.norm(r_c - r_p))
-        if l_ref < 1e-4:
+        l_ref = reference_lengths.get(child)
+        if l_ref is None or not np.isfinite(l_ref) or l_ref <= 1e-5:
+            l_ref = float(np.linalg.norm(r_c - r_p))
+            if bilateral_symmetry:
+                twin = ("right_" + child[5:]) if child.startswith("left_") else (("left_" + child[6:]) if child.startswith("right_") else None)
+                twin_parent = PARENT_JOINTS.get(twin) if twin else None
+                if twin and twin_parent and twin in ref_points and twin_parent in ref_points:
+                    t_c = np.asarray(ref_points[twin], dtype=float)
+                    t_p = np.asarray(ref_points[twin_parent], dtype=float)
+                    l_twin = float(np.linalg.norm(t_c - t_p))
+                    if np.isfinite(l_twin) and l_twin > 1e-5:
+                        l_ref = max(l_ref, l_twin)
+        l_ref = float(l_ref)
+        if not np.isfinite(l_ref) or l_ref < 1e-4:
             continue
         v = p_c - p_p
         dist = float(np.linalg.norm(v))
+        if dist <= 1e-6:
+            # An invalid zero-length prediction should not silently bypass
+            # bone safety. Use the input-frame direction when available.
+            v = r_c - r_p
+            dist = float(np.linalg.norm(v))
         if dist > 1e-6:
             points[child] = [round(float(x), 6) for x in (p_p + v * (l_ref / dist))]
 
@@ -659,6 +735,9 @@ def _apply_temporal_smoothing(
     master_protection: dict | None = None,
     window_length: int = 5,
     polyorder: int = 2,
+    bone_references: dict | None = None,
+    motion_aware_config: dict | None = None,
+    full_skeleton: bool = False,
 ) -> None:
     try:
         from scipy.signal import savgol_filter
@@ -706,18 +785,56 @@ def _apply_temporal_smoothing(
                 axis=0,
             )
 
-    for cam in ("camera1", "camera2"):
-        if not all_data or cam not in all_data[0]:
-            continue
-        joint_names = list(all_data[0][cam].keys())
-        coords = np.array([[d[cam][j] for j in joint_names] for d in all_data], dtype=float)
-        if np.isnan(coords).any():
-            continue
-        smoothed = savgol_filter(coords, window_length=w_len, polyorder=polyorder, axis=0)
-
+    motion_cfg = motion_aware_config or {}
+    joint_names = list(all_data[0].get("camera1", {}))
+    compatible = bool(joint_names) and all(
+        set(d.get("camera1", {})) == set(joint_names)
+        and set(d.get("camera2", {})) == set(joint_names)
+        for d in all_data
+    )
+    if motion_cfg.get("enabled", False) and compatible:
+        coords1 = np.asarray(
+            [[d["camera1"][j] for j in joint_names] for d in all_data], dtype=float
+        )
+        coords2 = np.asarray(
+            [[d["camera2"][j] for j in joint_names] for d in all_data], dtype=float
+        )
+        quality = {}
+        for cam in ("camera1", "camera2"):
+            quality[cam] = np.asarray([
+                [
+                    metadata_map.get(_frame_index(f), {})
+                    .get("joint_quality", {}).get(cam, {}).get(name, 1.0)
+                    for name in joint_names
+                ] for f in files
+            ], dtype=float)
+        filtered1, filtered2 = motion_aware_smooth(
+            coords1, coords2, quality["camera1"], quality["camera2"],
+            frame_ids=synchronized_segment_ids(
+                files, pose_dir.parent / "metadata" if pose_dir else None
+            ),
+            window_length=w_len, polyorder=polyorder,
+            max_strength=float(motion_cfg.get("max_strength", 0.95)),
+            good_quality_floor=float(motion_cfg.get("good_quality_floor", 0.15)),
+            motion_scale_m=float(motion_cfg.get("motion_scale_m", 0.08)),
+        )
         for t, d in enumerate(all_data):
-            for j_idx, j_name in enumerate(joint_names):
-                d[cam][j_name] = [round(float(x), 6) for x in smoothed[t, j_idx]]
+            for cam, filtered in (("camera1", filtered1), ("camera2", filtered2)):
+                for j_idx, name in enumerate(joint_names):
+                    d[cam][name] = [round(float(x), 6) for x in filtered[t, j_idx]]
+    else:
+        # Preserve old behavior when motion-aware smoothing is disabled.
+        for cam in ("camera1", "camera2"):
+            if not all_data or cam not in all_data[0]:
+                continue
+            joint_names = list(all_data[0][cam].keys())
+            coords = np.array([[d[cam][j] for j in joint_names] for d in all_data], dtype=float)
+            if np.isnan(coords).any():
+                continue
+            smoothed = savgol_filter(coords, window_length=w_len, polyorder=polyorder, axis=0)
+            for t, d in enumerate(all_data):
+                for j_idx, name in enumerate(joint_names):
+                    d[cam][name] = [round(float(x), 6) for x in smoothed[t, j_idx]]
 
     if pose_map:
         for t, (f, d) in enumerate(zip(files, all_data)):
@@ -743,7 +860,10 @@ def _apply_temporal_smoothing(
                 )
             for cam in ("camera1", "camera2"):
                 if cam in d and cam in ref_d:
-                    _enforce_bone_lengths(d[cam], ref_d[cam])
+                    _enforce_bone_lengths(
+                        d[cam], ref_d[cam], (bone_references or {}).get(cam),
+                        full_skeleton=full_skeleton,
+                    )
 
     for f, d in zip(files, all_data):
         write_json(f, d)
@@ -821,6 +941,61 @@ def run_fusion(config: dict) -> None:
 
     ransac_cfg = fusion_cfg["ransac"]
     frame_results = []
+    adaptive_cfg = fusion_cfg.get("adaptive_protection", {})
+    adaptive_enabled = bool(adaptive_cfg.get("enabled", False))
+    joint_quality_profiles = []
+    bone_quality_profiles = []
+    bone_references = {"camera1": {}, "camera2": {}}
+    if adaptive_enabled:
+        # Measure view-specific *excess* joint jitter on the actual synchronized
+        # pose timeline; shared genuine motion does not lower either score.
+        pose_frames = [_load_pose_frame(p, metadata_dir=metadata_dir) for p in file_paths]
+        source_timeline = [
+            _source_frame_indices(frame, _frame_index(path))
+            for frame, path in zip(pose_frames, file_paths)
+        ]
+        lengths = [n_frames_1 or len(file_paths), n_frames_2 or len(file_paths)]
+        longest = max(max(lengths), 1)
+        joint_quality_profiles = temporal_joint_quality(
+            pose_frames, source_indices=source_timeline,
+            continuity=(lengths[0] / longest, lengths[1] / longest),
+            jitter_ratio=float(adaptive_cfg.get("jitter_ratio", 1.35)),
+            jitter_floor_m=float(adaptive_cfg.get("jitter_floor_m", 0.025)),
+            jitter_scale_m=float(adaptive_cfg.get("jitter_scale_m", 0.08)),
+        )
+        bone_cfg = adaptive_cfg.get("bone_quality", {})
+        if bone_cfg.get("enabled", True):
+            bone_quality_profiles, bone_references = estimate_bone_quality(
+                pose_frames,
+                min_samples=int(bone_cfg.get("min_samples", 3)),
+                tolerance_ratio=float(bone_cfg.get("tolerance_ratio", 0.08)),
+                residual_scale_ratio=float(bone_cfg.get("residual_scale_ratio", 0.18)),
+                bilateral_scale_ratio=float(bone_cfg.get("bilateral_scale_ratio", 0.25)),
+                bilateral_weight=float(bone_cfg.get("bilateral_weight", 0.45)),
+            )
+            for idx, frame_quality in enumerate(joint_quality_profiles):
+                for cam in ("camera1", "camera2"):
+                    for joint in frame_quality[cam]:
+                        frame_quality[cam][joint] *= bone_quality_profiles[idx][cam].get(joint, 1.0)
+        else:
+            bone_quality_profiles = [
+                {"camera1": {}, "camera2": {}} for _ in pose_frames
+            ]
+        print("[Fusion] Adaptive joint/frame protection with bone quality + risk-aware transfer enabled")
+
+    # Preserve original per-frame input skeleton lengths at every output by
+    # default, while continuing to USE the robust median for M2 reliability.
+    # The median-projection variant is explicit and is benchmarked separately.
+    bone_out_cfg = fusion_cfg.get("bone_output", {})
+    reference_mode = bone_out_cfg.get("reference_mode", "bilateral_max")
+    if reference_mode not in ("input_frame", "robust_median", "bilateral_max"):
+        raise ValueError("fusion.bone_output.reference_mode must be input_frame, robust_median, or bilateral_max")
+    full_bones = adaptive_enabled and bool(bone_out_cfg.get("enforce_full_skeleton", True))
+    output_bone_refs = (
+        bone_references if adaptive_enabled and reference_mode == "robust_median"
+        else {"camera1": {}, "camera2": {}}
+    )
+    use_bilateral = (reference_mode == "bilateral_max")
 
     # ponytail: zero-GT skeletal distortion and acceleration select the safe anchor.
     master_is_distorted = False
@@ -855,7 +1030,7 @@ def run_fusion(config: dict) -> None:
     print(f"[Fusion] Master Protection: should_protect={should_protect_master}, margin={effective_master_margin}")
 
     # --- THÊM TQDM Ở ĐÂY ---
-    for path in tqdm(file_paths, desc="[Fusion] Processing", unit="frame", dynamic_ncols=True):
+    for frame_position, path in enumerate(tqdm(file_paths, desc="[Fusion] Processing", unit="frame", dynamic_ncols=True)):
         frame_idx = _frame_index(path)
         out_name = f"fused_data_{frame_idx}.json"
         data = _load_pose_frame(path, metadata_dir=metadata_dir)
@@ -901,7 +1076,13 @@ def run_fusion(config: dict) -> None:
                 consensus_threshold=fusion_cfg.get("uncertainty_gating", {}).get("consensus_threshold", 0.18) if isinstance(fusion_cfg.get("uncertainty_gating"), dict) else 0.18,
                 consensus_blend_strength=fusion_cfg.get("uncertainty_gating", {}).get("consensus_blend_strength", 0.25) if isinstance(fusion_cfg.get("uncertainty_gating"), dict) else 0.25,
                 master_margin=effective_master_margin,
+                adaptive_protection=adaptive_enabled,
+                adaptive_config=adaptive_cfg,
+                joint_quality=(joint_quality_profiles[frame_position] if adaptive_enabled else None),
+                bone_quality=(bone_quality_profiles[frame_position] if adaptive_enabled else None),
+                bone_references=(output_bone_refs if adaptive_enabled else None),
                 master_distorted=master_is_distorted,
+                master_protected=should_protect_master,
             )
             # 1. Lấy dữ liệu an toàn
                 
@@ -926,7 +1107,12 @@ def run_fusion(config: dict) -> None:
         }
         for cam_k in ("camera1", "camera2"):
             if cam_k in fused_keypoints and cam_k in data:
-                _enforce_bone_lengths(fused_keypoints[cam_k], data[cam_k])
+                _enforce_bone_lengths(
+                    fused_keypoints[cam_k], data[cam_k],
+                    output_bone_refs.get(cam_k) if adaptive_enabled else None,
+                    full_skeleton=full_bones,
+                    bilateral_symmetry=use_bilateral,
+                )
         fused_metadata = {k: v for k, v in result.items() if k not in ("camera1", "camera2", "optimized")}
         write_json(output_dir / "keypoints3d" / out_name, fused_keypoints)
         write_json(output_dir / "metadata" / out_name, fused_metadata)
@@ -934,14 +1120,21 @@ def run_fusion(config: dict) -> None:
 
     slave_better, pair_gate = detect_pair_fusion_gate(frame_results, master_distorted=master_is_distorted)
     pair_gate["zero_gt_quality"] = pair_quality
+    if adaptive_enabled:
+        pair_gate = dict(pair_gate)
+        pair_gate["fusion_applied"] = True
+        pair_gate["reason"] = "adaptive_joint_frame_quality"
+        pair_gate["legacy_slave_better"] = bool(slave_better)
     for metadata_path in (output_dir / "metadata").glob("fused_data_*.json"):
         metadata = read_json(metadata_path)
         metadata["pair_quality_gate"] = pair_gate
         write_json(metadata_path, metadata)
 
-    quality_fallback = slave_is_noisy and not master_is_distorted
+    # Preserve main's quality fallback for legacy ablation. Under adaptive,
+    # joint-level M4 must remain authoritative: never overwrite the entire
+    # master pose just because a whole camera is classified as noisy.
+    quality_fallback = slave_is_noisy and not master_is_distorted and not adaptive_enabled
     if quality_fallback:
-        # Keep single-view smoothing and bone constraints, but remove every slave contribution first.
         _restore_master_pose(output_dir / "keypoints3d", input_dir / "keypoints3d")
 
     smoothing_cfg = fusion_cfg.get("smoothing", {})
@@ -949,7 +1142,7 @@ def run_fusion(config: dict) -> None:
     if smoothing_enabled:
         smoothing_master_cfg = dict(master_cfg)
         smoothing_master_cfg["confidence_margin"] = effective_master_margin
-        if not should_protect_master:
+        if adaptive_enabled or not should_protect_master:
             smoothing_master_cfg["enabled"] = False
         _apply_temporal_smoothing(
             output_dir / "keypoints3d",
@@ -958,6 +1151,9 @@ def run_fusion(config: dict) -> None:
             master_protection=smoothing_master_cfg,
             window_length=int(smoothing_cfg.get("window_length", 5)),
             polyorder=int(smoothing_cfg.get("polyorder", 2)),
+            bone_references=output_bone_refs if adaptive_enabled else None,
+            motion_aware_config=smoothing_cfg.get("motion_aware", {}) if adaptive_enabled else None,
+            full_skeleton=full_bones,
         )
 
     opt_cfg = fusion_cfg.get("optimization", {})
@@ -968,8 +1164,9 @@ def run_fusion(config: dict) -> None:
             metadata_dir=output_dir / "metadata",
             pose_dir=input_dir / "keypoints3d",
             config=config,
-            master_only=not slave_better or quality_fallback,
+            master_only=not slave_better or quality_fallback if not adaptive_enabled else False,
             anchor_cam="camera2" if master_is_distorted else "camera1",
+            bone_references=output_bone_refs if adaptive_enabled else None,
         )
 
     if fusion_cfg.get("pair_mode") == "posed_fallback":
@@ -985,8 +1182,29 @@ def run_fusion(config: dict) -> None:
                 d_p = read_json(ref_path)
                 d_m = read_json(metadata_path)
                 if "camera1" in d_f and "camera1" in d_p:
-                    _enforce_bone_lengths(d_f["camera1"], d_p["camera1"])
+                    _enforce_bone_lengths(
+                        d_f["camera1"], d_p["camera1"],
+                        output_bone_refs.get("camera1") if adaptive_enabled else None,
+                        full_skeleton=full_bones,
+                    )
                     write_json(f_path, d_f)
+
+    # Final deterministic M5 safety pass: under input-frame / bilateral_max mode,
+    # evaluation-skeleton bones are projected to eliminate foreshortening distortion.
+    if adaptive_enabled and full_bones and reference_mode in ("input_frame", "bilateral_max"):
+        for fused_path in (output_dir / "keypoints3d").glob("fused_data_*.json"):
+            pose_path = input_dir / "keypoints3d" / fused_path.name.replace("fused_data_", "pose_data_")
+            if not pose_path.exists():
+                raise FileNotFoundError(f"Cannot enforce per-frame bone lengths without {pose_path}")
+            fused_data, original_data = read_json(fused_path), read_json(pose_path)
+            for cam in ("camera1", "camera2"):
+                if cam in fused_data and cam in original_data:
+                    _enforce_bone_lengths(
+                        fused_data[cam], original_data[cam],
+                        full_skeleton=True,
+                        bilateral_symmetry=use_bilateral,
+                    )
+            write_json(fused_path, fused_data)
 
     print(f"\n[Fusion] Done. Output: {output_dir}")
 

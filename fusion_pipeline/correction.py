@@ -66,6 +66,7 @@ def apply_similarity(point, transform):
 
 
 PARENT_JOINTS = {
+    "neck": "pelvis",
     "head": "neck",
     "left_shoulder": "neck",
     "right_shoulder": "neck",

@@ -6,6 +6,7 @@ import torch
 from fusion_pipeline.config import BONE_LENGTH_MIN_SCALE
 from fusion_pipeline.config import BONE_LENGTH_MAX_SCALE
 from fusion_pipeline.detector import as_xyz
+from fusion_pipeline.motion_quality import synchronized_segment_ids
 from fusion_pipeline.config import DEFAULT_OCCLUDED_FACTOR
 from fusion_pipeline.config import RIGID_BONES_RATIO
 from fusion_pipeline.config import HEIGHT
@@ -210,6 +211,7 @@ def optimize_sequence_gpu(
     device: str = None,
     master_only: bool = False,
     anchor_cam: str = "camera1",
+    bone_references: dict | None = None,
 ) -> None:
     """
     Tối ưu hóa toàn bộ chuỗi frame (Batch Sequence Optimization) bằng PyTorch Autograd trên GPU.
@@ -256,11 +258,17 @@ def optimize_sequence_gpu(
         p1_ref_np, p2_ref_np = p1_fused_np, p2_fused_np
 
     ref_bones1, ref_bones2 = [], []
+    bone_references = bone_references or {}
     for (c_idx, p_idx) in bone_pairs:
-        d1 = float(np.linalg.norm(p1_ref_np[:, c_idx] - p1_ref_np[:, p_idx], axis=-1).mean())
-        d2 = float(np.linalg.norm(p2_ref_np[:, c_idx] - p2_ref_np[:, p_idx], axis=-1).mean())
-        ref_bones1.append(d1)
-        ref_bones2.append(d2)
+        child = joint_names[c_idx]
+        d1 = bone_references.get("camera1", {}).get(child)
+        d2 = bone_references.get("camera2", {}).get(child)
+        if d1 is None or not np.isfinite(d1) or d1 <= 1e-6:
+            d1 = float(np.linalg.norm(p1_ref_np[:, c_idx] - p1_ref_np[:, p_idx], axis=-1).mean())
+        if d2 is None or not np.isfinite(d2) or d2 <= 1e-6:
+            d2 = float(np.linalg.norm(p2_ref_np[:, c_idx] - p2_ref_np[:, p_idx], axis=-1).mean())
+        ref_bones1.append(float(d1))
+        ref_bones2.append(float(d2))
 
     ref_bones1_t = torch.tensor(ref_bones1, device=device, dtype=torch.float32)
     ref_bones2_t = torch.tensor(ref_bones2, device=device, dtype=torch.float32)
@@ -299,9 +307,14 @@ def optimize_sequence_gpu(
         if a in name_to_idx and b in name_to_idx and c in name_to_idx
     ]
 
-    optimizer = torch.optim.Adam([delta1] if master_only else [delta1, delta2], lr=0.005)
-    opt_cfg = (config or {}).get("fusion", {}).get("optimization", {})
     fusion_cfg = (config or {}).get("fusion", {})
+    adaptive_enabled = bool(fusion_cfg.get("adaptive_protection", {}).get("enabled", False))
+    if adaptive_enabled:
+        # The mean confidence over a camera pair never disables individual
+        # joints' opportunity to benefit from cross-view optimization.
+        master_only = False
+    optimizer = torch.optim.Adam([delta1] if master_only else [delta1, delta2], lr=0.005)
+    opt_cfg = fusion_cfg.get("optimization", {})
     master_prot_enabled = bool(fusion_cfg.get("master_protection", {}).get("enabled", False))
     angle_limits_enabled = bool(fusion_cfg.get("angle_limits", {}).get("enabled", True))
     regularization_enabled = bool(opt_cfg.get("regularization", True))
@@ -310,7 +323,73 @@ def optimize_sequence_gpu(
     n_iters = min(int(opt_cfg.get("max_iter", 35)), 50)
 
     # ponytail: asymmetric anchor mask — anchor camera resists movement to prevent drift, while the other camera adjusts
-    if master_prot_enabled:
+    if adaptive_enabled:
+        quality1 = np.ones((T, N), dtype=np.float32)
+        quality2 = np.ones((T, N), dtype=np.float32)
+        visible1 = np.ones((T, N), dtype=np.float32)
+        visible2 = np.ones((T, N), dtype=np.float32)
+        transfer_agreement = np.zeros((T, N), dtype=np.float32)
+        transfer1 = np.zeros((T, N), dtype=np.float32)
+        transfer2 = np.zeros((T, N), dtype=np.float32)
+        for t, meta in enumerate(all_meta):
+            jq = meta.get("joint_quality", {})
+            tr = meta.get("joint_transfer", {})
+            for n, j in name_to_idx.items():
+                quality1[t, j] = float(np.clip(jq.get("camera1", {}).get(n, 1.0), 0, 1))
+                quality2[t, j] = float(np.clip(jq.get("camera2", {}).get(n, 1.0), 0, 1))
+                visible1[t, j] = 1.0 if meta.get("vis1", {}).get(n, True) else 0.1
+                visible2[t, j] = 1.0 if meta.get("vis2", {}).get(n, True) else 0.1
+                transfer1[t, j] = float(np.clip(tr.get("camera1", {}).get(n, 0.0), 0.0, 1.0))
+                transfer2[t, j] = float(np.clip(tr.get("camera2", {}).get(n, 0.0), 0.0, 1.0))
+                transfer_agreement[t, j] = float(np.clip(2.0 * max(
+                    transfer1[t, j], transfer2[t, j]), 0.0, 1.0))
+        q1_t = torch.tensor(quality1, device=device, dtype=torch.float32)
+        q2_t = torch.tensor(quality2, device=device, dtype=torch.float32)
+        agreement_t = torch.tensor(transfer_agreement, device=device, dtype=torch.float32)
+        rel1 = c1_t * q1_t * torch.tensor(visible1, device=device, dtype=torch.float32)
+        rel2 = c2_t * q2_t * torch.tensor(visible2, device=device, dtype=torch.float32)
+        # M7: safeguard reliable observations independent of fused pose.
+        raw_observation1 = torch.tensor(p1_ref_np, device=device, dtype=torch.float32)
+        raw_observation2 = torch.tensor(p2_ref_np, device=device, dtype=torch.float32)
+        observation_w1 = (rel1 * torch.tensor(1.0 - transfer1, device=device, dtype=torch.float32)).detach()
+        observation_w2 = (rel2 * torch.tensor(1.0 - transfer2, device=device, dtype=torch.float32)).detach()
+        raw_speed1 = np.linalg.norm(np.diff(p1_ref_np, axis=0), axis=-1)
+        raw_speed2 = np.linalg.norm(np.diff(p2_ref_np, axis=0), axis=-1)
+        shared_speed = np.minimum(raw_speed1, raw_speed2)
+        common_motion_mid = np.maximum(shared_speed[:-1], shared_speed[1:])
+        motion_temporal_scale = max(
+            float(opt_cfg.get("motion_temporal_scale_m", 0.12)), 1e-6
+        )
+        # Never calculate acceleration across nonconsecutive synchronized
+        # WHAM source frames; those finite differences are not physical.
+        timeline = synchronized_segment_ids(
+            files, Path(pose_dir).parent / "metadata" if pose_dir else None
+        )
+        valid_triplets = np.asarray([
+            float(timeline[i] - timeline[i - 1] == 1
+                  and timeline[i + 1] - timeline[i] == 1)
+            for i in range(1, T - 1)
+        ], dtype=np.float32)[:, None]
+        temporal_motion = torch.tensor(
+            (1.0 / (1.0 + (common_motion_mid / motion_temporal_scale) ** 2))
+            * valid_triplets,
+            device=device, dtype=torch.float32,
+        )
+        quality_mid = 0.5 * (q1_t[1:-1] + q2_t[1:-1])
+        temporal_floor = float(np.clip(
+            opt_cfg.get("temporal_quality_floor", 0.25), 0.0, 1.0
+        ))
+        adaptive_temporal_w = temporal_motion * (
+            temporal_floor + (1.0 - temporal_floor) * (1.0 - quality_mid)
+        )
+        total_rel = rel1 + rel2 + 1e-6
+        min_mobility = float(np.clip(
+            fusion_cfg.get("adaptive_protection", {}).get("min_gpu_mobility", 0.05), 0.01, 0.45
+        ))
+        # Reciprocal mobility: better observations move less but never freeze.
+        mask1 = (min_mobility + (1.0 - 2.0 * min_mobility) * rel2 / total_rel).unsqueeze(-1)
+        mask2 = (min_mobility + (1.0 - 2.0 * min_mobility) * rel1 / total_rel).unsqueeze(-1)
+    elif master_prot_enabled:
         if anchor_cam == "camera2":
             mask1 = torch.ones_like(delta1)
             mask2 = torch.zeros_like(delta2) if master_only else torch.where(c2_t >= 0.5, torch.zeros_like(c2_t), 1.0 - c2_t).unsqueeze(-1)
@@ -359,16 +438,45 @@ def optimize_sequence_gpu(
             diff_mv = torch.abs(d1 - d2)
             huber_mv = torch.where(diff_mv <= 0.05, 0.5 * (diff_mv ** 2), 0.05 * (diff_mv - 0.025))
             # ponytail: min-confidence weight prevents pulling high-confidence cam toward hallucinated/noisy cam
-            w_mv = torch.min(w1, w2)
+            if adaptive_enabled:
+                w_mv = torch.min(
+                    w1 * q1_t.unsqueeze(-1), w2 * q2_t.unsqueeze(-1)
+                ) * agreement_t.unsqueeze(-1)
+            else:
+                w_mv = torch.min(w1, w2)
             loss_mv = (w_mv * huber_mv).mean()
 
         accel1 = p1[2:] - 2.0 * p1[1:-1] + p1[:-2]
         accel2 = p2[2:] - 2.0 * p2[1:-1] + p2[:-2]
-        loss_accel = (accel1 ** 2).mean()
-        if not master_only:
-            loss_accel = loss_accel + (accel2 ** 2).mean()
-
-        total_loss = (reg_lambda * loss_prox if regularization_enabled else 0.0) + 50.0 * loss_bone + 5.0 * loss_mv + temp_lambda * 2.5 * loss_accel + 20.0 * loss_angle
+        adaptive_objectives = adaptive_enabled and bool(
+            opt_cfg.get("adaptive_objectives_enabled", True)
+        )
+        if adaptive_objectives:
+            loss_accel = ((accel1 ** 2).mean(dim=-1) * adaptive_temporal_w).mean()
+            if not master_only:
+                loss_accel = loss_accel + (
+                    (accel2 ** 2).mean(dim=-1) * adaptive_temporal_w
+                ).mean()
+            # Original camera poses come from WHAM input, not evaluation GT.
+            loss_observation = (
+                ((p1 - raw_observation1) ** 2).mean(dim=-1) * observation_w1
+            ).mean()
+            if not master_only:
+                loss_observation = loss_observation + (
+                    ((p2 - raw_observation2) ** 2).mean(dim=-1) * observation_w2
+                ).mean()
+        else:
+            loss_accel = (accel1 ** 2).mean()
+            if not master_only:
+                loss_accel = loss_accel + (accel2 ** 2).mean()
+            loss_observation = torch.zeros((), device=device)
+        total_loss = (
+            (reg_lambda * loss_prox if regularization_enabled else 0.0)
+            + 50.0 * loss_bone + 5.0 * loss_mv
+            + temp_lambda * 2.5 * loss_accel + 20.0 * loss_angle
+            + (float(opt_cfg.get("observation_lambda", 2.0)) * loss_observation
+               if adaptive_objectives else 0.0)
+        )
         total_loss.backward()
         optimizer.step()
 
@@ -384,7 +492,10 @@ def optimize_sequence_gpu(
             from fusion_pipeline.executor import _enforce_bone_lengths
             for cam in (("camera1",) if master_only else ("camera1", "camera2")):
                 if cam in d and cam in all_pose[t]:
-                    _enforce_bone_lengths(d[cam], all_pose[t][cam])
+                    _enforce_bone_lengths(
+                        d[cam], all_pose[t][cam], bone_references.get(cam),
+                        full_skeleton=adaptive_enabled,
+                    )
         f.write_text(json.dumps(d), encoding="utf-8")
 
     dt = time.time() - t0

@@ -65,19 +65,25 @@ def _resolve_root_joint(joints: dict) -> np.ndarray:
         return (joints["left_hip"] + joints["right_hip"]) / 2.0
     raise ValueError("Missing left_hip or right_hip for root alignment")
 
-def _compute_mpjpe(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], keys: list[str]) -> tuple[float, dict[str, float]]:
+def _align_root_and_rotation(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], keys: list[str]) -> tuple[np.ndarray, np.ndarray]:
     pred_root = _resolve_root_joint(pred)
     truth_root = _resolve_root_joint(truth)
+    P = np.array([pred[k] - pred_root for k in keys], dtype=float)
+    T = np.array([truth[k] - truth_root for k in keys], dtype=float)
+    if len(keys) >= 3:
+        # Align camera-frame pred to world-frame truth via rigid 3D rotation (Kabsch, scale=1.0)
+        U, _, Vt = np.linalg.svd(np.dot(T.T, P))
+        corr = np.eye(3)
+        corr[-1, -1] = np.sign(np.linalg.det(np.dot(U, Vt)))
+        R = np.dot(np.dot(U, corr), Vt)
+        P = np.dot(P, R.T)
+    return P, T
 
-    errors = []
-    errors_dict = {}
-    for k in keys:
-        p = pred[k] - pred_root
-        t = truth[k] - truth_root
-        err = float(np.linalg.norm(p - t) * 1000.0)
-        errors.append(err)
-        errors_dict[k] = err
-    return float(np.mean(errors)), errors_dict
+def _compute_mpjpe(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], keys: list[str]) -> tuple[float, dict[str, float]]:
+    P, T = _align_root_and_rotation(pred, truth, keys)
+    errors_dict = {k: float(np.linalg.norm(P[i] - T[i]) * 1000.0) for i, k in enumerate(keys)}
+    errors = list(errors_dict.values())
+    return float(np.mean(errors)) if errors else 0.0, errors_dict
 
 def _compute_pa_mpjpe(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], keys: list[str]) -> tuple[float, dict[str, float]]:
     P = np.array([pred[k] for k in keys], dtype=float)
@@ -113,18 +119,13 @@ def _compute_pa_mpjpe(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray],
     return float(np.mean(errors)), errors_dict
 
 def _compute_pck(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], keys: list[str], threshold_mm: float) -> tuple[float, dict[str, float]]:
-    pred_root = _resolve_root_joint(pred)
-    truth_root = _resolve_root_joint(truth)
-    correct = []
-    correct_dict = {}
-    for k in keys:
-        p = pred[k] - pred_root
-        t = truth[k] - truth_root
-        err = float(np.linalg.norm(p - t) * 1000.0)
-        value = 100.0 if err <= threshold_mm else 0.0
-        correct.append(value)
-        correct_dict[k] = value
-    return float(np.mean(correct)), correct_dict
+    P, T = _align_root_and_rotation(pred, truth, keys)
+    correct_dict = {
+        k: 100.0 if float(np.linalg.norm(P[i] - T[i]) * 1000.0) <= threshold_mm else 0.0
+        for i, k in enumerate(keys)
+    }
+    correct = list(correct_dict.values())
+    return float(np.mean(correct)) if correct else 0.0, correct_dict
 
 
 def _compute_mble(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], bones: list[list[str]]) -> tuple[float, dict]:

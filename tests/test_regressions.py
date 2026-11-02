@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import numpy as np
 import torch
 
-from evaluation_pipeline.executor import _compute_pa_mpjpe, _compute_pck, _load_ground_truth
+from evaluation_pipeline.executor import _compute_pa_mpjpe, _compute_mpjpe, _compute_pck, _load_ground_truth
 from brute_force_runner import EVALUATION_PROTOCOL, _get_header_indices, _parse_history_row, _ranking_key, _resolve_pair_mode
 from fusion_pipeline.correction import apply_multiview_geometric_fusion
 from fusion_pipeline.executor import _source_frame_indices, _restore_master_pose, _restore_pair_pose
@@ -57,6 +57,21 @@ class MetricTests(unittest.TestCase):
         score, details = _compute_pck(self.truth, self.truth, self.names, threshold_mm=150.0)
         self.assertEqual(score, 100.0)
         self.assertTrue(all(value == 100.0 for value in details.values()))
+
+    def test_mpjpe_aligns_camera_to_world_rotation_and_preserves_scale(self):
+        angle = np.pi / 3.0
+        rotation = np.array([
+            [np.cos(angle), -np.sin(angle), 0.0],
+            [np.sin(angle), np.cos(angle), 0.0],
+            [0.0, 0.0, 1.0],
+        ])
+        rotated = {name: point @ rotation + 2.0 for name, point in self.truth.items()}
+        mean_error, _ = _compute_mpjpe(rotated, self.truth, self.names)
+        self.assertAlmostEqual(mean_error, 0.0, places=9)
+
+        scaled = {name: point * 1.1 for name, point in self.truth.items()}
+        scaled_error, _ = _compute_mpjpe(scaled, self.truth, self.names)
+        self.assertGreater(scaled_error, 10.0)
 
 
 class SynchronizationTests(unittest.TestCase):

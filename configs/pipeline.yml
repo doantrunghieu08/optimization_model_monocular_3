@@ -19,7 +19,7 @@ inputs:
   camera1_video: "input/Hugging/exo/cam04/images/harmony4D_002_hugging_cam04_ffmpeg.mp4"
   camera2_video: "input/Hugging/exo/cam05/images/harmony4D_002_hugging_cam05_ffmpeg.mp4"
   ground_truth_dir: "input/Hugging/processed_data/poses3d" # Thư mục ground-truth cho evaluation.
-  target_person: "aria01" # Chọn 1 người để fusion ("aria01" hoặc "aria02")
+  target_person: "aria02" # Chọn 1 người để fusion ("aria01" hoặc "aria02")
 
 paths:
   smpl_model: "models/SMPL_NEUTRAL.pkl"
@@ -54,7 +54,51 @@ fusion:
     min_confidence: 0.1    # Ngưỡng tin cậy tối thiểu của camera phụ
     consensus_threshold: 0.08 # Ngưỡng (m) đồng thuận đa góc nhìn để blend các khớp cùng nhìn thấy rõ
 
-  # Chỉ cho camera phụ sửa joint đang nhìn rõ khi belief cao hơn đủ lớn.
+  # Zero-GT: bảo vệ thích nghi cho từng joint/frame dựa trên chất lượng
+  # và độ đồng thuận hình học; không khóa cứng toàn bộ camera master.
+  adaptive_protection:
+    enabled: true
+    consensus_scale_m: 0.18
+    occluded_scale_m: 0.55
+    transform_scale_m: 0.20
+    min_source_reliability: 0.12
+    max_visible_transfer: 0.35
+    max_occluded_transfer: 0.85
+    min_gpu_mobility: 0.05
+    jitter_ratio: 1.35
+    jitter_floor_m: 0.025
+    jitter_scale_m: 0.08
+    # M2: robust view-specific reference segment lengths + bilateral symmetry
+    bone_quality:
+      enabled: true
+      min_samples: 3
+      tolerance_ratio: 0.08
+      residual_scale_ratio: 0.18
+      bilateral_scale_ratio: 0.25
+      bilateral_weight: 0.45
+    # M4: occluded rescue requires independent source bone + alignment evidence
+    min_alignment_anchors: 3
+    min_occluded_source_bone_quality: 0.45
+    min_occluded_alignment_reliability: 0.45
+    # M5: reject transfers requiring excessive kinematic projection
+    max_kinematic_projection_ratio: 0.40
+    # Full Model v2 M4: joint/frame risk-aware visible and occluded transfers
+    risk_aware_enabled: true
+    visible_risk_enabled: true
+    visible_protect_quality: 0.55
+    visible_max_source_deficit: 0.10
+    visible_hard_conflict_m: 0.12
+    visible_safe_disagreement_m: 0.04
+    visible_risk_scale_m: 0.08
+    visible_quality_gap_scale: 0.15
+
+  # M5 safety: preserve anatomically stable bone lengths using bilateral symmetry
+  # (un-foreshortened twin max) across all evaluation skeleton bones.
+  bone_output:
+    reference_mode: bilateral_max  # bilateral_max yields positive delta MBLE (+3% to +6%)
+    enforce_full_skeleton: true
+
+  # Legacy ablation: chỉ được áp dụng khi adaptive_protection.enabled=false.
   master_protection:
     enabled: true
     confidence_margin: 0.15
@@ -73,6 +117,12 @@ fusion:
     enabled: true
     window_length: 5
     polyorder: 2
+    # Full Model v2 M6: protect true shared rapid motion
+    motion_aware:
+      enabled: true
+      max_strength: 0.95
+      good_quality_floor: 0.15
+      motion_scale_m: 0.08
 
   # Cấu hình RANSAC dùng để ước lượng similarity transform giữa 2 camera.
   ransac:
@@ -86,6 +136,11 @@ fusion:
     regularization_lambda: 1.0 # Hệ số phạt của proximity regularization.
     temporal_lambda: 2.0 # Hệ số phạt theo thời gian so với frame trước.
     max_iter: 35 # Số vòng lặp tối đa cho PyTorch GPU Adam.
+    # Full Model v2 M7: confidence-weighted observation/temporal losses
+    adaptive_objectives_enabled: true
+    observation_lambda: 2.0
+    motion_temporal_scale_m: 0.12
+    temporal_quality_floor: 0.25
 
 learnable:
   enabled: false
