@@ -130,6 +130,11 @@ fusion:
     regularization_lambda: 1.0 # Hệ số phạt của proximity regularization.
     temporal_lambda: 2.0 # Hệ số phạt theo thời gian so với frame trước.
     max_iter: 35 # Số vòng lặp tối đa cho PyTorch GPU Adam.
+    # Full Model v2 M7: confidence-weighted observation/temporal losses
+    adaptive_objectives_enabled: true
+    observation_lambda: 2.0
+    motion_temporal_scale_m: 0.12
+    temporal_quality_floor: 0.25
 
 learnable:
   enabled: false

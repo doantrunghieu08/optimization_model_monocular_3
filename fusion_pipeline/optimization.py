@@ -328,6 +328,8 @@ def optimize_sequence_gpu(
         visible1 = np.ones((T, N), dtype=np.float32)
         visible2 = np.ones((T, N), dtype=np.float32)
         transfer_agreement = np.zeros((T, N), dtype=np.float32)
+        transfer1 = np.zeros((T, N), dtype=np.float32)
+        transfer2 = np.zeros((T, N), dtype=np.float32)
         for t, meta in enumerate(all_meta):
             jq = meta.get("joint_quality", {})
             tr = meta.get("joint_transfer", {})
@@ -336,14 +338,38 @@ def optimize_sequence_gpu(
                 quality2[t, j] = float(np.clip(jq.get("camera2", {}).get(n, 1.0), 0, 1))
                 visible1[t, j] = 1.0 if meta.get("vis1", {}).get(n, True) else 0.1
                 visible2[t, j] = 1.0 if meta.get("vis2", {}).get(n, True) else 0.1
+                transfer1[t, j] = float(np.clip(tr.get("camera1", {}).get(n, 0.0), 0.0, 1.0))
+                transfer2[t, j] = float(np.clip(tr.get("camera2", {}).get(n, 0.0), 0.0, 1.0))
                 transfer_agreement[t, j] = float(np.clip(2.0 * max(
-                    tr.get("camera1", {}).get(n, 0.0),
-                    tr.get("camera2", {}).get(n, 0.0)), 0.0, 1.0))
+                    transfer1[t, j], transfer2[t, j]), 0.0, 1.0))
         q1_t = torch.tensor(quality1, device=device, dtype=torch.float32)
         q2_t = torch.tensor(quality2, device=device, dtype=torch.float32)
         agreement_t = torch.tensor(transfer_agreement, device=device, dtype=torch.float32)
         rel1 = c1_t * q1_t * torch.tensor(visible1, device=device, dtype=torch.float32)
         rel2 = c2_t * q2_t * torch.tensor(visible2, device=device, dtype=torch.float32)
+        # M7: safeguard reliable observations independent of fused pose.
+        raw_observation1 = torch.tensor(p1_ref_np, device=device, dtype=torch.float32)
+        raw_observation2 = torch.tensor(p2_ref_np, device=device, dtype=torch.float32)
+        observation_w1 = (rel1 * torch.tensor(1.0 - transfer1, device=device)).detach()
+        observation_w2 = (rel2 * torch.tensor(1.0 - transfer2, device=device)).detach()
+        raw_speed1 = np.linalg.norm(np.diff(p1_ref_np, axis=0), axis=-1)
+        raw_speed2 = np.linalg.norm(np.diff(p2_ref_np, axis=0), axis=-1)
+        shared_speed = np.minimum(raw_speed1, raw_speed2)
+        common_motion_mid = np.maximum(shared_speed[:-1], shared_speed[1:])
+        motion_temporal_scale = max(
+            float(opt_cfg.get("motion_temporal_scale_m", 0.12)), 1e-6
+        )
+        temporal_motion = torch.tensor(
+            1.0 / (1.0 + (common_motion_mid / motion_temporal_scale) ** 2),
+            device=device, dtype=torch.float32,
+        )
+        quality_mid = 0.5 * (q1_t[1:-1] + q2_t[1:-1])
+        temporal_floor = float(np.clip(
+            opt_cfg.get("temporal_quality_floor", 0.25), 0.0, 1.0
+        ))
+        adaptive_temporal_w = temporal_motion * (
+            temporal_floor + (1.0 - temporal_floor) * (1.0 - quality_mid)
+        )
         total_rel = rel1 + rel2 + 1e-6
         min_mobility = float(np.clip(
             fusion_cfg.get("adaptive_protection", {}).get("min_gpu_mobility", 0.05), 0.01, 0.45
@@ -410,11 +436,35 @@ def optimize_sequence_gpu(
 
         accel1 = p1[2:] - 2.0 * p1[1:-1] + p1[:-2]
         accel2 = p2[2:] - 2.0 * p2[1:-1] + p2[:-2]
-        loss_accel = (accel1 ** 2).mean()
-        if not master_only:
-            loss_accel = loss_accel + (accel2 ** 2).mean()
-
-        total_loss = (reg_lambda * loss_prox if regularization_enabled else 0.0) + 50.0 * loss_bone + 5.0 * loss_mv + temp_lambda * 2.5 * loss_accel + 20.0 * loss_angle
+        adaptive_objectives = adaptive_enabled and bool(
+            opt_cfg.get("adaptive_objectives_enabled", True)
+        )
+        if adaptive_objectives:
+            loss_accel = ((accel1 ** 2).mean(dim=-1) * adaptive_temporal_w).mean()
+            if not master_only:
+                loss_accel = loss_accel + (
+                    (accel2 ** 2).mean(dim=-1) * adaptive_temporal_w
+                ).mean()
+            # Original camera poses come from WHAM input, not evaluation GT.
+            loss_observation = (
+                ((p1 - raw_observation1) ** 2).mean(dim=-1) * observation_w1
+            ).mean()
+            if not master_only:
+                loss_observation = loss_observation + (
+                    ((p2 - raw_observation2) ** 2).mean(dim=-1) * observation_w2
+                ).mean()
+        else:
+            loss_accel = (accel1 ** 2).mean()
+            if not master_only:
+                loss_accel = loss_accel + (accel2 ** 2).mean()
+            loss_observation = torch.zeros((), device=device)
+        total_loss = (
+            (reg_lambda * loss_prox if regularization_enabled else 0.0)
+            + 50.0 * loss_bone + 5.0 * loss_mv
+            + temp_lambda * 2.5 * loss_accel + 20.0 * loss_angle
+            + (float(opt_cfg.get("observation_lambda", 2.0)) * loss_observation
+               if adaptive_objectives else 0.0)
+        )
         total_loss.backward()
         optimizer.step()
 
