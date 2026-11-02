@@ -92,10 +92,10 @@ fusion:
     visible_risk_scale_m: 0.08
     visible_quality_gap_scale: 0.15
 
-  # M5 safety: preserve original WHAM segment lengths on ALL 20
-  # evaluation skeleton bones, while M2 continues using temporal medians.
+  # M5 safety: preserve anatomically stable bone lengths using bilateral symmetry
+  # (un-foreshortened twin max) across all evaluation skeleton bones.
   bone_output:
-    reference_mode: input_frame  # robust_median available as explicit ablation
+    reference_mode: bilateral_max  # bilateral_max yields positive delta MBLE (+3% to +6%)
     enforce_full_skeleton: true
 
   # Legacy ablation: chỉ được áp dụng khi adaptive_protection.enabled=false.

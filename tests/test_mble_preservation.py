@@ -56,6 +56,14 @@ class MBLEPreservationTests(unittest.TestCase):
             .4, places=5
         )
 
+    def test_bilateral_symmetry_uses_twin_max(self):
+        raw = self.make_pose()
+        moved = {name: list(v) for name, v in raw.items()}
+        _enforce_bone_lengths(moved, raw, full_skeleton=True, bilateral_symmetry=True)
+        l_left = np.linalg.norm(np.asarray(moved["left_elbow"]) - np.asarray(moved["left_shoulder"]))
+        l_right = np.linalg.norm(np.asarray(moved["right_elbow"]) - np.asarray(moved["right_shoulder"]))
+        self.assertAlmostEqual(l_left, l_right, places=5)
+
 
 if __name__ == "__main__":
     unittest.main()

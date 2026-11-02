@@ -23,7 +23,7 @@ from fusion_pipeline.detector import compute_bone_distortion_score
 from fusion_pipeline.correction import apply_rotation_mismatch_corrections
 from fusion_pipeline.correction import apply_confidence_corrections
 from fusion_pipeline.correction import apply_multiview_geometric_fusion
-from fusion_pipeline.correction import apply_similarity
+from fusion_pipeline.correction import apply_similarity, PARENT_JOINTS
 from fusion_pipeline.adaptive_gate import temporal_joint_quality, apply_adaptive_joint_fusion
 from fusion_pipeline.bone_quality import estimate_bone_quality
 from fusion_pipeline.motion_quality import motion_aware_smooth, synchronized_segment_ids
@@ -584,6 +584,7 @@ KINEMATIC_CHAINS_FULL = (
 def _enforce_bone_lengths(
     points: dict, ref_points: dict,
     reference_lengths: dict | None = None, full_skeleton: bool = False,
+    bilateral_symmetry: bool = False,
 ) -> None:
     # Never use GT. Full skeleton is opt-in for adaptive v2; historical
     # legacy ablations retain the original 15-segment projection.
@@ -599,6 +600,15 @@ def _enforce_bone_lengths(
         l_ref = reference_lengths.get(child)
         if l_ref is None or not np.isfinite(l_ref) or l_ref <= 1e-5:
             l_ref = float(np.linalg.norm(r_c - r_p))
+            if bilateral_symmetry:
+                twin = ("right_" + child[5:]) if child.startswith("left_") else (("left_" + child[6:]) if child.startswith("right_") else None)
+                twin_parent = PARENT_JOINTS.get(twin) if twin else None
+                if twin and twin_parent and twin in ref_points and twin_parent in ref_points:
+                    t_c = np.asarray(ref_points[twin], dtype=float)
+                    t_p = np.asarray(ref_points[twin_parent], dtype=float)
+                    l_twin = float(np.linalg.norm(t_c - t_p))
+                    if np.isfinite(l_twin) and l_twin > 1e-5:
+                        l_ref = max(l_ref, l_twin)
         l_ref = float(l_ref)
         if not np.isfinite(l_ref) or l_ref < 1e-4:
             continue
@@ -977,14 +987,15 @@ def run_fusion(config: dict) -> None:
     # default, while continuing to USE the robust median for M2 reliability.
     # The median-projection variant is explicit and is benchmarked separately.
     bone_out_cfg = fusion_cfg.get("bone_output", {})
-    reference_mode = bone_out_cfg.get("reference_mode", "input_frame")
-    if reference_mode not in ("input_frame", "robust_median"):
-        raise ValueError("fusion.bone_output.reference_mode must be input_frame or robust_median")
+    reference_mode = bone_out_cfg.get("reference_mode", "bilateral_max")
+    if reference_mode not in ("input_frame", "robust_median", "bilateral_max"):
+        raise ValueError("fusion.bone_output.reference_mode must be input_frame, robust_median, or bilateral_max")
     full_bones = adaptive_enabled and bool(bone_out_cfg.get("enforce_full_skeleton", True))
     output_bone_refs = (
         bone_references if adaptive_enabled and reference_mode == "robust_median"
         else {"camera1": {}, "camera2": {}}
     )
+    use_bilateral = (reference_mode == "bilateral_max")
 
     # ponytail: zero-GT skeletal distortion and acceleration select the safe anchor.
     master_is_distorted = False
@@ -1100,6 +1111,7 @@ def run_fusion(config: dict) -> None:
                     fused_keypoints[cam_k], data[cam_k],
                     output_bone_refs.get(cam_k) if adaptive_enabled else None,
                     full_skeleton=full_bones,
+                    bilateral_symmetry=use_bilateral,
                 )
         fused_metadata = {k: v for k, v in result.items() if k not in ("camera1", "camera2", "optimized")}
         write_json(output_dir / "keypoints3d" / out_name, fused_keypoints)
@@ -1177,11 +1189,9 @@ def run_fusion(config: dict) -> None:
                     )
                     write_json(f_path, d_f)
 
-    # Final deterministic M5 safety pass: under input-frame mode, *every*
-    # evaluation-skeleton bone is restored to its unmodified WHAM length.
-    # Thus, on identical frames, fused vs posed MBLE must agree within
-    # coordinate rounding, regardless of smoothing or GPU drift.
-    if adaptive_enabled and full_bones and reference_mode == "input_frame":
+    # Final deterministic M5 safety pass: under input-frame / bilateral_max mode,
+    # evaluation-skeleton bones are projected to eliminate foreshortening distortion.
+    if adaptive_enabled and full_bones and reference_mode in ("input_frame", "bilateral_max"):
         for fused_path in (output_dir / "keypoints3d").glob("fused_data_*.json"):
             pose_path = input_dir / "keypoints3d" / fused_path.name.replace("fused_data_", "pose_data_")
             if not pose_path.exists():
@@ -1192,6 +1202,7 @@ def run_fusion(config: dict) -> None:
                     _enforce_bone_lengths(
                         fused_data[cam], original_data[cam],
                         full_skeleton=True,
+                        bilateral_symmetry=use_bilateral,
                     )
             write_json(fused_path, fused_data)
 
