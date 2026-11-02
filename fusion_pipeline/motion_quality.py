@@ -1,7 +1,42 @@
 """Zero-GT, two-view motion-aware temporal smoothing."""
 from __future__ import annotations
 import numpy as np
+import json
+from pathlib import Path
 from scipy.signal import savgol_filter
+
+
+def synchronized_segment_ids(paths, pose_metadata_dir=None):
+    """Build a monotonic timeline that splits at output OR WHAM source gaps.
+
+    Metadata is read from pose_data_*.json, never from evaluation/GT.
+    """
+    paths = [Path(x) for x in paths]
+    frame_ids = [int(path.stem.split("_")[-1]) for path in paths]
+    if not paths:
+        return []
+    sources = []
+    metadata_dir = Path(pose_metadata_dir) if pose_metadata_dir else None
+    for idx in frame_ids:
+        source = {}
+        if metadata_dir is not None:
+            metadata_path = metadata_dir / f"pose_data_{idx}.json"
+            if metadata_path.exists():
+                try:
+                    payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+                    source = payload.get("metadata", {}).get("source_frame_indices", {})
+                except (ValueError, OSError, AttributeError):
+                    pass
+        sources.append(source if isinstance(source, dict) else {})
+    timeline = [0]
+    for i in range(1, len(paths)):
+        continuous = frame_ids[i] - frame_ids[i - 1] == 1
+        for camera in ("camera1", "camera2"):
+            prev, current = sources[i - 1].get(camera), sources[i].get(camera)
+            if prev is not None and current is not None and current - prev != 1:
+                continuous = False
+        timeline.append(timeline[-1] + (1 if continuous else 2))
+    return timeline
 
 
 def motion_aware_smooth(coords1, coords2, quality1, quality2,

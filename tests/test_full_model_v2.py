@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from fusion_pipeline.adaptive_gate import apply_adaptive_joint_fusion
-from fusion_pipeline.motion_quality import motion_aware_smooth
+from fusion_pipeline.motion_quality import motion_aware_smooth, synchronized_segment_ids
 from fusion_pipeline.optimization import optimize_sequence_gpu
 
 
@@ -78,6 +78,19 @@ class FullModelV2Tests(unittest.TestCase):
             raw, raw, q, q, frame_ids=[0, 1, 2, 6, 7, 8],
         )
         np.testing.assert_allclose(smooth, raw, atol=1e-7)
+
+    def test_wham_source_index_gap_is_segmented(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)
+            sequence = [0, 1, 8, 9]
+            for i, source_id in enumerate(sequence, 1):
+                metadata = {"metadata": {"source_frame_indices": {
+                    "camera1": source_id, "camera2": source_id,
+                }}}
+                (path / f"pose_data_{i}.json").write_text(json.dumps(metadata))
+            files = [path / f"fused_data_{i}.json" for i in range(1, 5)]
+            ids = synchronized_segment_ids(files, path)
+            self.assertEqual(ids, [0, 1, 3, 4])
 
     def test_good_joint_smoothing_is_weaker(self):
         raw = np.zeros((5, 1, 3))

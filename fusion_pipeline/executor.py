@@ -26,7 +26,7 @@ from fusion_pipeline.correction import apply_multiview_geometric_fusion
 from fusion_pipeline.correction import apply_similarity
 from fusion_pipeline.adaptive_gate import temporal_joint_quality, apply_adaptive_joint_fusion
 from fusion_pipeline.bone_quality import estimate_bone_quality
-from fusion_pipeline.motion_quality import motion_aware_smooth
+from fusion_pipeline.motion_quality import motion_aware_smooth, synchronized_segment_ids
 from fusion_pipeline.config import DEFAULT_MASTER_BLEND
 from fusion_pipeline.config import DEFAULT_MASTER_MAX_DISPLACEMENT
 from fusion_pipeline.config import DEFAULT_MASTER_MIN_CONFIDENCE
@@ -763,7 +763,9 @@ def _apply_temporal_smoothing(
             ], dtype=float)
         filtered1, filtered2 = motion_aware_smooth(
             coords1, coords2, quality["camera1"], quality["camera2"],
-            frame_ids=[_frame_index(f) for f in files],
+            frame_ids=synchronized_segment_ids(
+                files, pose_dir.parent / "metadata" if pose_dir else None
+            ),
             window_length=w_len, polyorder=polyorder,
             max_strength=float(motion_cfg.get("max_strength", 0.95)),
             good_quality_floor=float(motion_cfg.get("good_quality_floor", 0.15)),

@@ -6,6 +6,7 @@ import torch
 from fusion_pipeline.config import BONE_LENGTH_MIN_SCALE
 from fusion_pipeline.config import BONE_LENGTH_MAX_SCALE
 from fusion_pipeline.detector import as_xyz
+from fusion_pipeline.motion_quality import synchronized_segment_ids
 from fusion_pipeline.config import DEFAULT_OCCLUDED_FACTOR
 from fusion_pipeline.config import RIGID_BONES_RATIO
 from fusion_pipeline.config import HEIGHT
@@ -350,8 +351,8 @@ def optimize_sequence_gpu(
         # M7: safeguard reliable observations independent of fused pose.
         raw_observation1 = torch.tensor(p1_ref_np, device=device, dtype=torch.float32)
         raw_observation2 = torch.tensor(p2_ref_np, device=device, dtype=torch.float32)
-        observation_w1 = (rel1 * torch.tensor(1.0 - transfer1, device=device)).detach()
-        observation_w2 = (rel2 * torch.tensor(1.0 - transfer2, device=device)).detach()
+        observation_w1 = (rel1 * torch.tensor(1.0 - transfer1, device=device, dtype=torch.float32)).detach()
+        observation_w2 = (rel2 * torch.tensor(1.0 - transfer2, device=device, dtype=torch.float32)).detach()
         raw_speed1 = np.linalg.norm(np.diff(p1_ref_np, axis=0), axis=-1)
         raw_speed2 = np.linalg.norm(np.diff(p2_ref_np, axis=0), axis=-1)
         shared_speed = np.minimum(raw_speed1, raw_speed2)
@@ -359,8 +360,19 @@ def optimize_sequence_gpu(
         motion_temporal_scale = max(
             float(opt_cfg.get("motion_temporal_scale_m", 0.12)), 1e-6
         )
+        # Never calculate acceleration across nonconsecutive synchronized
+        # WHAM source frames; those finite differences are not physical.
+        timeline = synchronized_segment_ids(
+            files, Path(pose_dir).parent / "metadata" if pose_dir else None
+        )
+        valid_triplets = np.asarray([
+            float(timeline[i] - timeline[i - 1] == 1
+                  and timeline[i + 1] - timeline[i] == 1)
+            for i in range(1, T - 1)
+        ], dtype=np.float32)[:, None]
         temporal_motion = torch.tensor(
-            1.0 / (1.0 + (common_motion_mid / motion_temporal_scale) ** 2),
+            (1.0 / (1.0 + (common_motion_mid / motion_temporal_scale) ** 2))
+            * valid_triplets,
             device=device, dtype=torch.float32,
         )
         quality_mid = 0.5 * (q1_t[1:-1] + q2_t[1:-1])
