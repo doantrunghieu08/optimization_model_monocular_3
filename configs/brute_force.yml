@@ -1,6 +1,6 @@
 segments:
 - name: hugging_002
-  ground_truth_dir: input/Hugging/processed_data/smpl
+  ground_truth_dir: input/Hugging/processed_data/poses3d
   cameras:
   - id: cam02
     pkl: input/Hugging/exo/cam02/harmony4D_002_hugging_cam02_ffmpeg/wham_harmony4D_002_hugging_cam02_ffmpeg.pkl
