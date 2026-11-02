@@ -150,7 +150,7 @@ def _transfer_weight(source_score, target_score, source_visible, target_visible,
 def apply_adaptive_joint_fusion(
     cam1, cam2, names, t12, t21, h1, h2, vis1, vis2,
     joint_quality=None, config=None, bone_quality=None, bone_references=None,
-    anchor_names=None,
+    anchor_names=None, master_protected: bool = False,
 ):
     """Fuse both camera poses and return per-joint diagnostics for optimization."""
     cfg = config or {}
@@ -221,6 +221,8 @@ def apply_adaptive_joint_fusion(
         ):
             source_bone = float(np.clip(source_bone, 0.0, 1.0))
             if not src_visible:
+                continue
+            if key == "camera1" and master_protected and tgt_visible:
                 continue
             if not tgt_visible and source_bone < min_source_bone_quality:
                 stats["rejected_occluded_bone"] += 1

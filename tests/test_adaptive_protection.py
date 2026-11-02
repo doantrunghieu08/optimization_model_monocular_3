@@ -11,7 +11,7 @@ from fusion_pipeline.optimization import optimize_sequence_gpu
 
 
 class AdaptiveJointProtectionTests(unittest.TestCase):
-    def gate(self, d=0.08, visible1=True, visible2=True, quality2=1.0):
+    def gate(self, d=0.08, visible1=True, visible2=True, quality2=1.0, master_protected=False):
         camera1 = {"left_elbow": [0.0, 0.0, 0.0], "left_wrist": [1.0, 0.0, 0.0]}
         camera2 = {"left_elbow": [0.0, 0.0, 0.0], "left_wrist": [1.0, d, 0.0]}
         identity = (1.0, np.eye(3), np.zeros(3))
@@ -20,6 +20,7 @@ class AdaptiveJointProtectionTests(unittest.TestCase):
             {"left_wrist": 0.9}, {"left_wrist": 0.9},
             {"left_wrist": visible1}, {"left_wrist": visible2},
             joint_quality={"camera2": {"left_wrist": quality2}},
+            master_protected=master_protected,
         )
 
     def test_equal_belief_two_good_cameras_contribute(self):
@@ -52,6 +53,12 @@ class AdaptiveJointProtectionTests(unittest.TestCase):
             noisy["joint_transfer"]["camera1"]["left_wrist"],
             reliable["joint_transfer"]["camera1"]["left_wrist"],
         )
+
+    def test_master_protected_blocks_visible_transfer_but_allows_occluded(self):
+        _, _, vis = self.gate(visible1=True, master_protected=True)
+        _, _, occ = self.gate(visible1=False, master_protected=True)
+        self.assertEqual(vis["joint_transfer"]["camera1"]["left_wrist"], 0.0)
+        self.assertGreater(occ["joint_transfer"]["camera1"]["left_wrist"], 0.0)
 
     def test_temporal_quality_is_joint_and_frame_specific(self):
         frames = [
