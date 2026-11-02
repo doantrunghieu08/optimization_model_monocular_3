@@ -106,10 +106,11 @@ reference exists does projection fall back to the current raw-frame length.
 A large projection relative to nominal length is rejected, as are local
 hinge-angle degradations relative to the current partially corrected skeleton.
 
-The existing final post-smoothing and post-GPU bone-length projection in
-executor/optimization still uses original pose lengths. This means M5's robust
-reference applies specifically to the **fusion transfer stage**; changing
-the entire downstream bone-length protocol requires a separate ablation.
+The downstream initial fusion save, Savitzky-Golay smoothing,
+GPU length-constraint bounds and final post-GPU projection now all receive the
+**same robust per-camera bone references**. Missing references fall back to
+original-frame bone lengths. Legacy mode is unchanged. Compare full M5 on
+identical Aria02 inputs; the report supplied before this change predates M5.
 
 ### Suggested ablation after implementing these modules
 

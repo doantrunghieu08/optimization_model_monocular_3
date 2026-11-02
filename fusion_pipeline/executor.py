@@ -492,8 +492,10 @@ KINEMATIC_CHAINS = (
 )
 
 
-def _enforce_bone_lengths(points: dict, ref_points: dict) -> None:
-    # ponytail: minimal forward kinematic bone projection, locks lengths to SMPL baseline
+def _enforce_bone_lengths(points: dict, ref_points: dict, reference_lengths: dict | None = None) -> None:
+    # Legacy uses current-frame SMPL baseline; adaptive uses robust temporal
+    # median lengths when available, so post-processing cannot undo M5.
+    reference_lengths = reference_lengths or {}
     for child, parent in KINEMATIC_CHAINS:
         if child not in points or parent not in points or child not in ref_points or parent not in ref_points:
             continue
@@ -501,8 +503,11 @@ def _enforce_bone_lengths(points: dict, ref_points: dict) -> None:
         p_p = np.asarray(points[parent], dtype=float)
         r_c = np.asarray(ref_points[child], dtype=float)
         r_p = np.asarray(ref_points[parent], dtype=float)
-        l_ref = float(np.linalg.norm(r_c - r_p))
-        if l_ref < 1e-4:
+        l_ref = reference_lengths.get(child)
+        if l_ref is None or not np.isfinite(l_ref) or l_ref <= 1e-5:
+            l_ref = float(np.linalg.norm(r_c - r_p))
+        l_ref = float(l_ref)
+        if not np.isfinite(l_ref) or l_ref < 1e-4:
             continue
         v = p_c - p_p
         dist = float(np.linalg.norm(v))
@@ -622,6 +627,7 @@ def _apply_temporal_smoothing(
     master_protection: dict | None = None,
     window_length: int = 5,
     polyorder: int = 2,
+    bone_references: dict | None = None,
 ) -> None:
     try:
         from scipy.signal import savgol_filter
@@ -706,7 +712,9 @@ def _apply_temporal_smoothing(
                 )
             for cam in ("camera1", "camera2"):
                 if cam in d and cam in ref_d:
-                    _enforce_bone_lengths(d[cam], ref_d[cam])
+                    _enforce_bone_lengths(
+                        d[cam], ref_d[cam], (bone_references or {}).get(cam)
+                    )
 
     for f, d in zip(files, all_data):
         write_json(f, d)
@@ -934,7 +942,10 @@ def run_fusion(config: dict) -> None:
         }
         for cam_k in ("camera1", "camera2"):
             if cam_k in fused_keypoints and cam_k in data:
-                _enforce_bone_lengths(fused_keypoints[cam_k], data[cam_k])
+                _enforce_bone_lengths(
+                    fused_keypoints[cam_k], data[cam_k],
+                    bone_references.get(cam_k) if adaptive_enabled else None,
+                )
         fused_metadata = {k: v for k, v in result.items() if k not in ("camera1", "camera2", "optimized")}
         write_json(output_dir / "keypoints3d" / out_name, fused_keypoints)
         write_json(output_dir / "metadata" / out_name, fused_metadata)
@@ -968,6 +979,7 @@ def run_fusion(config: dict) -> None:
             master_protection=smoothing_master_cfg,
             window_length=int(smoothing_cfg.get("window_length", 5)),
             polyorder=int(smoothing_cfg.get("polyorder", 2)),
+            bone_references=bone_references if adaptive_enabled else None,
         )
 
     opt_cfg = fusion_cfg.get("optimization", {})
@@ -980,6 +992,7 @@ def run_fusion(config: dict) -> None:
             config=config,
             master_only=(not slave_better and not adaptive_enabled),
             anchor_cam="camera2" if master_is_distorted else "camera1",
+            bone_references=bone_references if adaptive_enabled else None,
         )
 
     if fusion_cfg.get("pair_mode") == "posed_fallback":
@@ -995,7 +1008,10 @@ def run_fusion(config: dict) -> None:
                 d_p = read_json(ref_path)
                 d_m = read_json(metadata_path)
                 if "camera1" in d_f and "camera1" in d_p:
-                    _enforce_bone_lengths(d_f["camera1"], d_p["camera1"])
+                    _enforce_bone_lengths(
+                        d_f["camera1"], d_p["camera1"],
+                        bone_references.get("camera1") if adaptive_enabled else None,
+                    )
                     write_json(f_path, d_f)
 
     print(f"\n[Fusion] Done. Output: {output_dir}")

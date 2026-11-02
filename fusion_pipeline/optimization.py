@@ -210,6 +210,7 @@ def optimize_sequence_gpu(
     device: str = None,
     master_only: bool = False,
     anchor_cam: str = "camera1",
+    bone_references: dict | None = None,
 ) -> None:
     """
     Tối ưu hóa toàn bộ chuỗi frame (Batch Sequence Optimization) bằng PyTorch Autograd trên GPU.
@@ -256,11 +257,17 @@ def optimize_sequence_gpu(
         p1_ref_np, p2_ref_np = p1_fused_np, p2_fused_np
 
     ref_bones1, ref_bones2 = [], []
+    bone_references = bone_references or {}
     for (c_idx, p_idx) in bone_pairs:
-        d1 = float(np.linalg.norm(p1_ref_np[:, c_idx] - p1_ref_np[:, p_idx], axis=-1).mean())
-        d2 = float(np.linalg.norm(p2_ref_np[:, c_idx] - p2_ref_np[:, p_idx], axis=-1).mean())
-        ref_bones1.append(d1)
-        ref_bones2.append(d2)
+        child = joint_names[c_idx]
+        d1 = bone_references.get("camera1", {}).get(child)
+        d2 = bone_references.get("camera2", {}).get(child)
+        if d1 is None or not np.isfinite(d1) or d1 <= 1e-6:
+            d1 = float(np.linalg.norm(p1_ref_np[:, c_idx] - p1_ref_np[:, p_idx], axis=-1).mean())
+        if d2 is None or not np.isfinite(d2) or d2 <= 1e-6:
+            d2 = float(np.linalg.norm(p2_ref_np[:, c_idx] - p2_ref_np[:, p_idx], axis=-1).mean())
+        ref_bones1.append(float(d1))
+        ref_bones2.append(float(d2))
 
     ref_bones1_t = torch.tensor(ref_bones1, device=device, dtype=torch.float32)
     ref_bones2_t = torch.tensor(ref_bones2, device=device, dtype=torch.float32)
@@ -423,7 +430,9 @@ def optimize_sequence_gpu(
             from fusion_pipeline.executor import _enforce_bone_lengths
             for cam in (("camera1",) if master_only else ("camera1", "camera2")):
                 if cam in d and cam in all_pose[t]:
-                    _enforce_bone_lengths(d[cam], all_pose[t][cam])
+                    _enforce_bone_lengths(
+                        d[cam], all_pose[t][cam], bone_references.get(cam)
+                    )
         f.write_text(json.dumps(d), encoding="utf-8")
 
     dt = time.time() - t0

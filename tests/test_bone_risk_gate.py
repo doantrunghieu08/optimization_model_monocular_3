@@ -3,6 +3,7 @@ import unittest
 import numpy as np
 from fusion_pipeline.bone_quality import estimate_bone_quality
 from fusion_pipeline.adaptive_gate import apply_adaptive_joint_fusion
+from fusion_pipeline.executor import _enforce_bone_lengths
 
 
 def view(wrist, elbow=(0., 0., 0.)):
@@ -85,6 +86,17 @@ class BoneRiskGateTests(unittest.TestCase):
         )
         self.assertGreater(metadata["joint_transfer"]["camera1"]["left_wrist"], 0)
         self.assertAlmostEqual(np.linalg.norm(a["left_wrist"] - a["left_elbow"]), 1.0, places=5)
+
+    def test_postprocess_projection_uses_robust_reference(self):
+        points = view((1.5, 0, 0))
+        raw_reference = view((1.5, 0, 0))
+        _enforce_bone_lengths(
+            points, raw_reference, {"left_wrist": 1.0}
+        )
+        self.assertAlmostEqual(
+            np.linalg.norm(np.asarray(points["left_wrist"]) - np.asarray(points["left_elbow"])),
+            1.0, places=5
+        )
 
     def test_nonfinite_source_is_rejected(self):
         master, slave = view((1., 0, 0)), view((float("nan"), 0, 0))
