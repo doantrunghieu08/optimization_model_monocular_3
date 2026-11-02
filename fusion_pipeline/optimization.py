@@ -299,9 +299,14 @@ def optimize_sequence_gpu(
         if a in name_to_idx and b in name_to_idx and c in name_to_idx
     ]
 
-    optimizer = torch.optim.Adam([delta1] if master_only else [delta1, delta2], lr=0.005)
-    opt_cfg = (config or {}).get("fusion", {}).get("optimization", {})
     fusion_cfg = (config or {}).get("fusion", {})
+    adaptive_enabled = bool(fusion_cfg.get("adaptive_protection", {}).get("enabled", False))
+    if adaptive_enabled:
+        # The mean confidence over a camera pair never disables individual
+        # joints' opportunity to benefit from cross-view optimization.
+        master_only = False
+    optimizer = torch.optim.Adam([delta1] if master_only else [delta1, delta2], lr=0.005)
+    opt_cfg = fusion_cfg.get("optimization", {})
     master_prot_enabled = bool(fusion_cfg.get("master_protection", {}).get("enabled", False))
     angle_limits_enabled = bool(fusion_cfg.get("angle_limits", {}).get("enabled", True))
     regularization_enabled = bool(opt_cfg.get("regularization", True))
@@ -310,7 +315,36 @@ def optimize_sequence_gpu(
     n_iters = min(int(opt_cfg.get("max_iter", 35)), 50)
 
     # ponytail: asymmetric anchor mask — anchor camera resists movement to prevent drift, while the other camera adjusts
-    if master_prot_enabled:
+    if adaptive_enabled:
+        quality1 = np.ones((T, N), dtype=np.float32)
+        quality2 = np.ones((T, N), dtype=np.float32)
+        visible1 = np.ones((T, N), dtype=np.float32)
+        visible2 = np.ones((T, N), dtype=np.float32)
+        transfer_agreement = np.zeros((T, N), dtype=np.float32)
+        for t, meta in enumerate(all_meta):
+            jq = meta.get("joint_quality", {})
+            tr = meta.get("joint_transfer", {})
+            for n, j in name_to_idx.items():
+                quality1[t, j] = float(np.clip(jq.get("camera1", {}).get(n, 1.0), 0, 1))
+                quality2[t, j] = float(np.clip(jq.get("camera2", {}).get(n, 1.0), 0, 1))
+                visible1[t, j] = 1.0 if meta.get("vis1", {}).get(n, True) else 0.1
+                visible2[t, j] = 1.0 if meta.get("vis2", {}).get(n, True) else 0.1
+                transfer_agreement[t, j] = float(np.clip(2.0 * max(
+                    tr.get("camera1", {}).get(n, 0.0),
+                    tr.get("camera2", {}).get(n, 0.0)), 0.0, 1.0))
+        q1_t = torch.tensor(quality1, device=device, dtype=torch.float32)
+        q2_t = torch.tensor(quality2, device=device, dtype=torch.float32)
+        agreement_t = torch.tensor(transfer_agreement, device=device, dtype=torch.float32)
+        rel1 = c1_t * q1_t * torch.tensor(visible1, device=device, dtype=torch.float32)
+        rel2 = c2_t * q2_t * torch.tensor(visible2, device=device, dtype=torch.float32)
+        total_rel = rel1 + rel2 + 1e-6
+        min_mobility = float(np.clip(
+            fusion_cfg.get("adaptive_protection", {}).get("min_gpu_mobility", 0.05), 0.01, 0.45
+        ))
+        # Reciprocal mobility: better observations move less but never freeze.
+        mask1 = (min_mobility + (1.0 - 2.0 * min_mobility) * rel2 / total_rel).unsqueeze(-1)
+        mask2 = (min_mobility + (1.0 - 2.0 * min_mobility) * rel1 / total_rel).unsqueeze(-1)
+    elif master_prot_enabled:
         if anchor_cam == "camera2":
             mask1 = torch.ones_like(delta1)
             mask2 = torch.zeros_like(delta2) if master_only else torch.where(c2_t >= 0.5, torch.zeros_like(c2_t), 1.0 - c2_t).unsqueeze(-1)
@@ -359,7 +393,12 @@ def optimize_sequence_gpu(
             diff_mv = torch.abs(d1 - d2)
             huber_mv = torch.where(diff_mv <= 0.05, 0.5 * (diff_mv ** 2), 0.05 * (diff_mv - 0.025))
             # ponytail: min-confidence weight prevents pulling high-confidence cam toward hallucinated/noisy cam
-            w_mv = torch.min(w1, w2)
+            if adaptive_enabled:
+                w_mv = torch.min(
+                    w1 * q1_t.unsqueeze(-1), w2 * q2_t.unsqueeze(-1)
+                ) * agreement_t.unsqueeze(-1)
+            else:
+                w_mv = torch.min(w1, w2)
             loss_mv = (w_mv * huber_mv).mean()
 
         accel1 = p1[2:] - 2.0 * p1[1:-1] + p1[:-2]

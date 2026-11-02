@@ -54,7 +54,22 @@ fusion:
     min_confidence: 0.1    # Ngưỡng tin cậy tối thiểu của camera phụ
     consensus_threshold: 0.08 # Ngưỡng (m) đồng thuận đa góc nhìn để blend các khớp cùng nhìn thấy rõ
 
-  # Chỉ cho camera phụ sửa joint đang nhìn rõ khi belief cao hơn đủ lớn.
+  # Zero-GT: bảo vệ thích nghi cho từng joint/frame dựa trên chất lượng
+  # và độ đồng thuận hình học; không khóa cứng toàn bộ camera master.
+  adaptive_protection:
+    enabled: true
+    consensus_scale_m: 0.18
+    occluded_scale_m: 0.55
+    transform_scale_m: 0.20
+    min_source_reliability: 0.12
+    max_visible_transfer: 0.55
+    max_occluded_transfer: 0.90
+    min_gpu_mobility: 0.05
+    jitter_ratio: 1.35
+    jitter_floor_m: 0.025
+    jitter_scale_m: 0.08
+
+  # Legacy ablation: chỉ được áp dụng khi adaptive_protection.enabled=false.
   master_protection:
     enabled: true
     confidence_margin: 0.15

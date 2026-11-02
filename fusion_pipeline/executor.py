@@ -23,6 +23,7 @@ from fusion_pipeline.correction import apply_rotation_mismatch_corrections
 from fusion_pipeline.correction import apply_confidence_corrections
 from fusion_pipeline.correction import apply_multiview_geometric_fusion
 from fusion_pipeline.correction import apply_similarity
+from fusion_pipeline.adaptive_gate import temporal_joint_quality, apply_adaptive_joint_fusion
 from fusion_pipeline.config import DEFAULT_MASTER_BLEND
 from fusion_pipeline.config import DEFAULT_MASTER_MAX_DISPLACEMENT
 from fusion_pipeline.config import DEFAULT_MASTER_MIN_CONFIDENCE
@@ -289,6 +290,9 @@ def run_phase3_pipeline(
     consensus_blend_strength=0.25,
     master_margin=0.15,
     extra_verts_by_cam=None,
+    adaptive_protection=False,
+    adaptive_config=None,
+    joint_quality=None,
 ):
     cam1 = {k: as_xyz(v) for k, v in data_in["camera1"].items()}
     cam2 = {k: as_xyz(v) for k, v in data_in["camera2"].items()}
@@ -364,7 +368,16 @@ def run_phase3_pipeline(
         if np.mean(residuals) > 0.12:
             skip_cross_view = True
 
-    if not skip_cross_view:
+    adaptive_details = {}
+    if adaptive_protection:
+        # Per-joint continuous reliability and consensus replace the legacy
+        # pair-wide margin and discontinuous correction distance cutoffs.
+        cam1_corr, cam2_corr, adaptive_details = apply_adaptive_joint_fusion(
+            cam1, cam2, names, t12, t21, H1_all, H2_all,
+            vis1, vis2, joint_quality=joint_quality,
+            config=adaptive_config,
+        )
+    elif not skip_cross_view:
         cam1_corr, cam2_corr = apply_confidence_corrections(
             cam1,
             cam2,
@@ -445,6 +458,10 @@ def run_phase3_pipeline(
         "vis2": {k: bool(v) for k, v in vis2.items()},
         "fusion_mode": fusion_mode,
         "fusion_mode_stats": fusion_mode_stats,
+        "adaptive_protection": bool(adaptive_protection),
+        "joint_quality": joint_quality or {},
+        "joint_transfer": adaptive_details.get("joint_transfer", {}),
+        "adaptive_stats": adaptive_details.get("adaptive_stats", {}),
     }
     #end of def run_phase3_pipeline
 
@@ -760,6 +777,27 @@ def run_fusion(config: dict) -> None:
 
     ransac_cfg = fusion_cfg["ransac"]
     frame_results = []
+    adaptive_cfg = fusion_cfg.get("adaptive_protection", {})
+    adaptive_enabled = bool(adaptive_cfg.get("enabled", False))
+    joint_quality_profiles = []
+    if adaptive_enabled:
+        # Measure view-specific *excess* joint jitter on the actual synchronized
+        # pose timeline; shared genuine motion does not lower either score.
+        pose_frames = [_load_pose_frame(p, metadata_dir=metadata_dir) for p in file_paths]
+        source_timeline = [
+            _source_frame_indices(frame, _frame_index(path))
+            for frame, path in zip(pose_frames, file_paths)
+        ]
+        lengths = [n_frames_1 or len(file_paths), n_frames_2 or len(file_paths)]
+        longest = max(max(lengths), 1)
+        joint_quality_profiles = temporal_joint_quality(
+            pose_frames, source_indices=source_timeline,
+            continuity=(lengths[0] / longest, lengths[1] / longest),
+            jitter_ratio=float(adaptive_cfg.get("jitter_ratio", 1.35)),
+            jitter_floor_m=float(adaptive_cfg.get("jitter_floor_m", 0.025)),
+            jitter_scale_m=float(adaptive_cfg.get("jitter_scale_m", 0.08)),
+        )
+        print("[Fusion] Adaptive joint/frame protection enabled")
 
     # ponytail: zero-GT temporal jitter & tracking continuity check to select anchor camera
     master_is_distorted = False
@@ -794,7 +832,7 @@ def run_fusion(config: dict) -> None:
     print(f"[Fusion] Master Protection: should_protect={should_protect_master}, margin={effective_master_margin}")
 
     # --- THÊM TQDM Ở ĐÂY ---
-    for path in tqdm(file_paths, desc="[Fusion] Processing", unit="frame", dynamic_ncols=True):
+    for frame_position, path in enumerate(tqdm(file_paths, desc="[Fusion] Processing", unit="frame", dynamic_ncols=True)):
         frame_idx = _frame_index(path)
         out_name = f"fused_data_{frame_idx}.json"
         data = _load_pose_frame(path, metadata_dir=metadata_dir)
@@ -840,6 +878,9 @@ def run_fusion(config: dict) -> None:
                 consensus_threshold=fusion_cfg.get("uncertainty_gating", {}).get("consensus_threshold", 0.18) if isinstance(fusion_cfg.get("uncertainty_gating"), dict) else 0.18,
                 consensus_blend_strength=fusion_cfg.get("uncertainty_gating", {}).get("consensus_blend_strength", 0.25) if isinstance(fusion_cfg.get("uncertainty_gating"), dict) else 0.25,
                 master_margin=effective_master_margin,
+                adaptive_protection=adaptive_enabled,
+                adaptive_config=adaptive_cfg,
+                joint_quality=(joint_quality_profiles[frame_position] if adaptive_enabled else None),
             )
             # 1. Lấy dữ liệu an toàn
                 
@@ -871,6 +912,11 @@ def run_fusion(config: dict) -> None:
         frame_results.append(result)
 
     slave_better, pair_gate = detect_pair_fusion_gate(frame_results, master_distorted=master_is_distorted)
+    if adaptive_enabled:
+        pair_gate = dict(pair_gate)
+        pair_gate["fusion_applied"] = True
+        pair_gate["reason"] = "adaptive_joint_frame_quality"
+        pair_gate["legacy_slave_better"] = bool(slave_better)
     for metadata_path in (output_dir / "metadata").glob("fused_data_*.json"):
         metadata = read_json(metadata_path)
         metadata["pair_quality_gate"] = pair_gate
@@ -884,7 +930,7 @@ def run_fusion(config: dict) -> None:
     if smoothing_enabled:
         smoothing_master_cfg = dict(master_cfg)
         smoothing_master_cfg["confidence_margin"] = effective_master_margin
-        if not should_protect_master:
+        if adaptive_enabled or not should_protect_master:
             smoothing_master_cfg["enabled"] = False
         _apply_temporal_smoothing(
             output_dir / "keypoints3d",
@@ -903,7 +949,7 @@ def run_fusion(config: dict) -> None:
             metadata_dir=output_dir / "metadata",
             pose_dir=input_dir / "keypoints3d",
             config=config,
-            master_only=not slave_better,
+            master_only=(not slave_better and not adaptive_enabled),
             anchor_cam="camera2" if master_is_distorted else "camera1",
         )
 
