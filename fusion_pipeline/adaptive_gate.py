@@ -251,12 +251,15 @@ def apply_adaptive_joint_fusion(
             elif visible_risk_enabled and tgt_visible:
                 # M4 v2: visible target is protected per joint/frame, never by
                 # globally locking the master camera.
-                protect_score = float(cfg.get("visible_protect_quality", 0.65))
-                gap_ratio = float(cfg.get("visible_max_source_deficit", 0.12))
-                outlier_m = float(cfg.get("visible_hard_conflict_m", 0.16))
+                protect_score = float(cfg.get("visible_protect_quality", 0.55))
+                gap_ratio = float(cfg.get("visible_max_source_deficit", 0.10))
+                outlier_m = float(cfg.get("visible_hard_conflict_m", 0.12))
                 if (target_score >= protect_score
                         and source_score < target_score * (1.0 - gap_ratio)
                         and disagreement >= outlier_m):
+                    stats["rejected_visible_risk"] += 1
+                    continue
+                if disagreement >= outlier_m and source_score <= target_score:
                     stats["rejected_visible_risk"] += 1
                     continue
                 excess = max(

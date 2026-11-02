@@ -62,8 +62,8 @@ fusion:
     occluded_scale_m: 0.55
     transform_scale_m: 0.20
     min_source_reliability: 0.12
-    max_visible_transfer: 0.55
-    max_occluded_transfer: 0.90
+    max_visible_transfer: 0.35
+    max_occluded_transfer: 0.85
     min_gpu_mobility: 0.05
     jitter_ratio: 1.35
     jitter_floor_m: 0.025
@@ -78,18 +78,18 @@ fusion:
       bilateral_weight: 0.45
     # M4: occluded rescue requires independent source bone + alignment evidence
     min_alignment_anchors: 3
-    min_occluded_source_bone_quality: 0.35
-    min_occluded_alignment_reliability: 0.35
+    min_occluded_source_bone_quality: 0.45
+    min_occluded_alignment_reliability: 0.45
     # M5: reject transfers requiring excessive kinematic projection
-    max_kinematic_projection_ratio: 0.55
+    max_kinematic_projection_ratio: 0.40
     # Full Model v2 M4: joint/frame risk-aware visible and occluded transfers
     risk_aware_enabled: true
     visible_risk_enabled: true
-    visible_protect_quality: 0.65
-    visible_max_source_deficit: 0.12
-    visible_hard_conflict_m: 0.16
+    visible_protect_quality: 0.55
+    visible_max_source_deficit: 0.10
+    visible_hard_conflict_m: 0.12
     visible_safe_disagreement_m: 0.04
-    visible_risk_scale_m: 0.10
+    visible_risk_scale_m: 0.08
     visible_quality_gap_scale: 0.15
 
   # M5 safety: preserve original WHAM segment lengths on ALL 20

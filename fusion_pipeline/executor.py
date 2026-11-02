@@ -357,6 +357,7 @@ def run_phase3_pipeline(
     bone_quality=None,
     bone_references=None,
     master_distorted=False,
+    master_protected=False,
 ):
     cam1 = {k: as_xyz(v) for k, v in data_in["camera1"].items()}
     cam2 = {k: as_xyz(v) for k, v in data_in["camera2"].items()}
@@ -444,6 +445,7 @@ def run_phase3_pipeline(
             bone_quality=bone_quality,
             bone_references=bone_references,
             anchor_names=a_list,
+            master_protected=master_protected,
         )
     elif not skip_cross_view:
         cam1_corr, cam2_corr = apply_confidence_corrections(
@@ -1069,6 +1071,7 @@ def run_fusion(config: dict) -> None:
                 bone_quality=(bone_quality_profiles[frame_position] if adaptive_enabled else None),
                 bone_references=(output_bone_refs if adaptive_enabled else None),
                 master_distorted=master_is_distorted,
+                master_protected=should_protect_master,
             )
             # 1. Lấy dữ liệu an toàn
                 

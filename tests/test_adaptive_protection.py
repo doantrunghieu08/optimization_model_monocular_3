@@ -60,6 +60,11 @@ class AdaptiveJointProtectionTests(unittest.TestCase):
         self.assertEqual(vis["joint_transfer"]["camera1"]["left_wrist"], 0.0)
         self.assertGreater(occ["joint_transfer"]["camera1"]["left_wrist"], 0.0)
 
+    def test_hard_conflict_rejects_visible_transfer_when_source_not_better(self):
+        _, _, diag = self.gate(d=0.15, visible1=True, visible2=True)
+        self.assertEqual(diag["joint_transfer"]["camera1"]["left_wrist"], 0.0)
+        self.assertGreater(diag["adaptive_stats"]["rejected_visible_risk"], 0)
+
     def test_temporal_quality_is_joint_and_frame_specific(self):
         frames = [
             {"camera1": {"left_elbow": [0, 0, 0], "left_wrist": [0, 0, 0]},
