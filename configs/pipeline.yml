@@ -68,6 +68,20 @@ fusion:
     jitter_ratio: 1.35
     jitter_floor_m: 0.025
     jitter_scale_m: 0.08
+    # M2: robust view-specific reference segment lengths + bilateral symmetry
+    bone_quality:
+      enabled: true
+      min_samples: 3
+      tolerance_ratio: 0.08
+      residual_scale_ratio: 0.18
+      bilateral_scale_ratio: 0.25
+      bilateral_weight: 0.45
+    # M4: occluded rescue requires independent source bone + alignment evidence
+    min_alignment_anchors: 3
+    min_occluded_source_bone_quality: 0.35
+    min_occluded_alignment_reliability: 0.35
+    # M5: reject transfers requiring excessive kinematic projection
+    max_kinematic_projection_ratio: 0.55
 
   # Legacy ablation: chỉ được áp dụng khi adaptive_protection.enabled=false.
   master_protection:

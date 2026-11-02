@@ -59,3 +59,75 @@ for debugging. None of these values is inferred from evaluation ground truth.
 These defaults are initial engineering choices, not calibrated Aria02
 hyperparameters. No claim of exceeding the reported 14% improvement is made
 without rerunning benchmark data.
+
+
+## M2 + M4 + M5: Zero-GT bone-length reliability and risk-aware kinematics
+
+**Status:** implementation added after the A0–A5/L0 Aria02 report.
+**Not yet benchmarked:** do not ascribe those earlier metrics to this revision.
+
+### M2 — View-local bone-length quality
+
+For each child-parent bone, estimate a reference length by the **median of
+valid frames in that camera**, requiring at least three observations.
+There is no shared camera scale assumption and ground truth is never used.
+
+At frame t:
+
+    e_len = |L_t - median(L)| / median(L)
+    q_len = 1 / (1 + (max(0, e_len - tolerance_ratio) / residual_scale_ratio)^2)
+    e_bilat = |L_left - L_right| / ((L_left + L_right)/2)
+    q_bilat = 1 / (1 + (e_bilat / bilateral_scale_ratio)^2)
+    q_bone = q_len * (1 - bilateral_weight + bilateral_weight * q_bilat)
+    q_joint = q_temporal * q_bone
+
+A missing or statistically insufficient reference gives a neutral score (1.0,
+"unknown", not a certification that a joint is accurate). Nonfinite or
+degenerate segments score 0. Bilateral consistency is a weak heuristic:
+physiological asymmetry, occlusion and erroneous but constant segment lengths
+can still fool it. No GT-driven tuning is permitted.
+
+### M4 — Occluded transfer safety
+
+An occluded target is rescued only when the source is actually visible,
+the source's bone quality exceeds min_occluded_source_bone_quality,
+the estimated cross-camera alignment quality exceeds
+min_occluded_alignment_reliability, and at least min_alignment_anchors RANSAC
+anchors are present. Additionally, the transfer cap depends smoothly on
+source bone quality and alignment reliability, and the candidate must pass
+a local hinge sanity check. Both directions are treated symmetrically.
+No camera IDs or GT annotations enter these decisions.
+
+### M5 — Kinematic refinement
+
+Candidate joints are processed in kinematic parent-first order and projected
+onto *temporal median* bone lengths of the **target camera**; only if no
+reference exists does projection fall back to the current raw-frame length.
+A large projection relative to nominal length is rejected, as are local
+hinge-angle degradations relative to the current partially corrected skeleton.
+
+The existing final post-smoothing and post-GPU bone-length projection in
+executor/optimization still uses original pose lengths. This means M5's robust
+reference applies specifically to the **fusion transfer stage**; changing
+the entire downstream bone-length protocol requires a separate ablation.
+
+### Suggested ablation after implementing these modules
+
+Compare on identical synchronized Aria02 frames and untouched GT:
+- A3: preceding adaptive implementation, commit 942273f;
+- B0: this implementation with bone_quality.enabled=true (M2+M4+M5);
+- B1: bone_quality.enabled=false (M4/M5 without calibrated references);
+- B2: no occluded transfer (set max_occluded_transfer=0, with
+  min_occluded_source_bone_quality=1.01 to force zero rescues);
+- B3: adjust only min_occluded_source_bone_quality on a *validation* split.
+
+Primary diagnostics: PA-MPJPE macro mean and worst-case, count of negative
+pairs versus posed baseline, PA-Occ/PA-Vis on comparable visible/occluded
+sets and per-joint counts. Inspect metadata bone_quality, joint_quality,
+joint_transfer and adaptive_stats for cam19->cam04, cam19->cam05,
+cam20->cam04, cam20->cam05.
+
+**Note:** Setting max_occluded_transfer=0 by itself does not block all
+transfer due to the current weight cap; B2 must use the source-bone threshold
+above 1 to explicitly disable occluded transfers until a dedicated switch
+is introduced.

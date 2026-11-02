@@ -100,14 +100,18 @@ def _angle_is_valid_locally(points, changed_name, baseline, min_angle_deg=30., m
     return True
 
 
-def _project_bone(candidate, name, out, baseline):
+def _project_bone(candidate, name, out, baseline, reference_lengths=None):
     parent = PARENT_JOINTS.get(name)
     if parent not in out or parent not in baseline or name not in baseline:
         return candidate
     center = np.asarray(out[parent], dtype=float)
-    ref_length = float(np.linalg.norm(
-        np.asarray(baseline[name], dtype=float) - np.asarray(baseline[parent], dtype=float)
-    ))
+    reference_lengths = reference_lengths or {}
+    ref_length = reference_lengths.get(name)
+    if ref_length is None or not np.isfinite(ref_length) or ref_length <= 1e-6:
+        ref_length = float(np.linalg.norm(
+            np.asarray(baseline[name], dtype=float) - np.asarray(baseline[parent], dtype=float)
+        ))
+    ref_length = float(ref_length)
     vec = candidate - center
     length = float(np.linalg.norm(vec))
     if ref_length < 1e-6 or length < 1e-8:
@@ -145,13 +149,18 @@ def _transfer_weight(source_score, target_score, source_visible, target_visible,
 
 def apply_adaptive_joint_fusion(
     cam1, cam2, names, t12, t21, h1, h2, vis1, vis2,
-    joint_quality=None, config=None,
+    joint_quality=None, config=None, bone_quality=None, bone_references=None,
+    anchor_names=None,
 ):
     """Fuse both camera poses and return per-joint diagnostics for optimization."""
     cfg = config or {}
     quality = joint_quality or {}
     q1 = quality.get("camera1", {})
     q2 = quality.get("camera2", {})
+    bone_quality = bone_quality or {}
+    bone_references = bone_references or {}
+    b1 = bone_quality.get("camera1", {})
+    b2 = bone_quality.get("camera2", {})
     out1 = {n: np.asarray(v, dtype=float).copy() for n, v in cam1.items()}
     out2 = {n: np.asarray(v, dtype=float).copy() for n, v in cam2.items()}
     transfers = {
@@ -164,8 +173,15 @@ def apply_adaptive_joint_fusion(
         "accepted_camera2": 0,
         "rejected_local_angle": 0,
         "mean_torso_residual_m": None,
+        "transform_reliability": 0.0,
+        "rejected_alignment": 0,
+        "rejected_occluded_bone": 0,
+        "rejected_kinematic_projection": 0,
+        "rejected_nonfinite": 0,
     }
-    if t12 is None or t21 is None:
+    if (t12 is None or t21 is None or
+            (anchor_names is not None and len(anchor_names) < int(cfg.get("min_alignment_anchors", 3)))):
+        stats["rejected_alignment"] = len(names)
         return out1, out2, {
             "joint_transfer": transfers, "adaptive_stats": stats,
         }
@@ -182,6 +198,10 @@ def apply_adaptive_joint_fusion(
     transform_scale = max(float(cfg.get("transform_scale_m", 0.20)), 1e-6)
     transform_reliability = 1.0 / (1.0 + (residual / transform_scale) ** 2)
     stats["mean_torso_residual_m"] = float(np.mean(residuals)) if residuals else None
+    stats["transform_reliability"] = float(transform_reliability)
+    min_alignment_quality = float(cfg.get("min_occluded_alignment_reliability", 0.35))
+    min_source_bone_quality = float(cfg.get("min_occluded_source_bone_quality", 0.35))
+    max_projection_ratio = max(float(cfg.get("max_kinematic_projection_ratio", 0.55)), 0.0)
 
     for name in sorted(names, key=lambda n: KINEMATIC_DEPTH.get(n, 99)):
         if name in NON_REPLACEABLE_ANCHORS or name not in cam1 or name not in cam2:
@@ -195,29 +215,69 @@ def apply_adaptive_joint_fusion(
         projected1to2 = transform_joint_kinematic(name, cam1, out2, t12)
         diff1 = float(np.linalg.norm(np.asarray(cam1[name], dtype=float) - projected2to1))
         diff2 = float(np.linalg.norm(np.asarray(cam2[name], dtype=float) - projected1to2))
-        weight1 = _transfer_weight(
-            score2, score1, visible2, visible1, diff1, transform_reliability, cfg
-        )
-        weight2 = _transfer_weight(
-            score1, score2, visible1, visible2, diff2, transform_reliability, cfg
-        )
-        for key, output, source, weight in (
-            ("camera1", out1, projected2to1, weight1),
-            ("camera2", out2, projected1to2, weight2),
+        for key, output, source, source_score, target_score, src_visible, tgt_visible, disagreement, source_bone in (
+            ("camera1", out1, projected2to1, score2, score1, visible2, visible1, diff1, b2.get(name, 1.0)),
+            ("camera2", out2, projected1to2, score1, score2, visible1, visible2, diff2, b1.get(name, 1.0)),
         ):
+            source_bone = float(np.clip(source_bone, 0.0, 1.0))
+            if not src_visible:
+                continue
+            if not tgt_visible and source_bone < min_source_bone_quality:
+                stats["rejected_occluded_bone"] += 1
+                continue
+            if not tgt_visible and transform_reliability < min_alignment_quality:
+                stats["rejected_alignment"] += 1
+                continue
+            weight = _transfer_weight(
+                source_score, target_score, src_visible, tgt_visible,
+                disagreement, transform_reliability, cfg,
+            )
+            if not tgt_visible:
+                # M4: the occluded target supplies weak evidence; limit rescue
+                # by *independent* source bone quality and alignment reliability.
+                weight = min(
+                    weight,
+                    float(cfg.get("max_occluded_transfer", 0.90))
+                    * math.sqrt(source_bone)
+                    * math.sqrt(transform_reliability),
+                )
+                weight *= source_bone
             if weight <= 1e-7:
+                continue
+            if not np.isfinite(source).all():
+                stats["rejected_nonfinite"] += 1
                 continue
             baseline = cam1 if key == "camera1" else cam2
             current = np.asarray(baseline[name], dtype=float)
             proposed = (1.0 - weight) * current + weight * source
-            proposed = _project_bone(proposed, name, output, baseline)
+            if not np.isfinite(proposed).all():
+                stats["rejected_nonfinite"] += 1
+                continue
+            # M5: project using stable per-camera sequence references, never
+            # automatically treat a corrupted current-frame bone as correct.
+            ref_lengths = bone_references.get(key, {})
+            projected = _project_bone(proposed, name, output, baseline, ref_lengths)
+            parent = PARENT_JOINTS.get(name)
+            nominal_length = ref_lengths.get(name)
+            if nominal_length is None and parent in baseline and name in baseline:
+                nominal_length = float(np.linalg.norm(
+                    np.asarray(baseline[name], dtype=float)
+                    - np.asarray(baseline[parent], dtype=float)
+                ))
+            correction = float(np.linalg.norm(projected - proposed))
+            if (nominal_length is not None and nominal_length > 1e-6 and
+                    correction / nominal_length > max_projection_ratio):
+                stats["rejected_kinematic_projection"] += 1
+                continue
             trial = dict(output)
-            trial[name] = proposed
-            if not _angle_is_valid_locally(trial, name, baseline):
+            trial[name] = projected
+            # Compare against the actual current partial pose, not the raw
+            # baseline; parent joints may already have been corrected.
+            if not _angle_is_valid_locally(trial, name, output):
                 stats["rejected_local_angle"] += 1
                 continue
-            output[name] = proposed
-            transfers[key][name] = weight
+            output[name] = projected
+            transfers[key][name] = float(weight)
             stats[f"accepted_{key}"] += 1
     return out1, out2, {
         "joint_transfer": transfers, "adaptive_stats": stats,

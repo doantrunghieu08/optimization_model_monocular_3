@@ -24,6 +24,7 @@ from fusion_pipeline.correction import apply_confidence_corrections
 from fusion_pipeline.correction import apply_multiview_geometric_fusion
 from fusion_pipeline.correction import apply_similarity
 from fusion_pipeline.adaptive_gate import temporal_joint_quality, apply_adaptive_joint_fusion
+from fusion_pipeline.bone_quality import estimate_bone_quality
 from fusion_pipeline.config import DEFAULT_MASTER_BLEND
 from fusion_pipeline.config import DEFAULT_MASTER_MAX_DISPLACEMENT
 from fusion_pipeline.config import DEFAULT_MASTER_MIN_CONFIDENCE
@@ -293,6 +294,8 @@ def run_phase3_pipeline(
     adaptive_protection=False,
     adaptive_config=None,
     joint_quality=None,
+    bone_quality=None,
+    bone_references=None,
 ):
     cam1 = {k: as_xyz(v) for k, v in data_in["camera1"].items()}
     cam2 = {k: as_xyz(v) for k, v in data_in["camera2"].items()}
@@ -376,6 +379,9 @@ def run_phase3_pipeline(
             cam1, cam2, names, t12, t21, H1_all, H2_all,
             vis1, vis2, joint_quality=joint_quality,
             config=adaptive_config,
+            bone_quality=bone_quality,
+            bone_references=bone_references,
+            anchor_names=a_list,
         )
     elif not skip_cross_view:
         cam1_corr, cam2_corr = apply_confidence_corrections(
@@ -460,6 +466,7 @@ def run_phase3_pipeline(
         "fusion_mode_stats": fusion_mode_stats,
         "adaptive_protection": bool(adaptive_protection),
         "joint_quality": joint_quality or {},
+        "bone_quality": bone_quality or {},
         "joint_transfer": adaptive_details.get("joint_transfer", {}),
         "adaptive_stats": adaptive_details.get("adaptive_stats", {}),
     }
@@ -780,6 +787,8 @@ def run_fusion(config: dict) -> None:
     adaptive_cfg = fusion_cfg.get("adaptive_protection", {})
     adaptive_enabled = bool(adaptive_cfg.get("enabled", False))
     joint_quality_profiles = []
+    bone_quality_profiles = []
+    bone_references = {"camera1": {}, "camera2": {}}
     if adaptive_enabled:
         # Measure view-specific *excess* joint jitter on the actual synchronized
         # pose timeline; shared genuine motion does not lower either score.
@@ -797,7 +806,25 @@ def run_fusion(config: dict) -> None:
             jitter_floor_m=float(adaptive_cfg.get("jitter_floor_m", 0.025)),
             jitter_scale_m=float(adaptive_cfg.get("jitter_scale_m", 0.08)),
         )
-        print("[Fusion] Adaptive joint/frame protection enabled")
+        bone_cfg = adaptive_cfg.get("bone_quality", {})
+        if bone_cfg.get("enabled", True):
+            bone_quality_profiles, bone_references = estimate_bone_quality(
+                pose_frames,
+                min_samples=int(bone_cfg.get("min_samples", 3)),
+                tolerance_ratio=float(bone_cfg.get("tolerance_ratio", 0.08)),
+                residual_scale_ratio=float(bone_cfg.get("residual_scale_ratio", 0.18)),
+                bilateral_scale_ratio=float(bone_cfg.get("bilateral_scale_ratio", 0.25)),
+                bilateral_weight=float(bone_cfg.get("bilateral_weight", 0.45)),
+            )
+            for idx, frame_quality in enumerate(joint_quality_profiles):
+                for cam in ("camera1", "camera2"):
+                    for joint in frame_quality[cam]:
+                        frame_quality[cam][joint] *= bone_quality_profiles[idx][cam].get(joint, 1.0)
+        else:
+            bone_quality_profiles = [
+                {"camera1": {}, "camera2": {}} for _ in pose_frames
+            ]
+        print("[Fusion] Adaptive joint/frame protection with bone quality + risk-aware transfer enabled")
 
     # ponytail: zero-GT temporal jitter & tracking continuity check to select anchor camera
     master_is_distorted = False
@@ -881,6 +908,8 @@ def run_fusion(config: dict) -> None:
                 adaptive_protection=adaptive_enabled,
                 adaptive_config=adaptive_cfg,
                 joint_quality=(joint_quality_profiles[frame_position] if adaptive_enabled else None),
+                bone_quality=(bone_quality_profiles[frame_position] if adaptive_enabled else None),
+                bone_references=(bone_references if adaptive_enabled else None),
             )
             # 1. Lấy dữ liệu an toàn
                 
