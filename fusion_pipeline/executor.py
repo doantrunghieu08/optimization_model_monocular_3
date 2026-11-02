@@ -20,6 +20,7 @@ from fusion_pipeline.detector import require_ray_casting_backend
 from fusion_pipeline.detector import as_xyz
 from fusion_pipeline.detector import make_raw_judgement_fallback
 from fusion_pipeline.selective import reference_bone_lengths, select_slave_joints
+from fusion_pipeline.diagnostics import summarize_selective_frames
 from fusion_pipeline.detector import compute_bone_distortion_score
 from fusion_pipeline.correction import apply_rotation_mismatch_corrections
 from fusion_pipeline.correction import apply_confidence_corrections
@@ -1001,6 +1002,8 @@ def run_fusion(config: dict) -> None:
             # Dùng tqdm.write thay cho print
             tqdm.write(f"[Fusion] Frame {frame_idx}: FAILED ({e}) -> fallback")
             result = make_raw_judgement_fallback(data, frame_idx, e)
+            if selective_enabled:
+                result["selective_error"] = f"{type(e).__name__}: {e}"
 
         fused_keypoints = {
             "camera1": result.get("optimized", {}).get("camera1", {}),
@@ -1087,6 +1090,20 @@ def run_fusion(config: dict) -> None:
                 if "camera1" in d_f and "camera1" in d_p:
                     _enforce_bone_lengths(d_f["camera1"], d_p["camera1"])
                     write_json(f_path, d_f)
+
+    if selective_enabled:
+        diagnostics = summarize_selective_frames(frame_results)
+        write_json(output_dir / "selective_diagnostics.json", diagnostics)
+        print(
+            "[Fusion] V3 diagnostics: "
+            f"{diagnostics['joint_frames_accepted']}/{diagnostics['joint_frames_evaluated']} "
+            f"joint-frames accepted ({diagnostics['joint_acceptance_rate']:.1%}); "
+            f"{diagnostics['frames_with_invalid_alignment']} invalid-alignment frames; "
+            f"{diagnostics['frames_with_missing_decisions_or_fallback']} fallback frames."
+        )
+        print(f"[Fusion] Reasons for KEEP: {diagnostics['keep_reasons']}")
+        if diagnostics["frames_with_missing_decisions_or_fallback"]:
+            print("[Fusion] WARNING: selective mode fell back to raw Master in some frames.")
 
     print(f"\n[Fusion] Done. Output: {output_dir}")
 
