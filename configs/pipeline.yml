@@ -111,6 +111,12 @@ fusion:
     enabled: true
     window_length: 5
     polyorder: 2
+    # Full Model v2 M6: protect true shared rapid motion
+    motion_aware:
+      enabled: true
+      max_strength: 0.95
+      good_quality_floor: 0.15
+      motion_scale_m: 0.08
 
   # Cấu hình RANSAC dùng để ước lượng similarity transform giữa 2 camera.
   ransac:

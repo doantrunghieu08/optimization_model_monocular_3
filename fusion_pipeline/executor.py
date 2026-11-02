@@ -26,6 +26,7 @@ from fusion_pipeline.correction import apply_multiview_geometric_fusion
 from fusion_pipeline.correction import apply_similarity
 from fusion_pipeline.adaptive_gate import temporal_joint_quality, apply_adaptive_joint_fusion
 from fusion_pipeline.bone_quality import estimate_bone_quality
+from fusion_pipeline.motion_quality import motion_aware_smooth
 from fusion_pipeline.config import DEFAULT_MASTER_BLEND
 from fusion_pipeline.config import DEFAULT_MASTER_MAX_DISPLACEMENT
 from fusion_pipeline.config import DEFAULT_MASTER_MIN_CONFIDENCE
@@ -689,6 +690,7 @@ def _apply_temporal_smoothing(
     window_length: int = 5,
     polyorder: int = 2,
     bone_references: dict | None = None,
+    motion_aware_config: dict | None = None,
 ) -> None:
     try:
         from scipy.signal import savgol_filter
@@ -736,18 +738,54 @@ def _apply_temporal_smoothing(
                 axis=0,
             )
 
-    for cam in ("camera1", "camera2"):
-        if not all_data or cam not in all_data[0]:
-            continue
-        joint_names = list(all_data[0][cam].keys())
-        coords = np.array([[d[cam][j] for j in joint_names] for d in all_data], dtype=float)
-        if np.isnan(coords).any():
-            continue
-        smoothed = savgol_filter(coords, window_length=w_len, polyorder=polyorder, axis=0)
-
+    motion_cfg = motion_aware_config or {}
+    joint_names = list(all_data[0].get("camera1", {}))
+    compatible = bool(joint_names) and all(
+        set(d.get("camera1", {})) == set(joint_names)
+        and set(d.get("camera2", {})) == set(joint_names)
+        for d in all_data
+    )
+    if motion_cfg.get("enabled", False) and compatible:
+        coords1 = np.asarray(
+            [[d["camera1"][j] for j in joint_names] for d in all_data], dtype=float
+        )
+        coords2 = np.asarray(
+            [[d["camera2"][j] for j in joint_names] for d in all_data], dtype=float
+        )
+        quality = {}
+        for cam in ("camera1", "camera2"):
+            quality[cam] = np.asarray([
+                [
+                    metadata_map.get(_frame_index(f), {})
+                    .get("joint_quality", {}).get(cam, {}).get(name, 1.0)
+                    for name in joint_names
+                ] for f in files
+            ], dtype=float)
+        filtered1, filtered2 = motion_aware_smooth(
+            coords1, coords2, quality["camera1"], quality["camera2"],
+            frame_ids=[_frame_index(f) for f in files],
+            window_length=w_len, polyorder=polyorder,
+            max_strength=float(motion_cfg.get("max_strength", 0.95)),
+            good_quality_floor=float(motion_cfg.get("good_quality_floor", 0.15)),
+            motion_scale_m=float(motion_cfg.get("motion_scale_m", 0.08)),
+        )
         for t, d in enumerate(all_data):
-            for j_idx, j_name in enumerate(joint_names):
-                d[cam][j_name] = [round(float(x), 6) for x in smoothed[t, j_idx]]
+            for cam, filtered in (("camera1", filtered1), ("camera2", filtered2)):
+                for j_idx, name in enumerate(joint_names):
+                    d[cam][name] = [round(float(x), 6) for x in filtered[t, j_idx]]
+    else:
+        # Preserve old behavior when motion-aware smoothing is disabled.
+        for cam in ("camera1", "camera2"):
+            if not all_data or cam not in all_data[0]:
+                continue
+            joint_names = list(all_data[0][cam].keys())
+            coords = np.array([[d[cam][j] for j in joint_names] for d in all_data], dtype=float)
+            if np.isnan(coords).any():
+                continue
+            smoothed = savgol_filter(coords, window_length=w_len, polyorder=polyorder, axis=0)
+            for t, d in enumerate(all_data):
+                for j_idx, name in enumerate(joint_names):
+                    d[cam][name] = [round(float(x), 6) for x in smoothed[t, j_idx]]
 
     if pose_map:
         for t, (f, d) in enumerate(zip(files, all_data)):
@@ -1047,6 +1085,7 @@ def run_fusion(config: dict) -> None:
             window_length=int(smoothing_cfg.get("window_length", 5)),
             polyorder=int(smoothing_cfg.get("polyorder", 2)),
             bone_references=bone_references if adaptive_enabled else None,
+            motion_aware_config=smoothing_cfg.get("motion_aware", {}) if adaptive_enabled else None,
         )
 
     opt_cfg = fusion_cfg.get("optimization", {})
