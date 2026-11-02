@@ -2,10 +2,14 @@
 
 ## Status
 
-This is a **conservative GT-free heuristic**, NOT a learned or calibrated estimator
-of the probability that a slave joint improves 3D MPJPE. Do not claim a benchmark
-gain without running Harmony4D. The implementation is explicitly designed to
-fail closed and preserve Master on ambiguity.
+**Regressed on the user's performance runs. Selective V3 is now EXPERIMENTAL
+and disabled by default.** It is not a recommended production replacement for
+the pre-V3 fusion pipeline until measured on held-out Harmony4D pairs.
+
+This is a conservative GT-free heuristic, NOT a learned or calibrated estimator
+of the probability that a slave joint improves 3D MPJPE. It currently rejects
+many beneficial transfers and suppresses the previous temporal smoothing and
+sequence optimization stages. Synthetic unit tests cannot establish improvement.
 
 ## Enable / rollback
 
@@ -13,7 +17,7 @@ Default in configs/pipeline.yml:
 
     fusion:
       selective_joint_fusion:
-        enabled: true
+        enabled: false
         quality_margin_visible: 0.10
         quality_margin_occluded: 0.06
         max_displacement_visible: 0.12
@@ -21,8 +25,16 @@ Default in configs/pipeline.yml:
         blend_strength: 0.35
         optimize_selected: false
 
-Set enabled=false to restore the previous pipeline, including original
-master protection, global smoothing and sequence optimizer.
+The committed default is enabled=false, which restores the exact pre-V3 fusion
+execution path (the previous repository revision), including its original master
+protection, smoothing and sequence optimizer. This does NOT claim that the
+pre-V3 version outperforms historical V1 on every pair.
+
+To investigate V3, explicitly set enabled=true, run the exact same held-out
+frames, and inspect output/fused_results/selective_diagnostics.json. The
+JSON includes number of selected joint-frames, KEEP rejection reasons, invalid
+alignment frames and frames where per-frame processing fell back to raw Master.
+Coverage alone is not an accuracy metric.
 
 ## Mechanism
 
