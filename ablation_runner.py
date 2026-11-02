@@ -600,8 +600,9 @@ def run_ablation_study(
 
     # Save Markdown reports (root and docs)
     _write_markdown_report(md_path, all_results, base_cfg, is_multi_pair=(len(pairs) > 1 or all_pairs))
-    docs_report = WS_DIR / "docs" / "ablation_study_report.md"
-    _write_markdown_report(docs_report, all_results, base_cfg, is_multi_pair=(len(pairs) > 1 or all_pairs))
+    if not dry_run and out_md is None:
+        docs_report = WS_DIR / "docs" / "ablation_study_report.md"
+        _write_markdown_report(docs_report, all_results, base_cfg, is_multi_pair=(len(pairs) > 1 or all_pairs))
 
     print("\n" + "=" * 80)
     print("HOÀN TẤT THỰC NGHIỆM ABLATION STUDY")
