@@ -38,10 +38,12 @@ paths:
 
 fusion:
   enabled: true
-  # V3: selective, unilateral slave -> master; revert via enabled: false.
-  # Rule-based quality advantage is an abstaining heuristic, NOT calibrated P(gain).
+  # V3 remains experimental: DISABLED by default following observed
+  # performance regression. Default restores the pre-V3 pipeline.
+  # Zero-GT heuristic is NOT a calibrated estimator of MPJPE improvement.
+  # Enable only for explicit A/B benchmarking on held-out pairs.
   selective_joint_fusion:
-    enabled: true
+    enabled: false
     quality_margin_visible: 0.10
     quality_margin_occluded: 0.06
     max_displacement_visible: 0.12
