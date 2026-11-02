@@ -210,6 +210,7 @@ def optimize_sequence_gpu(
     device: str = None,
     master_only: bool = False,
     anchor_cam: str = "camera1",
+    selection_only: bool = False,
 ) -> None:
     """
     Tối ưu hóa toàn bộ chuỗi frame (Batch Sequence Optimization) bằng PyTorch Autograd trên GPU.
@@ -233,6 +234,18 @@ def optimize_sequence_gpu(
     joint_names = list(all_fused[0]["camera1"].keys())
     name_to_idx = {name: i for i, name in enumerate(joint_names)}
     N = len(joint_names)
+    # These are the only coordinates selective mode may change. KEEP joints
+    # are frozen in the optimizer and are not length-projected afterwards.
+    selection_np = np.array([
+        [1.0 if meta.get("joint_selection", {}).get(name, "KEEP") in ("BLEND", "REPLACE") else 0.0
+         for name in joint_names]
+        for meta in all_meta
+    ], dtype=np.float32)
+    if selection_only:
+        master_only = True
+        if not np.any(selection_np):
+            print("[Fusion] No accepted slave joints; selective optimizer skipped.")
+            return
 
     bone_pairs = []
     for (c, p) in RIGID_BONES_RATIO.keys():
@@ -320,6 +333,9 @@ def optimize_sequence_gpu(
     else:
         mask1 = torch.ones_like(delta1)
         mask2 = torch.zeros_like(delta2) if master_only else torch.ones_like(delta2)
+    if selection_only:
+        mask1 = torch.tensor(selection_np, device=device).unsqueeze(-1)
+        mask2 = torch.zeros_like(delta2)
 
     for _ in range(n_iters):
         optimizer.zero_grad()
@@ -374,13 +390,20 @@ def optimize_sequence_gpu(
 
     p1_opt = (p1_init + delta1 * mask1).detach().cpu().numpy()
     p2_opt = (p2_init + delta2 * mask2).detach().cpu().numpy()
+    if selection_only:
+        # Cap optimizer drift beyond the already vetted slave proposal.
+        original = p1_init.detach().cpu().numpy()
+        drift = np.linalg.norm(p1_opt - original, axis=-1, keepdims=True)
+        ratio = np.minimum(1.0, 0.02 / np.maximum(drift, 1e-8))
+        p1_opt = original + (p1_opt - original) * ratio
+        p1_opt = np.where(selection_np[..., None] > 0, p1_opt, original)
 
     for t, f in enumerate(files):
         d = all_fused[t]
         for j_idx, j_name in enumerate(joint_names):
             d["camera1"][j_name] = [round(float(x), 6) for x in p1_opt[t, j_idx]]
             d["camera2"][j_name] = [round(float(x), 6) for x in p2_opt[t, j_idx]]
-        if all_pose is not None:
+        if all_pose is not None and not selection_only:
             from fusion_pipeline.executor import _enforce_bone_lengths
             for cam in (("camera1",) if master_only else ("camera1", "camera2")):
                 if cam in d and cam in all_pose[t]:

@@ -19,6 +19,7 @@ from fusion_pipeline.detector import load_torso_mask
 from fusion_pipeline.detector import require_ray_casting_backend
 from fusion_pipeline.detector import as_xyz
 from fusion_pipeline.detector import make_raw_judgement_fallback
+from fusion_pipeline.selective import reference_bone_lengths, select_slave_joints
 from fusion_pipeline.detector import compute_bone_distortion_score
 from fusion_pipeline.correction import apply_rotation_mismatch_corrections
 from fusion_pipeline.correction import apply_confidence_corrections
@@ -349,6 +350,10 @@ def run_phase3_pipeline(
     master_margin=0.15,
     extra_verts_by_cam=None,
     master_distorted=False,
+    selective_cfg=None,
+    reference_bones=None,
+    prev_raw=None,
+    prev_prev_raw=None,
 ):
     cam1 = {k: as_xyz(v) for k, v in data_in["camera1"].items()}
     cam2 = {k: as_xyz(v) for k, v in data_in["camera2"].items()}
@@ -406,13 +411,79 @@ def run_phase3_pipeline(
     H1_all = detected["H1"]
     H2_all = detected["H2"]
 
+    selective_enabled = bool((selective_cfg or {}).get("enabled", False))
+    # Select stable visible torso points BEFORE joint replacement; never fit
+    # extrinsics on the very limb whose quality we are trying to determine.
+    torso_anchors = [
+        n for n in ("pelvis", "neck", "left_shoulder", "right_shoulder", "left_hip", "right_hip")
+        if n in cam1 and n in cam2 and vis1.get(n, True) and vis2.get(n, True)
+    ]
+    alignment_names = torso_anchors if selective_enabled else l_list
     t12, t21, a_list = estimate_bidirectional_similarity(
-        cam1,
-        cam2,
-        l_list,
-        threshold=ransac_threshold,
-        max_combos=ransac_max_combos,
+        cam1, cam2, alignment_names,
+        threshold=ransac_threshold, max_combos=ransac_max_combos,
     )
+    if selective_enabled:
+        # Fail closed on ambiguous/degenerate camera alignment.
+        enough_anchors = len(torso_anchors) >= 3 and len(a_list) >= 3
+        if enough_anchors:
+            centered = np.array([cam1[n] for n in a_list]) - np.mean([cam1[n] for n in a_list], axis=0)
+            enough_anchors = np.linalg.matrix_rank(centered, tol=1e-5) >= 2
+        residuals = [
+            float(np.linalg.norm(apply_similarity(cam1[n], t12) - cam2[n]))
+            for n in torso_anchors
+        ] if enough_anchors else []
+        alignment_valid = (
+            bool(residuals)
+            and float(np.median(residuals)) <= float(selective_cfg.get("alignment_median_max_m", 0.08))
+            and float(np.percentile(residuals, 75)) <= float(selective_cfg.get("alignment_q75_max_m", 0.12))
+        )
+        if alignment_valid:
+            c2d_master = confidence2d_by_cam.get("camera1")
+            c2d_slave = confidence2d_by_cam.get("camera2")
+            fused_master, joint_decisions, selection_details = select_slave_joints(
+                cam1, cam2, t21, vis1, vis2, H1_all, H2_all,
+                keypoints2d_master=c2d_master,
+                keypoints2d_slave=c2d_slave,
+                K_master=(intrinsics_by_cam or {}).get("camera1"),
+                K_slave=(intrinsics_by_cam or {}).get("camera2"),
+                lengths=reference_bones,
+                prev_master=(prev_raw or {}).get("camera1"),
+                prev_prev_master=(prev_prev_raw or {}).get("camera1"),
+                prev_slave=(prev_raw or {}).get("camera2"),
+                prev_prev_slave=(prev_prev_raw or {}).get("camera2"),
+                config=selective_cfg,
+            )
+        else:
+            fused_master = {n: list(cam1[n]) for n in names}
+            joint_decisions = {n: "KEEP" for n in names}
+            selection_details = {"_alignment": "unsafe_or_degenerate"}
+
+        accepted = {n for n, mode in joint_decisions.items() if mode != "KEEP"}
+        return {
+            "M": sorted(m_set), "M_after": sorted(m_set), "M_resolved": False,
+            "K1": [], "K2": sorted(accepted),
+            "A_new": sorted(a_list), "F": [n for n in names if n not in accepted],
+            "before_stats": (0., 0., 0., 0., 0.),
+            "after_stats": (0., 0., 0., 0., 0.),
+            "optimized": {
+                "camera1": fused_master,
+                "camera2": {n: list(cam2[n]) for n in names},
+            },
+            "joint_confidence": {"camera1": H1_all, "camera2": H2_all},
+            "vis1": {k: bool(v) for k, v in vis1.items()},
+            "vis2": {k: bool(v) for k, v in vis2.items()},
+            "joint_selection": joint_decisions,
+            "joint_selection_details": selection_details,
+            "selection_summary": {
+                "accepted": len(accepted), "kept": len(names) - len(accepted),
+                "alignment_valid": alignment_valid,
+                "alignment_median_m": float(np.median(residuals)) if residuals else None,
+            },
+            "fusion_mode": "selective",
+            "fusion_mode_stats": {"alignment_valid": alignment_valid},
+        }
+
     fusion_mode, fusion_mode_stats = detect_adaptive_fusion_mode(
         cam1, cam2, t12, H1_all, H2_all, vis1, vis2, m_set,
         master_distorted=master_distorted,
@@ -821,6 +892,13 @@ def run_fusion(config: dict) -> None:
 
     ransac_cfg = fusion_cfg["ransac"]
     frame_results = []
+    selective_cfg = fusion_cfg.get("selective_joint_fusion", {})
+    selective_enabled = bool(selective_cfg.get("enabled", False))
+    reference_bones = (
+        reference_bone_lengths([read_json(p).get("camera1", {}) for p in file_paths])
+        if selective_enabled else {}
+    )
+    previous_raw, previous_previous_raw = None, None
 
     # ponytail: zero-GT skeletal distortion and acceleration select the safe anchor.
     master_is_distorted = False
@@ -902,6 +980,10 @@ def run_fusion(config: dict) -> None:
                 consensus_blend_strength=fusion_cfg.get("uncertainty_gating", {}).get("consensus_blend_strength", 0.25) if isinstance(fusion_cfg.get("uncertainty_gating"), dict) else 0.25,
                 master_margin=effective_master_margin,
                 master_distorted=master_is_distorted,
+                selective_cfg=selective_cfg,
+                reference_bones=reference_bones,
+                prev_raw=previous_raw,
+                prev_prev_raw=previous_previous_raw,
             )
             # 1. Lấy dữ liệu an toàn
                 
@@ -924,29 +1006,46 @@ def run_fusion(config: dict) -> None:
             "camera1": result.get("optimized", {}).get("camera1", {}),
             "camera2": result.get("optimized", {}).get("camera2", {}),
         }
-        for cam_k in ("camera1", "camera2"):
-            if cam_k in fused_keypoints and cam_k in data:
-                _enforce_bone_lengths(fused_keypoints[cam_k], data[cam_k])
+        # In selective mode KEEP must be byte-for-byte equivalent to Master.
+        # The old per-frame length projection can move even untouched joints.
+        if not selective_enabled:
+            for cam_k in ("camera1", "camera2"):
+                if cam_k in fused_keypoints and cam_k in data:
+                    _enforce_bone_lengths(fused_keypoints[cam_k], data[cam_k])
         fused_metadata = {k: v for k, v in result.items() if k not in ("camera1", "camera2", "optimized")}
         write_json(output_dir / "keypoints3d" / out_name, fused_keypoints)
         write_json(output_dir / "metadata" / out_name, fused_metadata)
         frame_results.append(result)
+        previous_previous_raw, previous_raw = previous_raw, data
 
-    slave_better, pair_gate = detect_pair_fusion_gate(frame_results, master_distorted=master_is_distorted)
+    if selective_enabled:
+        n_selected = sum(
+            sum(mode != "KEEP" for mode in result.get("joint_selection", {}).values())
+            for result in frame_results
+        )
+        slave_better = n_selected > 0
+        pair_gate = {
+            "fusion_applied": slave_better,
+            "reason": "joint_level_selection",
+            "accepted_joint_frames": n_selected,
+            "total_joint_frames": len(frame_results) * len(frame_results[0].get("joint_selection", {})) if frame_results else 0,
+        }
+    else:
+        slave_better, pair_gate = detect_pair_fusion_gate(frame_results, master_distorted=master_is_distorted)
     pair_gate["zero_gt_quality"] = pair_quality
     for metadata_path in (output_dir / "metadata").glob("fused_data_*.json"):
         metadata = read_json(metadata_path)
         metadata["pair_quality_gate"] = pair_gate
         write_json(metadata_path, metadata)
 
-    quality_fallback = slave_is_noisy and not master_is_distorted
+    quality_fallback = (slave_is_noisy and not master_is_distorted) and not selective_enabled
     if quality_fallback:
         # Keep single-view smoothing and bone constraints, but remove every slave contribution first.
         _restore_master_pose(output_dir / "keypoints3d", input_dir / "keypoints3d")
 
     smoothing_cfg = fusion_cfg.get("smoothing", {})
     smoothing_enabled = smoothing_cfg.get("enabled", True)
-    if smoothing_enabled:
+    if smoothing_enabled and not selective_enabled:
         smoothing_master_cfg = dict(master_cfg)
         smoothing_master_cfg["confidence_margin"] = effective_master_margin
         if not should_protect_master:
@@ -961,7 +1060,7 @@ def run_fusion(config: dict) -> None:
         )
 
     opt_cfg = fusion_cfg.get("optimization", {})
-    if opt_cfg.get("enabled", True):
+    if opt_cfg.get("enabled", True) and (not selective_enabled or selective_cfg.get("optimize_selected", False)):
         from fusion_pipeline.optimization import optimize_sequence_gpu
         optimize_sequence_gpu(
             output_dir / "keypoints3d",
@@ -969,14 +1068,15 @@ def run_fusion(config: dict) -> None:
             pose_dir=input_dir / "keypoints3d",
             config=config,
             master_only=not slave_better or quality_fallback,
-            anchor_cam="camera2" if master_is_distorted else "camera1",
+            anchor_cam="camera1" if selective_enabled else ("camera2" if master_is_distorted else "camera1"),
+            selection_only=selective_enabled,
         )
 
     if fusion_cfg.get("pair_mode") == "posed_fallback":
         _restore_master_pose(output_dir / "keypoints3d", input_dir / "keypoints3d")
 
     pose_keypoints_dir = input_dir / "keypoints3d"
-    if not smoothing_enabled and pose_keypoints_dir.exists():
+    if not smoothing_enabled and not selective_enabled and pose_keypoints_dir.exists():
         for f_path in (output_dir / "keypoints3d").glob("fused_data_*.json"):
             ref_path = pose_keypoints_dir / f_path.name.replace("fused_data_", "pose_data_")
             metadata_path = output_dir / "metadata" / f_path.name

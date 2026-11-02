@@ -38,6 +38,23 @@ paths:
 
 fusion:
   enabled: true
+  # V3: selective, unilateral slave -> master; revert via enabled: false.
+  # Rule-based quality advantage is an abstaining heuristic, NOT calibrated P(gain).
+  selective_joint_fusion:
+    enabled: true
+    quality_margin_visible: 0.10
+    quality_margin_occluded: 0.06
+    max_displacement_visible: 0.12
+    max_displacement_occluded: 0.35
+    max_bone_relative_error: 0.15
+    minimum_slave_2d_support: 0.15
+    minimum_slave_belief: 0.10
+    alignment_median_max_m: 0.08
+    alignment_q75_max_m: 0.12
+    blend_strength: 0.35
+    # Original global smoothing/optimizer can move joints labelled KEEP.
+    # Turn on selected-only optimizer only after validating held-out sequences.
+    optimize_selected: false
   belief:
     alpha: 0.001 # alpha: hệ số phạt theo khoảng cách 3D (0.001 để phân biệt nhẹ góc nhìn gần/xa)
     beta: 0.8 # beta: hệ số trộn tin cậy của láng giềng xương trong harmonic mean, càng lớn thì belief càng chịu ảnh hưởng bởi skeleton lân cận.
