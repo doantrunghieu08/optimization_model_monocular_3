@@ -92,6 +92,12 @@ fusion:
     visible_risk_scale_m: 0.10
     visible_quality_gap_scale: 0.15
 
+  # M5 safety: preserve original WHAM segment lengths on ALL 20
+  # evaluation skeleton bones, while M2 continues using temporal medians.
+  bone_output:
+    reference_mode: input_frame  # robust_median available as explicit ablation
+    enforce_full_skeleton: true
+
   # Legacy ablation: chỉ được áp dụng khi adaptive_protection.enabled=false.
   master_protection:
     enabled: true

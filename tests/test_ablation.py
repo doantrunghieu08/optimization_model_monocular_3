@@ -11,7 +11,7 @@ from ablation_runner import (
 
 def test_ablation_conditions_definitions():
     ids = [c["id"] for c in CONDITIONS]
-    assert ids == ["A0", "A1", "A2", "A3", "A4", "A5", "L0", "B0", "B1", "B2", "B3", "B4", "B5"]
+    assert ids == ["A0", "A1", "A2", "A3", "A4", "A5", "L0", "B0", "B1", "B2", "B3", "B4", "B5", "B6"]
 
     cond_map = {c["id"]: c for c in CONDITIONS}
 
@@ -62,6 +62,7 @@ def test_ablation_conditions_definitions():
     assert cond_map["B3"]["overrides"]["fusion"]["adaptive_protection"]["visible_risk_enabled"] is False
     assert cond_map["B4"]["overrides"]["fusion"]["smoothing"]["motion_aware"]["enabled"] is False
     assert cond_map["B5"]["overrides"]["fusion"]["optimization"]["adaptive_objectives_enabled"] is False
+    assert cond_map["B6"]["overrides"]["fusion"]["bone_output"]["reference_mode"] == "robust_median"
 
 
 def test_deep_update():

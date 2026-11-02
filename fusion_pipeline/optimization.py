@@ -493,7 +493,8 @@ def optimize_sequence_gpu(
             for cam in (("camera1",) if master_only else ("camera1", "camera2")):
                 if cam in d and cam in all_pose[t]:
                     _enforce_bone_lengths(
-                        d[cam], all_pose[t][cam], bone_references.get(cam)
+                        d[cam], all_pose[t][cam], bone_references.get(cam),
+                        full_skeleton=adaptive_enabled,
                     )
         f.write_text(json.dumps(d), encoding="utf-8")
 

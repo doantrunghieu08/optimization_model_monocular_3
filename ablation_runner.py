@@ -240,6 +240,19 @@ CONDITIONS = [
                      "smoothing": {"enabled": True, "motion_aware": {"enabled": True}},
                      "optimization": {"enabled": True, "adaptive_objectives_enabled": False}}},
     },
+    {
+        "id": "B6", "name": "Full v2 median bone output (MBLE diagnostic)",
+        "adaptive": "Bật", "joint_transfer": "Risk-aware",
+        "smoothing": "Motion-aware", "gpu": "Observation-weighted",
+        "diff_vs_control": "B0 vs B6 tests input-frame vs temporal-median bone projection",
+        "run_pipeline": True,
+        "overrides": {"fusion": {
+            "bone_output": {"reference_mode": "robust_median", "enforce_full_skeleton": True},
+            "adaptive_protection": {"enabled": True},
+            "smoothing": {"enabled": True, "motion_aware": {"enabled": True}},
+            "optimization": {"enabled": True, "adaptive_objectives_enabled": True},
+        }},
+    },
 ]
 
 

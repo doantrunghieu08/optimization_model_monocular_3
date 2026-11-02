@@ -553,12 +553,41 @@ KINEMATIC_CHAINS = (
     ("right_foot", "right_ankle"),
 )
 
+# Exactly the evaluation skeleton's 20 directed child/parent edges.
+# Order is topological (pelvis -> neck, shoulders/hips -> extremities).
+KINEMATIC_CHAINS_FULL = (
+    ("neck", "pelvis"),
+    ("head", "neck"),
+    ("left_shoulder", "neck"),
+    ("right_shoulder", "neck"),
+    ("left_hip", "pelvis"),
+    ("right_hip", "pelvis"),
+    ("left_elbow", "left_shoulder"),
+    ("right_elbow", "right_shoulder"),
+    ("left_knee", "left_hip"),
+    ("right_knee", "right_hip"),
+    ("left_wrist", "left_elbow"),
+    ("right_wrist", "right_elbow"),
+    ("left_ankle", "left_knee"),
+    ("right_ankle", "right_knee"),
+    ("left_hand", "left_wrist"),
+    ("right_hand", "right_wrist"),
+    ("left_toe", "left_ankle"),
+    ("left_foot", "left_ankle"),
+    ("right_toe", "right_ankle"),
+    ("right_foot", "right_ankle"),
+)
 
-def _enforce_bone_lengths(points: dict, ref_points: dict, reference_lengths: dict | None = None) -> None:
-    # Legacy uses current-frame SMPL baseline; adaptive uses robust temporal
-    # median lengths when available, so post-processing cannot undo M5.
+
+def _enforce_bone_lengths(
+    points: dict, ref_points: dict,
+    reference_lengths: dict | None = None, full_skeleton: bool = False,
+) -> None:
+    # Never use GT. Full skeleton is opt-in for adaptive v2; historical
+    # legacy ablations retain the original 15-segment projection.
     reference_lengths = reference_lengths or {}
-    for child, parent in KINEMATIC_CHAINS:
+    chains = KINEMATIC_CHAINS_FULL if full_skeleton else KINEMATIC_CHAINS
+    for child, parent in chains:
         if child not in points or parent not in points or child not in ref_points or parent not in ref_points:
             continue
         p_c = np.asarray(points[child], dtype=float)
@@ -573,6 +602,11 @@ def _enforce_bone_lengths(points: dict, ref_points: dict, reference_lengths: dic
             continue
         v = p_c - p_p
         dist = float(np.linalg.norm(v))
+        if dist <= 1e-6:
+            # An invalid zero-length prediction should not silently bypass
+            # bone safety. Use the input-frame direction when available.
+            v = r_c - r_p
+            dist = float(np.linalg.norm(v))
         if dist > 1e-6:
             points[child] = [round(float(x), 6) for x in (p_p + v * (l_ref / dist))]
 
@@ -691,6 +725,7 @@ def _apply_temporal_smoothing(
     polyorder: int = 2,
     bone_references: dict | None = None,
     motion_aware_config: dict | None = None,
+    full_skeleton: bool = False,
 ) -> None:
     try:
         from scipy.signal import savgol_filter
@@ -814,7 +849,8 @@ def _apply_temporal_smoothing(
             for cam in ("camera1", "camera2"):
                 if cam in d and cam in ref_d:
                     _enforce_bone_lengths(
-                        d[cam], ref_d[cam], (bone_references or {}).get(cam)
+                        d[cam], ref_d[cam], (bone_references or {}).get(cam),
+                        full_skeleton=full_skeleton,
                     )
 
     for f, d in zip(files, all_data):
@@ -935,6 +971,19 @@ def run_fusion(config: dict) -> None:
             ]
         print("[Fusion] Adaptive joint/frame protection with bone quality + risk-aware transfer enabled")
 
+    # Preserve original per-frame input skeleton lengths at every output by
+    # default, while continuing to USE the robust median for M2 reliability.
+    # The median-projection variant is explicit and is benchmarked separately.
+    bone_out_cfg = fusion_cfg.get("bone_output", {})
+    reference_mode = bone_out_cfg.get("reference_mode", "input_frame")
+    if reference_mode not in ("input_frame", "robust_median"):
+        raise ValueError("fusion.bone_output.reference_mode must be input_frame or robust_median")
+    full_bones = adaptive_enabled and bool(bone_out_cfg.get("enforce_full_skeleton", True))
+    output_bone_refs = (
+        bone_references if adaptive_enabled and reference_mode == "robust_median"
+        else {"camera1": {}, "camera2": {}}
+    )
+
     # ponytail: zero-GT skeletal distortion and acceleration select the safe anchor.
     master_is_distorted = False
     slave_is_noisy = False
@@ -1018,7 +1067,7 @@ def run_fusion(config: dict) -> None:
                 adaptive_config=adaptive_cfg,
                 joint_quality=(joint_quality_profiles[frame_position] if adaptive_enabled else None),
                 bone_quality=(bone_quality_profiles[frame_position] if adaptive_enabled else None),
-                bone_references=(bone_references if adaptive_enabled else None),
+                bone_references=(output_bone_refs if adaptive_enabled else None),
                 master_distorted=master_is_distorted,
             )
             # 1. Lấy dữ liệu an toàn
@@ -1046,7 +1095,8 @@ def run_fusion(config: dict) -> None:
             if cam_k in fused_keypoints and cam_k in data:
                 _enforce_bone_lengths(
                     fused_keypoints[cam_k], data[cam_k],
-                    bone_references.get(cam_k) if adaptive_enabled else None,
+                    output_bone_refs.get(cam_k) if adaptive_enabled else None,
+                    full_skeleton=full_bones,
                 )
         fused_metadata = {k: v for k, v in result.items() if k not in ("camera1", "camera2", "optimized")}
         write_json(output_dir / "keypoints3d" / out_name, fused_keypoints)
@@ -1086,8 +1136,9 @@ def run_fusion(config: dict) -> None:
             master_protection=smoothing_master_cfg,
             window_length=int(smoothing_cfg.get("window_length", 5)),
             polyorder=int(smoothing_cfg.get("polyorder", 2)),
-            bone_references=bone_references if adaptive_enabled else None,
+            bone_references=output_bone_refs if adaptive_enabled else None,
             motion_aware_config=smoothing_cfg.get("motion_aware", {}) if adaptive_enabled else None,
+            full_skeleton=full_bones,
         )
 
     opt_cfg = fusion_cfg.get("optimization", {})
@@ -1100,7 +1151,7 @@ def run_fusion(config: dict) -> None:
             config=config,
             master_only=not slave_better or quality_fallback if not adaptive_enabled else False,
             anchor_cam="camera2" if master_is_distorted else "camera1",
-            bone_references=bone_references if adaptive_enabled else None,
+            bone_references=output_bone_refs if adaptive_enabled else None,
         )
 
     if fusion_cfg.get("pair_mode") == "posed_fallback":
@@ -1118,9 +1169,28 @@ def run_fusion(config: dict) -> None:
                 if "camera1" in d_f and "camera1" in d_p:
                     _enforce_bone_lengths(
                         d_f["camera1"], d_p["camera1"],
-                        bone_references.get("camera1") if adaptive_enabled else None,
+                        output_bone_refs.get("camera1") if adaptive_enabled else None,
+                        full_skeleton=full_bones,
                     )
                     write_json(f_path, d_f)
+
+    # Final deterministic M5 safety pass: under input-frame mode, *every*
+    # evaluation-skeleton bone is restored to its unmodified WHAM length.
+    # Thus, on identical frames, fused vs posed MBLE must agree within
+    # coordinate rounding, regardless of smoothing or GPU drift.
+    if adaptive_enabled and full_bones and reference_mode == "input_frame":
+        for fused_path in (output_dir / "keypoints3d").glob("fused_data_*.json"):
+            pose_path = input_dir / "keypoints3d" / fused_path.name.replace("fused_data_", "pose_data_")
+            if not pose_path.exists():
+                raise FileNotFoundError(f"Cannot enforce per-frame bone lengths without {pose_path}")
+            fused_data, original_data = read_json(fused_path), read_json(pose_path)
+            for cam in ("camera1", "camera2"):
+                if cam in fused_data and cam in original_data:
+                    _enforce_bone_lengths(
+                        fused_data[cam], original_data[cam],
+                        full_skeleton=True,
+                    )
+            write_json(fused_path, fused_data)
 
     print(f"\n[Fusion] Done. Output: {output_dir}")
 

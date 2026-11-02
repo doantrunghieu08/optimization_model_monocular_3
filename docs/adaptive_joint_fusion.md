@@ -136,6 +136,27 @@ occluded transfers in the current implementation (the soft blend cap
 becomes zero); setting the source-bone threshold above 1 provides an
 additional diagnostic guard.
 
+## MBLE safeguard: M5 length target is separate from M2 quality reference
+
+Evaluation MBLE is mean |predicted bone length − GT bone length|. The robust
+temporal median used in M2 is **not** guaranteed to be a better absolute
+length estimate than the current input-frame WHAM length. Earlier v2 versions
+also only projected 15 of the evaluation skeleton's 20 edges; the root/shoulder/
+hip edges were not constrained.
+
+The new default `fusion.bone_output.reference_mode: input_frame` restores
+the per-frame WHAM bone lengths on the **complete 20-edge evaluation skeleton**.
+This projection uses only the *input pose*, never GT. M2 still computes
+temporal median lengths as a quality score; M4 still tests source bone quality;
+M5 still checks hinge and magnitude of individual transfer corrections.
+
+Set `reference_mode: robust_median` explicitly for the experimental
+median-projection variant. This can make anatomical lengths more stable but
+may worsen MBLE. For identical frames and a shared evaluation skeleton,
+input-frame mode should reproduce posed MBLE to floating point tolerance;
+it **does not guarantee better MBLE than posed**, and it can trade off
+PA-MPJPE/MPJPE. Compare B0 vs B6 with the same GT used only for evaluation.
+
 ## Full Model v2: M4 + M6 + M7
 
 The default path adds risk-aware protection for **visible as well as occluded**
