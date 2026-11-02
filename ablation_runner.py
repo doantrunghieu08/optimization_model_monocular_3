@@ -48,12 +48,14 @@ CONDITIONS = [
         "overrides": {
             "fusion": {
                 "adaptive_protection": {
+                    "bone_quality": {"enabled": False},
+                    "risk_aware_enabled": False,
                     "enabled": True,
                     "max_visible_transfer": 0.0,
                     "max_occluded_transfer": 0.0,
                 },
-                "smoothing": {"enabled": True},
-                "optimization": {"enabled": False},
+                "smoothing": {"enabled": True, "motion_aware": {"enabled": False}},
+                "optimization": {"enabled": False, "adaptive_objectives_enabled": False},
             }
         },
     },
@@ -69,12 +71,14 @@ CONDITIONS = [
         "overrides": {
             "fusion": {
                 "adaptive_protection": {
+                    "bone_quality": {"enabled": False},
+                    "risk_aware_enabled": False,
                     "enabled": True,
                     "max_visible_transfer": 0.55,
                     "max_occluded_transfer": 0.90,
                 },
-                "smoothing": {"enabled": True},
-                "optimization": {"enabled": False},
+                "smoothing": {"enabled": True, "motion_aware": {"enabled": False}},
+                "optimization": {"enabled": False, "adaptive_objectives_enabled": False},
             }
         },
     },
@@ -90,14 +94,16 @@ CONDITIONS = [
         "overrides": {
             "fusion": {
                 "adaptive_protection": {
+                    "bone_quality": {"enabled": False},
+                    "risk_aware_enabled": False,
                     "enabled": True,
                     "transform_scale_m": 0.20,
                     "jitter_floor_m": 0.025,
                     "max_visible_transfer": 0.55,
                     "max_occluded_transfer": 0.90,
                 },
-                "smoothing": {"enabled": True},
-                "optimization": {"enabled": True},
+                "smoothing": {"enabled": True, "motion_aware": {"enabled": False}},
+                "optimization": {"enabled": True, "adaptive_objectives_enabled": False},
             }
         },
     },
@@ -113,14 +119,16 @@ CONDITIONS = [
         "overrides": {
             "fusion": {
                 "adaptive_protection": {
+                    "bone_quality": {"enabled": False},
+                    "risk_aware_enabled": False,
                     "enabled": True,
                     "transform_scale_m": 0.05,
                     "jitter_floor_m": 0.025,
                     "max_visible_transfer": 0.55,
                     "max_occluded_transfer": 0.90,
                 },
-                "smoothing": {"enabled": True},
-                "optimization": {"enabled": True},
+                "smoothing": {"enabled": True, "motion_aware": {"enabled": False}},
+                "optimization": {"enabled": True, "adaptive_objectives_enabled": False},
             }
         },
     },
@@ -136,14 +144,16 @@ CONDITIONS = [
         "overrides": {
             "fusion": {
                 "adaptive_protection": {
+                    "bone_quality": {"enabled": False},
+                    "risk_aware_enabled": False,
                     "enabled": True,
                     "transform_scale_m": 0.20,
                     "jitter_floor_m": 999.0,
                     "max_visible_transfer": 0.55,
                     "max_occluded_transfer": 0.90,
                 },
-                "smoothing": {"enabled": True},
-                "optimization": {"enabled": True},
+                "smoothing": {"enabled": True, "motion_aware": {"enabled": False}},
+                "optimization": {"enabled": True, "adaptive_objectives_enabled": False},
             }
         },
     },
@@ -168,6 +178,67 @@ CONDITIONS = [
                 "optimization": {"enabled": True},
             }
         },
+    },
+
+    # Full Model v2 ablations (old A0-A5/L0 controls explicitly remain pre-v2).
+    {
+        "id": "B0", "name": "Full Model v2",
+        "adaptive": "Bật", "joint_transfer": "Risk-aware",
+        "smoothing": "Motion-aware", "gpu": "Observation-weighted",
+        "diff_vs_control": "M2+M4+M5+M6+M7, compare vs historical A3",
+        "run_pipeline": True,
+        "overrides": {"fusion": {
+            "adaptive_protection": {"enabled": True, "bone_quality": {"enabled": True},
+                                    "risk_aware_enabled": True, "visible_risk_enabled": True},
+            "smoothing": {"enabled": True, "motion_aware": {"enabled": True}},
+            "optimization": {"enabled": True, "adaptive_objectives_enabled": True},
+        }},
+    },
+    {
+        "id": "B1", "name": "Full v2 without bone quality (M2)",
+        "adaptive": "Bật", "joint_transfer": "Risk-aware", "smoothing": "Motion-aware",
+        "gpu": "Observation-weighted", "diff_vs_control": "B0 minus M2",
+        "run_pipeline": True,
+        "overrides": {"fusion": {"adaptive_protection": {"enabled": True, "bone_quality": {"enabled": False},
+                     "risk_aware_enabled": True},
+                     "smoothing": {"enabled": True, "motion_aware": {"enabled": True}},
+                     "optimization": {"enabled": True, "adaptive_objectives_enabled": True}}},
+    },
+    {
+        "id": "B2", "name": "Full v2 without occluded transfer",
+        "adaptive": "Bật", "joint_transfer": "Visible-only", "smoothing": "Motion-aware",
+        "gpu": "Observation-weighted", "diff_vs_control": "B0 minus occlusion rescue",
+        "run_pipeline": True,
+        "overrides": {"fusion": {"adaptive_protection": {"enabled": True, "max_occluded_transfer": 0.0},
+                     "smoothing": {"enabled": True, "motion_aware": {"enabled": True}},
+                     "optimization": {"enabled": True, "adaptive_objectives_enabled": True}}},
+    },
+    {
+        "id": "B3", "name": "Full v2 without visible-joint risk gate",
+        "adaptive": "Bật", "joint_transfer": "No visible risk", "smoothing": "Motion-aware",
+        "gpu": "Observation-weighted", "diff_vs_control": "B0 minus visible protection",
+        "run_pipeline": True,
+        "overrides": {"fusion": {"adaptive_protection": {"enabled": True, "visible_risk_enabled": False},
+                     "smoothing": {"enabled": True, "motion_aware": {"enabled": True}},
+                     "optimization": {"enabled": True, "adaptive_objectives_enabled": True}}},
+    },
+    {
+        "id": "B4", "name": "Full v2 without motion-aware smoothing",
+        "adaptive": "Bật", "joint_transfer": "Risk-aware", "smoothing": "Legacy",
+        "gpu": "Observation-weighted", "diff_vs_control": "B0 minus M6",
+        "run_pipeline": True,
+        "overrides": {"fusion": {"adaptive_protection": {"enabled": True},
+                     "smoothing": {"enabled": True, "motion_aware": {"enabled": False}},
+                     "optimization": {"enabled": True, "adaptive_objectives_enabled": True}}},
+    },
+    {
+        "id": "B5", "name": "Full v2 without adaptive GPU objectives",
+        "adaptive": "Bật", "joint_transfer": "Risk-aware", "smoothing": "Motion-aware",
+        "gpu": "Legacy", "diff_vs_control": "B0 minus M7",
+        "run_pipeline": True,
+        "overrides": {"fusion": {"adaptive_protection": {"enabled": True},
+                     "smoothing": {"enabled": True, "motion_aware": {"enabled": True}},
+                     "optimization": {"enabled": True, "adaptive_objectives_enabled": False}}},
     },
 ]
 

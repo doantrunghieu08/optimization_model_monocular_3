@@ -135,3 +135,42 @@ cam20->cam04, cam20->cam05.
 occluded transfers in the current implementation (the soft blend cap
 becomes zero); setting the source-bone threshold above 1 provides an
 additional diagnostic guard.
+
+## Full Model v2: M4 + M6 + M7
+
+The default path adds risk-aware protection for **visible as well as occluded**
+joints on a per-frame, per-joint basis. For a reliable visible target,
+the gate either rejects a sufficiently weak/geometrically inconsistent
+source or smoothly attenuates its transfer weight. Both cameras are treated
+symmetrically; the pipeline does not set a global master protection flag.
+
+Motion-aware smoothing (M6) builds Savitzky-Golay candidates, then blends
+them according to joint reliability and **motion shared by both cameras**.
+An isolated noisy spike does not count as shared motion. Nonconsecutive
+output frame IDs are treated as separate temporal segments.
+
+The GPU objective (M7) introduces confidence-weighted original-observation
+preservation and motion-aware temporal penalties, in addition to the
+existing bone, hinge, proximity, and cross-view losses. Raw WHAM poses
+serve as observation anchors; GT remains evaluation-only.
+
+Default options under fusion:
+- adaptive_protection.risk_aware_enabled: true
+- adaptive_protection.visible_risk_enabled: true
+- smoothing.motion_aware.enabled: true
+- optimization.adaptive_objectives_enabled: true
+- optimization.observation_lambda: 2.0
+
+### New ablations
+
+Historical A1-A5 explicitly disable M2/M4/M6/M7 to avoid inheriting v2
+defaults; exact historical reproduction should still compare frozen commits.
+- B0: Full Model v2 enabled (M2, M4, M5, M6, M7)
+- B1: B0 with bone quality disabled
+- B2: B0 without occlusion rescue
+- B3: B0 without visible-target risk gate
+- B4: B0 without motion-aware smoothing
+- B5: B0 without adaptive GPU objectives
+
+All hyperparameters are provisional. No Aria02 benchmark has been run on
+Full Model v2; historical A0-A5 metrics must not be attributed to v2.

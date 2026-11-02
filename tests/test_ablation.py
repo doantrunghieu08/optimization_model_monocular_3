@@ -11,7 +11,7 @@ from ablation_runner import (
 
 def test_ablation_conditions_definitions():
     ids = [c["id"] for c in CONDITIONS]
-    assert ids == ["A0", "A1", "A2", "A3", "A4", "A5", "L0"]
+    assert ids == ["A0", "A1", "A2", "A3", "A4", "A5", "L0", "B0", "B1", "B2", "B3", "B4", "B5"]
 
     cond_map = {c["id"]: c for c in CONDITIONS}
 
@@ -50,6 +50,18 @@ def test_ablation_conditions_definitions():
     assert l0_cfg["adaptive_protection"]["enabled"] is False
     assert l0_cfg["master_protection"]["enabled"] is True
     assert l0_cfg["optimization"]["enabled"] is True
+    for label in ("A1", "A2", "A3", "A4", "A5"):
+        old_cfg = cond_map[label]["overrides"]["fusion"]
+        assert old_cfg["adaptive_protection"]["bone_quality"]["enabled"] is False
+        assert old_cfg["adaptive_protection"]["risk_aware_enabled"] is False
+        assert old_cfg["smoothing"]["motion_aware"]["enabled"] is False
+        assert old_cfg["optimization"]["adaptive_objectives_enabled"] is False
+    assert cond_map["B0"]["overrides"]["fusion"]["adaptive_protection"]["risk_aware_enabled"] is True
+    assert cond_map["B1"]["overrides"]["fusion"]["adaptive_protection"]["bone_quality"]["enabled"] is False
+    assert cond_map["B2"]["overrides"]["fusion"]["adaptive_protection"]["max_occluded_transfer"] == 0.0
+    assert cond_map["B3"]["overrides"]["fusion"]["adaptive_protection"]["visible_risk_enabled"] is False
+    assert cond_map["B4"]["overrides"]["fusion"]["smoothing"]["motion_aware"]["enabled"] is False
+    assert cond_map["B5"]["overrides"]["fusion"]["optimization"]["adaptive_objectives_enabled"] is False
 
 
 def test_deep_update():
@@ -123,7 +135,7 @@ def test_ablation_runner_dry_run(tmp_path):
         out_md=str(md_out),
         dry_run=True,
     )
-    assert len(results) == 7
+    assert len(results) == len(CONDITIONS)
     assert csv_out.exists()
     assert md_out.exists()
 
