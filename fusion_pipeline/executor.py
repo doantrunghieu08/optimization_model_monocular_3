@@ -19,6 +19,7 @@ from fusion_pipeline.detector import load_torso_mask
 from fusion_pipeline.detector import require_ray_casting_backend
 from fusion_pipeline.detector import as_xyz
 from fusion_pipeline.detector import make_raw_judgement_fallback
+from fusion_pipeline.detector import compute_bone_distortion_score
 from fusion_pipeline.correction import apply_rotation_mismatch_corrections
 from fusion_pipeline.correction import apply_confidence_corrections
 from fusion_pipeline.correction import apply_multiview_geometric_fusion
@@ -209,7 +210,7 @@ def _source_frame_indices(data: dict, frame_idx: int) -> dict[str, int]:
     }
 
 
-def detect_adaptive_fusion_mode(cam1, cam2, t12, h1, h2, vis1, vis2, conflicts):
+def detect_adaptive_fusion_mode(cam1, cam2, t12, h1, h2, vis1, vis2, conflicts, master_distorted=False):
     names = [name for name in cam1 if name in cam2 and vis1.get(name, True) and vis2.get(name, True)]
     if t12 is None or len(names) < 6:
         return "conservative", {"confidence_advantage": 0.0, "median_residual": float("inf"), "q75_residual": float("inf")}
@@ -225,7 +226,7 @@ def detect_adaptive_fusion_mode(cam1, cam2, t12, h1, h2, vis1, vis2, conflicts):
 
     # shortcut: thresholds are calibrated for this camera rig; recalibrate on held-out data when the rig changes.
     aggressive = (
-        confidence_advantage >= 0.05
+        (master_distorted or confidence_advantage >= 0.05)
         and median_residual <= 0.10
         and q75_residual <= 0.15
         and conflict_ratio <= 0.10
@@ -271,6 +272,64 @@ def detect_pair_fusion_gate(frame_results, min_slave_advantage: float = 0.05, ma
     }
 
 
+def detect_camera_pair_quality(cam1_points, cam2_points, names):
+    """Compare two zero-GT tracks using skeletal proportions and temporal acceleration."""
+    tracks = [np.asarray(cam1_points, dtype=float), np.asarray(cam2_points, dtype=float)]
+    metrics = []
+    for track in tracks:
+        bone_scores = [
+            compute_bone_distortion_score(dict(zip(names, frame)))
+            for frame in track
+        ]
+        acceleration = (
+            float(np.mean(np.linalg.norm(track[2:] - 2 * track[1:-1] + track[:-2], axis=-1))) * 1000.0
+            if len(track) > 2 else float("inf")
+        )
+        metrics.append({
+            "bone_distortion": float(np.median(bone_scores)) if bone_scores else float("inf"),
+            "acceleration": acceleration,
+            "frames": len(track),
+        })
+
+    def worse_vote(key, ratio, minimum_gap=0.0, minimum_value=0.0):
+        a, b = metrics[0][key], metrics[1][key]
+        if a > ratio * b and a - b > minimum_gap and a > minimum_value:
+            return "camera1"
+        if b > ratio * a and b - a > minimum_gap and b > minimum_value:
+            return "camera2"
+        return None
+
+    # shortcut: thresholds are calibrated on hugging_002, recalibrate before using a different rig or frame rate.
+    votes = [
+        worse_vote("bone_distortion", 1.15, minimum_gap=0.02),
+        worse_vote("acceleration", 1.35, minimum_value=25.0),
+    ]
+    continuity_vote = None
+    if metrics[0]["frames"] < 200 <= metrics[1]["frames"]:
+        continuity_vote = "camera1"
+    elif metrics[1]["frames"] < 200 <= metrics[0]["frames"]:
+        continuity_vote = "camera2"
+    decisive = [vote for vote in votes if vote]
+    worse_camera = continuity_vote or (decisive[0] if decisive and len(set(decisive)) == 1 else None)
+    return {
+        "camera1": metrics[0],
+        "camera2": metrics[1],
+        "bone_vote": votes[0],
+        "acceleration_vote": votes[1],
+        "continuity_vote": continuity_vote,
+        "worse_camera": worse_camera,
+    }
+
+
+def _quality_joints_from_vertices(vertices, regressor_path, map_path):
+    regressor = np.load(regressor_path)
+    mapping = load_keypoints3d_map(map_path)["keypoints"]
+    indices = [item["regressor_index"] for item in mapping]
+    names = [item["name"] for item in mapping]
+    joints = np.einsum("jv,fvc->fjc", regressor, np.asarray(vertices, dtype=float))[:, indices]
+    return joints, names
+
+
 def run_phase3_pipeline(
     data_in,
     map_path,
@@ -296,6 +355,7 @@ def run_phase3_pipeline(
     joint_quality=None,
     bone_quality=None,
     bone_references=None,
+    master_distorted=False,
 ):
     cam1 = {k: as_xyz(v) for k, v in data_in["camera1"].items()}
     cam2 = {k: as_xyz(v) for k, v in data_in["camera2"].items()}
@@ -361,7 +421,8 @@ def run_phase3_pipeline(
         max_combos=ransac_max_combos,
     )
     fusion_mode, fusion_mode_stats = detect_adaptive_fusion_mode(
-        cam1, cam2, t12, H1_all, H2_all, vis1, vis2, m_set
+        cam1, cam2, t12, H1_all, H2_all, vis1, vis2, m_set,
+        master_distorted=master_distorted,
     )
 
     torso_check = [n for n in ("pelvis", "neck", "left_shoulder", "right_shoulder", "left_hip", "right_hip") if n in cam1 and n in cam2]
@@ -834,30 +895,30 @@ def run_fusion(config: dict) -> None:
             ]
         print("[Fusion] Adaptive joint/frame protection with bone quality + risk-aware transfer enabled")
 
-    # ponytail: zero-GT temporal jitter & tracking continuity check to select anchor camera
+    # ponytail: zero-GT skeletal distortion and acceleration select the safe anchor.
     master_is_distorted = False
     slave_is_noisy = False
+    pair_quality = None
     if wham_loaded and verts_cam1 is not None and verts_cam2 is not None and n_frames_1 > 2 and n_frames_2 > 2:
-        n_chk = min(n_frames_1, n_frames_2)
-        a1 = float(np.mean(np.linalg.norm(verts_cam1[2:n_chk] - 2 * verts_cam1[1:n_chk - 1] + verts_cam1[:n_chk - 2], axis=-1))) * 1000.0
-        a2 = float(np.mean(np.linalg.norm(verts_cam2[2:n_chk] - 2 * verts_cam2[1:n_chk - 1] + verts_cam2[:n_chk - 2], axis=-1))) * 1000.0
-        master_is_distorted = (n_frames_1 < 200 and n_frames_2 >= 200) or (n_frames_2 >= 200 and a1 > 1.35 * a2 and a1 > 25.0)
-        slave_is_noisy = (n_frames_1 >= 200 and n_frames_2 < 200) or (a2 > 1.35 * a1 and a2 > 25.0)
-        print(f"[Fusion] Zero-GT Quality: Cam1(jitter={a1:.1f}, frames={n_frames_1}), Cam2(jitter={a2:.1f}, frames={n_frames_2}) -> master_distorted={master_is_distorted}, slave_noisy={slave_is_noisy}")
+        q1, quality_names = _quality_joints_from_vertices(verts_cam1, paths["j_regressor_3d"], paths["keypoints3d_map"])
+        q2, _ = _quality_joints_from_vertices(verts_cam2, paths["j_regressor_3d"], paths["keypoints3d_map"])
+        pair_quality = detect_camera_pair_quality(q1, q2, quality_names)
     else:
         d1_pts, d2_pts = [], []
-        for p in file_paths[:min(len(file_paths), 50)]:
+        quality_names = None
+        for p in file_paths:
             raw_pose = _load_pose_frame(p, metadata_dir=metadata_dir)
             if "camera1" in raw_pose and "camera2" in raw_pose:
-                d1_pts.append([raw_pose["camera1"][j] for j in sorted(raw_pose["camera1"])])
-                d2_pts.append([raw_pose["camera2"][j] for j in sorted(raw_pose["camera2"])])
+                quality_names = sorted(set(raw_pose["camera1"]) & set(raw_pose["camera2"]))
+                d1_pts.append([raw_pose["camera1"][j] for j in quality_names])
+                d2_pts.append([raw_pose["camera2"][j] for j in quality_names])
         if len(d1_pts) > 2 and len(d2_pts) > 2:
-            p1, p2 = np.array(d1_pts), np.array(d2_pts)
-            a1 = float(np.mean(np.linalg.norm(p1[2:] - 2 * p1[1:-1] + p1[:-2], axis=-1)))
-            a2 = float(np.mean(np.linalg.norm(p2[2:] - 2 * p2[1:-1] + p2[:-2], axis=-1)))
-            master_is_distorted = (len(d1_pts) < 200 and len(d2_pts) >= 200) or (len(d2_pts) >= 200 and a1 > 1.35 * a2 and a1 > 0.025)
-            slave_is_noisy = (len(d1_pts) >= 200 and len(d2_pts) < 200) or (a2 > 1.35 * a1 and a2 > 0.025)
-            print(f"[Fusion] Zero-GT Fallback: Cam1(jitter={a1:.4f}), Cam2(jitter={a2:.4f}) -> master_distorted={master_is_distorted}, slave_noisy={slave_is_noisy}")
+            pair_quality = detect_camera_pair_quality(d1_pts, d2_pts, quality_names)
+
+    if pair_quality:
+        master_is_distorted = pair_quality["worse_camera"] == "camera1"
+        slave_is_noisy = pair_quality["worse_camera"] == "camera2"
+        print(f"[Fusion] Zero-GT Quality: {pair_quality} -> master_distorted={master_is_distorted}, slave_noisy={slave_is_noisy}")
 
     master_cfg = fusion_cfg.get("master_protection", {})
     pair_mode = fusion_cfg.get("pair_mode", "aggressive")
@@ -918,6 +979,7 @@ def run_fusion(config: dict) -> None:
                 joint_quality=(joint_quality_profiles[frame_position] if adaptive_enabled else None),
                 bone_quality=(bone_quality_profiles[frame_position] if adaptive_enabled else None),
                 bone_references=(bone_references if adaptive_enabled else None),
+                master_distorted=master_is_distorted,
             )
             # 1. Lấy dữ liệu an toàn
                 
@@ -952,6 +1014,7 @@ def run_fusion(config: dict) -> None:
         frame_results.append(result)
 
     slave_better, pair_gate = detect_pair_fusion_gate(frame_results, master_distorted=master_is_distorted)
+    pair_gate["zero_gt_quality"] = pair_quality
     if adaptive_enabled:
         pair_gate = dict(pair_gate)
         pair_gate["fusion_applied"] = True
@@ -962,8 +1025,12 @@ def run_fusion(config: dict) -> None:
         metadata["pair_quality_gate"] = pair_gate
         write_json(metadata_path, metadata)
 
-    # ponytail: do NOT blindly destroy cross-view fusion; joint-level gating and min-confidence loss protect master.
-    # only fallback when explicitly requested by pair_mode == "posed_fallback".
+    # Preserve main's quality fallback for legacy ablation. Under adaptive,
+    # joint-level M4 must remain authoritative: never overwrite the entire
+    # master pose just because a whole camera is classified as noisy.
+    quality_fallback = slave_is_noisy and not master_is_distorted and not adaptive_enabled
+    if quality_fallback:
+        _restore_master_pose(output_dir / "keypoints3d", input_dir / "keypoints3d")
 
     smoothing_cfg = fusion_cfg.get("smoothing", {})
     smoothing_enabled = smoothing_cfg.get("enabled", True)
@@ -990,7 +1057,7 @@ def run_fusion(config: dict) -> None:
             metadata_dir=output_dir / "metadata",
             pose_dir=input_dir / "keypoints3d",
             config=config,
-            master_only=(not slave_better and not adaptive_enabled),
+            master_only=not slave_better or quality_fallback if not adaptive_enabled else False,
             anchor_cam="camera2" if master_is_distorted else "camera1",
             bone_references=bone_references if adaptive_enabled else None,
         )

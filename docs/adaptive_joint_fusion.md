@@ -64,6 +64,9 @@ without rerunning benchmark data.
 ## M2 + M4 + M5: Zero-GT bone-length reliability and risk-aware kinematics
 
 **Status:** implementation added after the A0–A5/L0 Aria02 report.
+Main-branch's zero-GT camera-pair quality diagnostics and poses3d GT path
+are preserved in the merge; global quality fallback is legacy-only when
+adaptive joint-level gating is active.
 **Not yet benchmarked:** do not ascribe those earlier metrics to this revision.
 
 ### M2 — View-local bone-length quality
@@ -128,7 +131,7 @@ sets and per-joint counts. Inspect metadata bone_quality, joint_quality,
 joint_transfer and adaptive_stats for cam19->cam04, cam19->cam05,
 cam20->cam04, cam20->cam05.
 
-**Note:** Setting max_occluded_transfer=0 by itself does not block all
-transfer due to the current weight cap; B2 must use the source-bone threshold
-above 1 to explicitly disable occluded transfers until a dedicated switch
-is introduced.
+**Note:** Setting max_occluded_transfer=0 suffices to disable
+occluded transfers in the current implementation (the soft blend cap
+becomes zero); setting the source-bone threshold above 1 provides an
+additional diagnostic guard.

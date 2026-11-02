@@ -8,11 +8,11 @@ from types import SimpleNamespace
 import numpy as np
 import torch
 
-from evaluation_pipeline.executor import _compute_pa_mpjpe, _compute_pck
+from evaluation_pipeline.executor import _compute_pa_mpjpe, _compute_pck, _load_ground_truth
 from brute_force_runner import EVALUATION_PROTOCOL, _get_header_indices, _parse_history_row, _ranking_key, _resolve_pair_mode
 from fusion_pipeline.correction import apply_multiview_geometric_fusion
 from fusion_pipeline.executor import _source_frame_indices, _restore_master_pose, _restore_pair_pose
-from fusion_pipeline.executor import detect_adaptive_fusion_mode, detect_pair_fusion_gate
+from fusion_pipeline.executor import detect_adaptive_fusion_mode, detect_pair_fusion_gate, detect_camera_pair_quality
 from fusion_pipeline.detector import require_ray_casting_backend
 from fusion_pipeline.optimization import optimize_sequence_gpu
 from learnable_pipeline.executor import _slice_person
@@ -221,6 +221,20 @@ class FusionOptimizationTests(unittest.TestCase):
         )
         self.assertEqual(mode, "conservative")
 
+        mode, _ = detect_adaptive_fusion_mode(
+            cam1, cam2, transform,
+            {name: 0.9 for name in names}, {name: 0.6 for name in names},
+            visible, visible, set(), master_distorted=True,
+        )
+        self.assertEqual(mode, "aggressive")
+
+        mode, _ = detect_adaptive_fusion_mode(
+            cam1, inconsistent, transform,
+            {name: 0.9 for name in names}, {name: 0.6 for name in names},
+            visible, visible, set(), master_distorted=True,
+        )
+        self.assertEqual(mode, "conservative")
+
     def test_pair_quality_gate_fuses_only_when_slave_is_better(self):
         def result(master, slave):
             return {"joint_confidence": {
@@ -331,6 +345,13 @@ class FusionOptimizationTests(unittest.TestCase):
             restored = json.loads((fused_dir / "fused_data_1.json").read_text(encoding="utf-8"))
             self.assertEqual(restored["camera1"]["joint"], [1, 0, 0])
             self.assertEqual(restored["camera2"]["joint"], [8, 0, 0])
+
+    def test_quality_fallback_keeps_single_view_postprocessing(self):
+        executor = (Path(__file__).resolve().parents[1] / "fusion_pipeline" / "executor.py").read_text(encoding="utf-8")
+        restore = executor.index("if quality_fallback:")
+        smoothing = executor.index("smoothing_cfg =", restore)
+        self.assertLess(restore, smoothing)
+        self.assertIn("master_only=not slave_better or quality_fallback", executor)
 
     def test_confidence_corrections_protects_visible_extremities_from_negative_transfer(self):
         from fusion_pipeline.correction import apply_confidence_corrections
@@ -735,6 +756,70 @@ class MasterProtectionAndAngleLimitTests(unittest.TestCase):
         self.assertGreater(a2, 25.0)
         slave_is_noisy = (10 >= 10 and 10 >= 10) and (a2 > 1.4 * a1 and a2 > 25.0)
         self.assertTrue(slave_is_noisy)
+
+    def test_zero_gt_pair_quality_combines_bones_and_acceleration(self):
+        names = ["neck", "pelvis", "left_shoulder", "left_elbow", "left_wrist",
+                 "right_shoulder", "right_elbow", "right_wrist", "left_hip", "left_knee",
+                 "left_ankle", "right_hip", "right_knee", "right_ankle"]
+        good = np.array([[0, .32, 0], [0, 0, 0], [-.16, .32, 0], [-.32, .32, 0], [-.47, .32, 0],
+                         [.16, .32, 0], [.32, .32, 0], [.47, .32, 0], [-.1, 0, 0], [-.1, -.25, 0],
+                         [-.1, -.49, 0], [.1, 0, 0], [.1, -.25, 0], [.1, -.49, 0]], dtype=float)
+        master = np.repeat(good[None], 10, axis=0)
+        slave = master.copy()
+        slave[:, names.index("left_wrist"), 0] = -1.5
+        slave[:, names.index("right_wrist"), 0] = 1.5
+        slave[1::2] += 0.08
+
+        quality = detect_camera_pair_quality(master, slave, names)
+        self.assertEqual(quality["bone_vote"], "camera2")
+        self.assertEqual(quality["acceleration_vote"], "camera2")
+        self.assertEqual(quality["worse_camera"], "camera2")
+
+        reversed_quality = detect_camera_pair_quality(slave, master, names)
+        self.assertEqual(reversed_quality["worse_camera"], "camera1")
+
+        short_track = np.repeat(good[None], 100, axis=0)
+        complete_track = np.repeat(good[None], 220, axis=0)
+        continuity_quality = detect_camera_pair_quality(short_track, complete_track, names)
+        self.assertEqual(continuity_quality["continuity_vote"], "camera1")
+        self.assertEqual(continuity_quality["worse_camera"], "camera1")
+
+    def test_load_ground_truth_poses3d_uses_only_matching_coco_joints(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            p = Path(tmpdir)
+            arr = np.zeros((17, 4), dtype=float)
+            arr[0, :3] = [0.0, 1.0, 2.0]
+            arr[5, :3] = [-1.0, 0.0, 0.0]
+            arr[6, :3] = [1.0, 0.0, 0.0]
+            arr[11, :3] = [-0.5, -1.0, 0.0]
+            arr[12, :3] = [0.5, -1.0, 0.0]
+            np.save(p / "00001.npy", {"aria01": arr})
+
+            gt = _load_ground_truth(p / "dummy.json", truth_dir=p, target_person="aria01")
+            self.assertIn(0, gt)
+            joints = gt[0]["joints"]
+            self.assertNotIn("neck", joints)
+            self.assertNotIn("pelvis", joints)
+            self.assertNotIn("head", joints)
+            np.testing.assert_allclose(joints["left_shoulder"], [-1.0, 0.0, 0.0])
+            np.testing.assert_allclose(joints["right_hip"], [0.5, -1.0, 0.0])
+
+    def test_load_ground_truth_prefers_poses3d_over_smpl(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            p = Path(tmpdir)
+            smpl_dir = p / "smpl"
+            smpl_dir.mkdir()
+            poses_dir = p / "poses3d"
+            poses_dir.mkdir()
+
+            arr_smpl = {"aria01": {"joints": np.ones((73, 3))}}
+            arr_poses = {"aria01": np.zeros((17, 4))}
+            np.save(smpl_dir / "00001.npy", arr_smpl)
+            np.save(poses_dir / "00001.npy", arr_poses)
+
+            gt = _load_ground_truth(p / "dummy.json", truth_dir=p, target_person="aria01")
+            self.assertIn(0, gt)
+            np.testing.assert_allclose(gt[0]["joints"]["left_shoulder"], [0.0, 0.0, 0.0])
 
 
 

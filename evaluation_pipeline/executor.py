@@ -2,12 +2,30 @@ import csv
 import json
 import os 
 import re
+import time
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
 from scipy.spatial import procrustes
 from keypoints_map import load_keypoints3d_map
+
+# #region agent log
+_DEBUG_LOG_PATH = Path(__file__).resolve().parents[1] / "debug-0e35fc.log"
+
+def _agent_dbg(hypothesis_id: str, location: str, message: str, data: dict) -> None:
+    payload = {
+        "sessionId": "0e35fc",
+        "runId": "gt-switch",
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data,
+        "timestamp": int(time.time() * 1000),
+    }
+    with _DEBUG_LOG_PATH.open("a", encoding="utf-8") as _df:
+        _df.write(json.dumps(payload, default=str) + "\n")
+# #endregion
 
 MODULES = ["posed", "fused", "learnable"]
 MODULES = ["posed", "fused", "learnable"]
@@ -188,10 +206,10 @@ def _load_ground_truth(path: Path, truth_dir: Path = None, target_person: str = 
 
     search_dir = truth_dir or path.parent
     npy_files = sorted(search_dir.glob("*.npy"))
-    if not npy_files and (search_dir / "smpl").exists():
-        npy_files = sorted((search_dir / "smpl").glob("*.npy"))
     if not npy_files and (search_dir / "poses3d").exists():
         npy_files = sorted((search_dir / "poses3d").glob("*.npy"))
+    if not npy_files and (search_dir / "smpl").exists():
+        npy_files = sorted((search_dir / "smpl").glob("*.npy"))
 
     if npy_files:
         gt_map = {}
@@ -226,7 +244,38 @@ def _load_ground_truth(path: Path, truth_dir: Path = None, target_person: str = 
                     }
                     joints = {k: np.array(pdata[i, :3], dtype=float) for k, i in coco_map.items() if i < len(pdata)}
                     gt_map[fid] = {"joints": joints, "frame_id": fid}
+                    # #region agent log
+                    if idx == 0:
+                        sample = np.array(pdata[:, :3], dtype=float)
+                        _agent_dbg("H1", "evaluation_pipeline/executor.py:_load_ground_truth", "loaded pose3d ndarray GT", {
+                            "file": str(p), "shape": list(pdata.shape), "person": matched_person,
+                            "coord_abs_mean": float(np.nanmean(np.abs(sample))),
+                            "coord_abs_max": float(np.nanmax(np.abs(sample))),
+                            "derived_joints": False,
+                            "joint_names": sorted(joints.keys()),
+                        })
+                    # #endregion
+                # #region agent log
+                if idx == 0 and isinstance(pdata, dict) and "joints" in pdata:
+                    raw_j = np.array(pdata["joints"], dtype=float)
+                    _agent_dbg("H1", "evaluation_pipeline/executor.py:_load_ground_truth", "loaded SMPL dict joints GT", {
+                        "file": str(p), "joints_shape": list(raw_j.shape), "person": matched_person,
+                        "coord_abs_mean": float(np.nanmean(np.abs(raw_j))),
+                        "coord_abs_max": float(np.nanmax(np.abs(raw_j))),
+                        "mapped_names": sorted(joints.keys()) if "joints" in locals() else [],
+                    })
+                # #endregion
         if gt_map:
+            # #region agent log
+            sample_item = next(iter(gt_map.values()))
+            sample_joints = sample_item.get("joints", {})
+            _agent_dbg("H3", "evaluation_pipeline/executor.py:_load_ground_truth", "gt_map summary", {
+                "search_dir": str(search_dir), "n_frames": len(gt_map),
+                "target_person": person_key, "sample_joint_count": len(sample_joints),
+                "has_neck": "neck" in sample_joints, "has_head": "head" in sample_joints,
+                "has_hands": "left_hand" in sample_joints,
+            })
+            # #endregion
             return gt_map
 
     raise FileNotFoundError(f"GT file not found: {path} and no .npy GT in {search_dir}")
@@ -404,6 +453,13 @@ def run_evaluation(config: dict) -> None:
     gt_cam1_data = _load_ground_truth(cam1_gt_path, truth_dir=truth_dir, target_person=target_person)
     gt_cam2_data = _load_ground_truth(cam2_gt_path, truth_dir=truth_dir, target_person=target_person)
     gt_cam_data = {"camera1": gt_cam1_data, "camera2": gt_cam2_data}
+    # #region agent log
+    _agent_dbg("H4", "evaluation_pipeline/executor.py:run_evaluation", "evaluation GT config", {
+        "truth_dir": str(truth_dir), "target_person": target_person,
+        "n_gt_cam1": len(gt_cam1_data), "n_gt_cam2": len(gt_cam2_data),
+        "priority1": list(priority1_names),
+    })
+    # #endregion
 
     gt_camera_keys = {
         "camera1": _camera_key_from_video_path(inputs.get("camera1_video")),
@@ -551,6 +607,20 @@ def run_evaluation(config: dict) -> None:
         mod: EVALUATION_OUTPUT_MODULE_NAMES.get(mod, mod)
         for mod in module_names
     }
+    # #region agent log
+    if metric_enabled.get("PA-MPJPE") and "posed" in module_names and "fused" in module_names:
+        for cam in CAMERAS:
+            posed_vals = [results["PA-MPJPE"][cam][fr]["posed"]["priority1_mm"] for fr in evaluated_frames if fr in results["PA-MPJPE"][cam]]
+            fused_vals = [results["PA-MPJPE"][cam][fr]["fused"]["priority1_mm"] for fr in evaluated_frames if fr in results["PA-MPJPE"][cam]]
+            if not posed_vals or not fused_vals:
+                continue
+            b = float(np.mean(posed_vals)); m = float(np.mean(fused_vals))
+            _agent_dbg("H2", "evaluation_pipeline/executor.py:run_evaluation", "PA-MPJPE posed vs fused", {
+                "cam": cam, "n_frames": len(posed_vals), "posed_mean_mm": b, "fused_mean_mm": m,
+                "abs_gain_mm": b - m, "pct_gain": ((b - m) * 100.0 / b) if b else None,
+                "truth_dir": str(truth_dir), "target_person": target_person,
+            })
+    # #endregion
 
     accel_results = {cam: {} for cam in CAMERAS}
     if accel_enabled:
