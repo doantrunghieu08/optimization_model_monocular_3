@@ -1,9 +1,6 @@
 name: Full Model v2 unit checks
 
 on:
-  push:
-    branches:
-      - feature/adaptive-joint-frame-protection
   pull_request:
     paths:
       - "fusion_pipeline/**"
@@ -26,7 +23,7 @@ jobs:
       - name: Install minimal unit test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install "numpy==1.26.4" "scipy==1.13.1" "torch==2.5.1" "opencv-python-headless==4.10.0.84" PyYAML ruamel.yaml joblib tqdm pytest
+          python -m pip install "numpy==1.26.4" "scipy==1.13.1" "torch==2.5.1" "opencv-python-headless==4.10.0.84" PyYAML ruamel.yaml joblib tqdm pytest trimesh rtree
       - name: Run adaptive model unit tests (no WHAM/GT dataset required)
         run: |
           python -m pytest -q tests/test_adaptive_protection.py tests/test_bone_risk_gate.py tests/test_full_model_v2.py
