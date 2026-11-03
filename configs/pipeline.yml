@@ -44,6 +44,16 @@ fusion:
   # fails closed to raw Master if independent observations are unavailable.
   aotr:
     enabled: true
+    # Auto-select independent 2D geometry when available; otherwise run the
+    # separately labeled 3D-only surrogate instead of 301-frame raw fallback.
+    # Set fail_closed for strict 2D-only AOTR.
+    missing_2d_mode: 3d_surrogate
+    three_d_consensus_weight: 0.12
+    three_d_slave_advantage_gain: 3.0
+    three_d_master_prior_weight: 0.75
+    three_d_temporal_weight: 0.15
+    three_d_jitter_epsilon: 0.06
+    three_d_occluded_master_reliability: 0.15
     min_2d_confidence: 0.35
     min_correspondences: 4
     alignment_median_max_m: 0.12
