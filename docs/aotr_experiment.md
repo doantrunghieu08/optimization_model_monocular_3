@@ -195,6 +195,92 @@ arrays for all 21 joints, you are viewing the **legacy** path or stale cached
 results, not a validated AOTR run. Confirm the active Git branch and config
 before drawing any performance conclusions.
 
+## Post-pass for Accel and MBLE regression (AOTR-3D only)
+
+Framewise orientation correction can improve **PA-MPJPE** and increase
+the discrete second derivative of its position residual:
+
+```
+R[t] = fused[t] - master[t]
+A_corr[t] = R[t+1] - 2 R[t] + R[t-1]
+```
+
+The baseline acceleration error uses `pred_accel-GT_accel`; decreasing
+`A_corr` therefore reduces a bound on *additional* acceleration error,
+but DOES NOT guarantee lower error to unknown GT.
+
+The experimental offline `fusion.aotr.sequence_stability` pass (default ON
+in this branch) makes two **independently ablatable** modifications:
+
+1. `temporal_stability.enabled`: minimize a bounded quadratic surrogate
+
+   ```
+   min_{0.2<=s[t]<=1}
+     shape_weight * sum ||R[t]||²(s[t]-1)²
+   + residual_accel_weight * sum ||Delta²(s[t]*R[t])||²
+   + residual_velocity_weight * sum ||Delta(s[t]*R[t])||²
+   ```
+
+   Optimize one per-frame **correction scale**, leaving natural Master
+   movement in place. Scale is 0 for frames without a Slave correction.
+   Reconstruct joint positions by FK at Master bone lengths after
+   scaling, to prevent naive XYZ smoothing from changing bones.
+
+2. `anatomical_calibration.enabled`: estimate robust **median total arm
+   and leg lengths** from synchronized *raw Master* frames (no GT).
+   Calibrate humerus/forearm to 54%/46%, femur/shank to 53%/47%
+   across time. The old legacy post-optimizer used the same proportions,
+   but with per-frame totals. This is an additional *bone-model
+   hypothesis*, NOT proof of correct ground-truth lengths.
+
+   When this stage is enabled, even joints marked KEEP before the
+   post-pass can move. They are explicitly relabeled `POSTPROCESS`
+   in final per-frame metadata. The number of accepted Slave bones
+   still describes only the earlier AOTR transfer stage.
+
+Configuration and ablation (always use held-out evaluation):
+
+```yaml
+fusion:
+  aotr:
+    sequence_stability:
+      enabled: true
+      temporal_stability:
+        enabled: true
+        shape_weight: 1.0
+        residual_accel_weight: 10.0
+        residual_velocity_weight: 0.5
+        minimum_retention: 0.20
+      anatomical_calibration:
+        enabled: true
+        arm_upper_fraction: 0.54
+        leg_thigh_fraction: 0.53
+```
+
+Suggested 2×2 ablation on a development split, using identical frame sets:
+
+| Temporal stabilization | Anatomical calibration | Purpose |
+| --- | --- | --- |
+| off | off | original AOTR-3D |
+| on | off | Accel-related surrogate benefit vs PA retention |
+| off | on | MBLE benefit/risk of anthropometric proportions |
+| on | on | test combined effect |
+
+Run `python brute_force_runner.py`; the report protocol hashes the entire
+AOTR config, so each of these 4 configurations gets its own result CSV.
+The report now includes `AOTR temporal retention %`,
+`AOTR residual accel before/after mm/f2`, and
+`AOTR anatomy calibrated bones`.
+
+**Important:** The residual-acceleration diagnostic is **NOT** the GT
+acceleration-error metric. Only evaluation's `Accel_cam1.csv` measures
+error to GT. Likewise constant bone lengths alone cannot certify
+improved `MBLE_cam1.csv`. PA-MPJPE can also decrease after a
+post-pass, so all three must be checked independently. If the combined
+variant loses too much PA gain, reduce `residual_accel_weight` or
+disable anatomical calibration rather than assuming the new variant
+is better.
+
 ## Validation protocol
 
 Run isolated synthetic tests:
