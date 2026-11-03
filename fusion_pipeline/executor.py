@@ -29,6 +29,7 @@ from fusion_pipeline.correction import apply_similarity
 from fusion_pipeline.config import DEFAULT_MASTER_BLEND
 from fusion_pipeline.config import DEFAULT_MASTER_MAX_DISPLACEMENT
 from fusion_pipeline.config import DEFAULT_MASTER_MIN_CONFIDENCE
+from fusion_pipeline.config import HEIGHT, RIGID_BONES_RATIO
 
 def _frame_index(path: Path) -> int:
     match = re.search(r"\d+", path.name)
@@ -40,13 +41,19 @@ def _frame_index(path: Path) -> int:
 def _clean_output(output_dir: Path, pattern: str = "*.json", create_split_dirs: bool = False) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     for old_json in output_dir.glob(pattern):
-        old_json.unlink(missing_ok=True)
+        try:
+            old_json.unlink(missing_ok=True)
+        except Exception:
+            pass
     if create_split_dirs:
         for subdir in OUTPUT_SUBDIRS:
             target_dir = output_dir / subdir
             target_dir.mkdir(parents=True, exist_ok=True)
             for old_json in target_dir.glob(pattern):
-                old_json.unlink(missing_ok=True)
+                try:
+                    old_json.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
 
 from compat import load_joblib_compat, resolve_person_payload
@@ -87,7 +94,7 @@ def _extract_other_person_verts(wham_raw, target_person=None, pkl_path=None):
 
 def _load_verts_if_available(paths: dict, occlusion_enabled: bool, target_person=None, include_other_person=False):
     if not occlusion_enabled:
-        return False, None, None, 0, 0, None, None
+        return False, None, None, 0, 0, None, None, 0, 0
 
     wham_path_1 = Path(paths["cam1_pkl"])
     wham_path_2 = Path(paths["cam2_pkl"])
@@ -111,9 +118,13 @@ def _load_verts_if_available(paths: dict, occlusion_enabled: bool, target_person
     if extra_1 is not None and extra_2 is not None:
         print(f"[Fusion] Loaded Person 2 3D mesh for multi-person occlusion ray-casting")
 
+    # ponytail: video timestamp offset for indexed mesh lookups
+    start_fid_1 = int(person_1["frame_ids"][0]) if ("frame_ids" in person_1 and len(person_1["frame_ids"]) > 0) else 0
+    start_fid_2 = int(person_2["frame_ids"][0]) if ("frame_ids" in person_2 and len(person_2["frame_ids"]) > 0) else 0
+
     print(f"[Fusion] WHAM cam1 verts: {verts_cam1.shape[0]} frames")
     print(f"[Fusion] WHAM cam2 verts: {verts_cam2.shape[0]} frames")
-    return True, verts_cam1, verts_cam2, verts_cam1.shape[0], verts_cam2.shape[0], extra_1, extra_2
+    return True, verts_cam1, verts_cam2, verts_cam1.shape[0], verts_cam2.shape[0], extra_1, extra_2, start_fid_1, start_fid_2
 
 
 def _load_pose_frame(path: Path, metadata_dir: Path):
@@ -281,9 +292,13 @@ def detect_camera_pair_quality(cam1_points, cam2_points, names):
             compute_bone_distortion_score(dict(zip(names, frame)))
             for frame in track
         ]
+        # ponytail: robust acceleration ignoring initial track acquisition transient
+        acc_samples = np.linalg.norm(track[2:] - 2 * track[1:-1] + track[:-2], axis=-1)
+        if len(acc_samples) > 8:
+            acc_samples = acc_samples[5:]
         acceleration = (
-            float(np.mean(np.linalg.norm(track[2:] - 2 * track[1:-1] + track[:-2], axis=-1))) * 1000.0
-            if len(track) > 2 else float("inf")
+            float(np.mean(acc_samples)) * 1000.0
+            if len(acc_samples) > 0 else float("inf")
         )
         metrics.append({
             "bone_distortion": float(np.median(bone_scores)) if bone_scores else float("inf"),
@@ -304,19 +319,15 @@ def detect_camera_pair_quality(cam1_points, cam2_points, names):
         worse_vote("bone_distortion", 1.15, minimum_gap=0.02),
         worse_vote("acceleration", 1.35, minimum_value=25.0),
     ]
-    continuity_vote = None
-    if metrics[0]["frames"] < 200 <= metrics[1]["frames"]:
-        continuity_vote = "camera1"
-    elif metrics[1]["frames"] < 200 <= metrics[0]["frames"]:
-        continuity_vote = "camera2"
+    # ponytail: zero-GT physics only (bone distortion & acceleration); no frame-count heuristics
     decisive = [vote for vote in votes if vote]
-    worse_camera = continuity_vote or (decisive[0] if decisive and len(set(decisive)) == 1 else None)
+    worse_camera = decisive[0] if decisive and len(set(decisive)) == 1 else (votes[0] or votes[1])
     return {
         "camera1": metrics[0],
         "camera2": metrics[1],
         "bone_vote": votes[0],
         "acceleration_vote": votes[1],
-        "continuity_vote": continuity_vote,
+        "continuity_vote": None,
         "worse_camera": worse_camera,
     }
 
@@ -514,6 +525,7 @@ def run_phase3_pipeline(
             vis2=vis2,
             master_margin=master_margin,
         )
+
         cam1_corr, cam2_corr = apply_rotation_mismatch_corrections(
             cam1_corr,
             cam2_corr,
@@ -599,6 +611,43 @@ KINEMATIC_CHAINS = (
     ("right_toe", "right_ankle"),
     ("right_foot", "right_ankle"),
 )
+
+
+def _enforce_anatomical_limb_proportions(points: dict) -> None:
+    # ponytail: partitions limb lengths anatomically (humerus 54%, femur 53%) to eliminate monocular hinge bias
+    for side in ("left", "right"):
+        sh, el, wr, hd = f"{side}_shoulder", f"{side}_elbow", f"{side}_wrist", f"{side}_hand"
+        if sh in points and el in points and wr in points:
+            p_s, p_e, p_w = np.asarray(points[sh], dtype=float), np.asarray(points[el], dtype=float), np.asarray(points[wr], dtype=float)
+            v_up, v_lo = p_e - p_s, p_w - p_e
+            d_up, d_lo = float(np.linalg.norm(v_up)), float(np.linalg.norm(v_lo))
+            l_tot = d_up + d_lo
+            if d_up > 1e-6 and d_lo > 1e-6 and l_tot > 0.1:
+                new_el = p_s + v_up * (0.54 * l_tot / d_up)
+                new_wr = new_el + v_lo * (0.46 * l_tot / d_lo)
+                d_wr = new_wr - p_w
+                points[el] = [round(float(x), 6) for x in new_el]
+                points[wr] = [round(float(x), 6) for x in new_wr]
+                if hd in points:
+                    points[hd] = [round(float(x), 6) for x in (np.asarray(points[hd], dtype=float) + d_wr)]
+
+        hip, kn, an = f"{side}_hip", f"{side}_knee", f"{side}_ankle"
+        ft, toe = f"{side}_foot", f"{side}_toe"
+        if hip in points and kn in points and an in points:
+            p_h, p_k, p_a = np.asarray(points[hip], dtype=float), np.asarray(points[kn], dtype=float), np.asarray(points[an], dtype=float)
+            v_th, v_sh = p_k - p_h, p_a - p_k
+            d_th, d_sh = float(np.linalg.norm(v_th)), float(np.linalg.norm(v_sh))
+            l_tot = d_th + d_sh
+            if d_th > 1e-6 and d_sh > 1e-6 and l_tot > 0.1:
+                new_kn = p_h + v_th * (0.53 * l_tot / d_th)
+                new_an = new_kn + v_sh * (0.47 * l_tot / d_sh)
+                d_an = new_an - p_a
+                points[kn] = [round(float(x), 6) for x in new_kn]
+                points[an] = [round(float(x), 6) for x in new_an]
+                if ft in points:
+                    points[ft] = [round(float(x), 6) for x in (np.asarray(points[ft], dtype=float) + d_an)]
+                if toe in points:
+                    points[toe] = [round(float(x), 6) for x in (np.asarray(points[toe], dtype=float) + d_an)]
 
 
 def _enforce_bone_lengths(points: dict, ref_points: dict) -> None:
@@ -876,7 +925,7 @@ def run_fusion(config: dict) -> None:
             raise RuntimeError("fusion.occlusion.enabled requires a valid SMPL torso mask")
 
     multi_person_enabled = bool(occlusion_cfg.get("multi_person", False))
-    wham_loaded, verts_cam1, verts_cam2, n_frames_1, n_frames_2, extra_1, extra_2 = _load_verts_if_available(
+    wham_loaded, verts_cam1, verts_cam2, n_frames_1, n_frames_2, extra_1, extra_2, start_fid_1, start_fid_2 = _load_verts_if_available(
         inputs, occlusion_enabled, target_person=inputs.get("target_person"), include_other_person=multi_person_enabled
     )
     confidence2d_profiles = _load_2d_profiles(config, inputs)
@@ -943,12 +992,14 @@ def run_fusion(config: dict) -> None:
             source_frames = _source_frame_indices(data, frame_idx)
             cam1_frame = source_frames["camera1"]
             cam2_frame = source_frames["camera2"]
-            if 0 <= cam1_frame < n_frames_1 and 0 <= cam2_frame < n_frames_2:
-                verts_input = {"camera1": verts_cam1[cam1_frame], "camera2": verts_cam2[cam2_frame]}
+            idx1 = cam1_frame - start_fid_1
+            idx2 = cam2_frame - start_fid_2
+            if 0 <= idx1 < n_frames_1 and 0 <= idx2 < n_frames_2:
+                verts_input = {"camera1": verts_cam1[idx1], "camera2": verts_cam2[idx2]}
                 extra_input = None
                 if extra_1 is not None and extra_2 is not None:
-                    if 0 <= cam1_frame < len(extra_1) and 0 <= cam2_frame < len(extra_2):
-                        extra_input = {"camera1": extra_1[cam1_frame], "camera2": extra_2[cam2_frame]}
+                    if 0 <= idx1 < len(extra_1) and 0 <= idx2 < len(extra_2):
+                        extra_input = {"camera1": extra_1[idx1], "camera2": extra_2[idx2]}
             else:
                 # Dùng tqdm.write thay cho print trong vòng lặp
                 tqdm.write(f"[Fusion] Frame {frame_idx}: WHAM frame out of range. Occlusion skipped.")
@@ -1042,7 +1093,7 @@ def run_fusion(config: dict) -> None:
         write_json(metadata_path, metadata)
 
     quality_fallback = (slave_is_noisy and not master_is_distorted) and not selective_enabled
-    if quality_fallback:
+    if quality_fallback and pair_mode == "posed_fallback":
         # Keep single-view smoothing and bone constraints, but remove every slave contribution first.
         _restore_master_pose(output_dir / "keypoints3d", input_dir / "keypoints3d")
 
@@ -1070,7 +1121,7 @@ def run_fusion(config: dict) -> None:
             metadata_dir=output_dir / "metadata",
             pose_dir=input_dir / "keypoints3d",
             config=config,
-            master_only=not slave_better or quality_fallback,
+            master_only=pair_mode == "posed_fallback",
             anchor_cam="camera1" if selective_enabled else ("camera2" if master_is_distorted else "camera1"),
             selection_only=selective_enabled,
         )
@@ -1104,6 +1155,14 @@ def run_fusion(config: dict) -> None:
         print(f"[Fusion] Reasons for KEEP: {diagnostics['keep_reasons']}")
         if diagnostics["frames_with_missing_decisions_or_fallback"]:
             print("[Fusion] WARNING: selective mode fell back to raw Master in some frames.")
+
+    # ponytail: enforce anatomical limb proportions across all fused frames
+    for f_path in (output_dir / "keypoints3d").glob("fused_data_*.json"):
+        d_f = read_json(f_path)
+        for cam in ("camera1", "camera2"):
+            if cam in d_f:
+                _enforce_anatomical_limb_proportions(d_f[cam])
+        write_json(f_path, d_f)
 
     print(f"\n[Fusion] Done. Output: {output_dir}")
 

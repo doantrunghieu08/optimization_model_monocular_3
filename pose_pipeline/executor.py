@@ -59,6 +59,12 @@ def _shared_betas(*person_data: dict) -> np.ndarray:
 
 
 def _resolve_tracking_frame_ids(person_data):
+    # ponytail: direct frame_ids from WHAM pkl
+    if "frame_ids" in person_data and person_data["frame_ids"] is not None:
+        fids = np.asarray(person_data["frame_ids"]).astype(int).reshape(-1)
+        if fids.shape[0] == int(np.asarray(person_data["pose"]).shape[0]):
+            return fids.tolist()
+
     tracking = person_data.get("tracking_results_for_reproj")
     if not isinstance(tracking, dict) or "frame_id" not in tracking:
         return None
@@ -77,12 +83,18 @@ def _resolve_tracking_frame_ids(person_data):
 def _clean_pose_output(output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     for old_json in output_dir.glob("pose_data_*.json"):
-        old_json.unlink(missing_ok=True)
+        try:
+            old_json.unlink(missing_ok=True)
+        except Exception:
+            pass
     for subdir in POSE_OUTPUT_SUBDIRS:
         target_dir = output_dir / subdir
         target_dir.mkdir(parents=True, exist_ok=True)
         for old_json in target_dir.glob("pose_data_*.json"):
-            old_json.unlink(missing_ok=True)
+            try:
+                old_json.unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 def run_pose_export(config: dict) -> None:
@@ -116,6 +128,9 @@ def run_pose_export(config: dict) -> None:
     cam2_tracking_frame_ids = _resolve_tracking_frame_ids(cam2_data)
 
     offset, _ = resolve_selected_offset_from_camera_profile(config)
+    # ponytail: absolute video timestamp alignment when both cameras provide frame_ids
+    if cam1_tracking_frame_ids is not None and cam2_tracking_frame_ids is not None:
+        offset = int(cam1_tracking_frame_ids[0] - cam2_tracking_frame_ids[0])
     cam1_start = max(0, -offset)
     cam2_start = max(0, offset)
     synced_total_frames = max(0, min(len(cam1_data["pose"]) - cam1_start, len(cam2_data["pose"]) - cam2_start))

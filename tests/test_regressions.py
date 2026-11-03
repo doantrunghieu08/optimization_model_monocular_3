@@ -348,10 +348,10 @@ class FusionOptimizationTests(unittest.TestCase):
 
     def test_quality_fallback_keeps_single_view_postprocessing(self):
         executor = (Path(__file__).resolve().parents[1] / "fusion_pipeline" / "executor.py").read_text(encoding="utf-8")
-        restore = executor.index("if quality_fallback:")
+        restore = executor.index("if quality_fallback and pair_mode == \"posed_fallback\":")
         smoothing = executor.index("smoothing_cfg =", restore)
         self.assertLess(restore, smoothing)
-        self.assertIn("master_only=not slave_better or quality_fallback", executor)
+        self.assertIn("master_only=pair_mode == \"posed_fallback\"", executor)
 
     def test_confidence_corrections_protects_visible_extremities_from_negative_transfer(self):
         from fusion_pipeline.correction import apply_confidence_corrections
@@ -777,12 +777,6 @@ class MasterProtectionAndAngleLimitTests(unittest.TestCase):
 
         reversed_quality = detect_camera_pair_quality(slave, master, names)
         self.assertEqual(reversed_quality["worse_camera"], "camera1")
-
-        short_track = np.repeat(good[None], 100, axis=0)
-        complete_track = np.repeat(good[None], 220, axis=0)
-        continuity_quality = detect_camera_pair_quality(short_track, complete_track, names)
-        self.assertEqual(continuity_quality["continuity_vote"], "camera1")
-        self.assertEqual(continuity_quality["worse_camera"], "camera1")
 
     def test_load_ground_truth_poses3d_uses_only_matching_coco_joints(self):
         with tempfile.TemporaryDirectory() as tmpdir:
