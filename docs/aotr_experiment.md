@@ -22,13 +22,66 @@ remains disabled). Never enable `fusion.aotr` and
 This is an **offline, per-frame first prototype**. It keeps WHAM as the pose
 source but does not train or introduce any new neural network.
 
+## Missing 2D: experimental WHAM-3D-only optimization
+
+The earlier all-frame `insufficient_2d_correspondences` error is not repaired
+by inventing 2D keypoints or setting `min_correspondences: 0`.
+
+The AOTR experiment configuration now uses:
+
+```yaml
+fusion:
+  aotr:
+    enabled: true
+    missing_2d_mode: 3d_surrogate
+```
+
+When real 2D keypoints are available with valid intrinsics, the original
+two-view observability-aware 2D objective is used. When they are missing,
+`3d_surrogate` invokes **a different optimization-only branch** using:
+- an anchor-derived rigid Master↔Slave alignment (estimated from 3D WHAM
+  torso joints, *not* independently calibrated camera extrinsics);
+- each camera's limb orientation candidate in its own 3D coordinates;
+- mesh visibility and, when available, the angular acceleration of local
+  bones over three consecutive WHAM 3D frames;
+- a soft asymmetric Master prior and a bounded adaptive one-dimensional
+  trust-region search over each bone's interpolation coefficient;
+- forward kinematics to preserve the original Master bone length.
+
+The 3D-only surrogate has **NO 2D observability certificate** and **NO
+guarantee of lower MPJPE**. Stable but biased Slave poses can still harm
+Master; this mode is for measured ablation only. An experimental
+`three_d_consensus_weight` also permits small corrections even when
+both WHAM cameras have indistinguishable temporal consistency. Do not
+interpret this as independent evidence that Slave is better.
+
+To require real 2D evidence and return the original explicit fallback:
+
+```yaml
+fusion:
+  aotr:
+    missing_2d_mode: fail_closed
+```
+
+The output `aotr_diagnostics.json` contains `evidence_counts`, e.g.
+`{"3d_surrogate": 301}` or `{"two_view_2d": 301}`, plus
+`corrected_frames`, `accepted_bone_frames`, and `reason_counts`.
+Each frame's metadata records `aotr.evidence_mode`.
+
+**Do not compare a 3D-only run with 2D-enabled AOTR without reporting
+the evidence mode and the coverage.** For meaningful physics-vs-accuracy
+ablation, compare the current 3D-only optimizer with legacy V1 and Master
+using exactly the same camera pair, individual and evaluation frames.
+
 ## Input requirements
 
 - Two synchronized WHAM 3D poses, in their respective camera coordinates.
 - Camera intrinsics for both views (via existing calibration resolver).
-- The **actual** tracked 2D keypoints for both views. Missing companion
-  tracking files cause **fallback to raw Master**, not silent synthetic
-  confidence. Copied hand/foot detector aliases are not independent evidence.
+- The **actual** tracked 2D keypoints for both views are required for the
+  two-view 2D **observability** objective. If those are unavailable,
+  `missing_2d_mode: 3d_surrogate` uses a different 3D-only objective,
+  explicitly tagged as such. Copied hand/foot detector aliases are not
+  independent evidence.
 - At least three visible, non-collinear torso alignment anchors; median
   and 75th-percentile rigid-fit residual checks.
 - At least four 2D correspondences shared between the views.
@@ -72,8 +125,9 @@ must therefore NOT be treated as a certification of 3D improvement.
 7. Reject updates without a positive surrogate reduction. Preserve untouched
    bone orientations. Downstream joints follow FK, are marked PROPAGATE in
    metadata if their positions move; unchanged joints are labelled KEEP.
-8. If any prerequisite is missing or unsafe, return the raw Master pose and a
-   structured fallback reason.
+8. In 2D mode, if trustworthy observations are missing, use the explicitly
+   configured 3D-only surrogate or fail closed. Unsafe torso alignment still
+   falls back to raw Master with a structured reason.
 
 ### Why this bypasses legacy postprocessing
 
@@ -132,8 +186,8 @@ The runner now prints `[BruteForce] AOTR enabled: True` and the full
 - The report has 3 AOTR-specific columns: corrected frames, accepted
   bones and fallback frames.
 - If `aotr_diagnostics.json` does not exist, has zero processed frames,
-  or all frames fallback, that camera pair fails explicitly rather
-  than being silently recorded as a valid AOTR metric.
+  or all frames fallback (even in the 3D-only surrogate), that camera
+  pair fails explicitly rather than being recorded as a valid metric.
 
 **Important:** If the report still shows
 `no_gt_v10_master_only_postopt` and populated Belief Master / Belief Slave
