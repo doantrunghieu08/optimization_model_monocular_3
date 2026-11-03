@@ -1144,6 +1144,10 @@ def run_fusion(config: dict) -> None:
             corrected_sequence, aotr_postprocessing = postprocess_aotr_3d(
                 master_sequence, fused_sequence,
                 config=aotr_cfg.get("sequence_stability", {}),
+                editable_mask=[
+                    r.get("aotr", {}).get("status") != "fallback"
+                    for r in frame_results
+                ],
             )
             for i, target_path in enumerate(target_paths):
                 record = read_json(target_path)
