@@ -103,6 +103,21 @@ class AOTRStabilityTests(unittest.TestCase):
                 self.assertLess(float(np.std(total_lengths)), 1e-9)
                 self.assertLess(float(np.std(upper_lengths)), 1e-9)
 
+    def test_fallback_frames_remain_exact_raw_master(self):
+        raw, fused = _frames()
+        frozen = [False, True, False, True] + [True] * (len(raw)-4)
+        # Unsafe frames already returned exact Master in the AOTR stage.
+        for i, allowed in enumerate(frozen):
+            if not allowed:
+                fused[i] = {j: list(v) for j, v in raw[i].items()}
+        output, diagnostics = postprocess_aotr_3d(raw, fused, {
+            "temporal_stability": {"enabled": True},
+            "anatomical_calibration": {"enabled": True}
+        }, editable_mask=frozen)
+        self.assertEqual(output[0], raw[0])
+        self.assertEqual(output[2], raw[2])
+        self.assertEqual(diagnostics["frozen_fallback_frames"], 2)
+
     def test_exact_noop_when_both_mechanisms_disabled(self):
         raw, fused = _frames()
         output, d = postprocess_aotr_3d(raw, fused, {
