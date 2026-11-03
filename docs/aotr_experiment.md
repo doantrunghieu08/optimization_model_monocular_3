@@ -108,6 +108,39 @@ that AOTR marked KEEP. When AOTR is enabled all those postprocessors are
 - Master-occluded, Slave-visible joints are eligible (under the same alignment
   and geometric evidence prerequisites), but their depth may remain ambiguous.
 
+## Brute-force provenance and cache isolation
+
+Run all configured ordered camera pairs:
+
+```bash
+git fetch origin
+git switch experiment/observability-aware-trust-region
+git pull --ff-only
+python brute_force_runner.py
+```
+
+The runner now prints `[BruteForce] AOTR enabled: True` and the full
+`[BruteForce] Active protocol` in the startup logs. The protocol contains
+`__aotr_fk_trustregion_v1__` and a 12-character settings fingerprint.
+
+- Legacy benchmark output remains `output/brute_force_report.csv`.
+- AOTR output is separate: `output/brute_force_report_aotr_<hash>.csv`.
+- Cached legacy rows will NOT be loaded or reused by AOTR; changing AOTR
+  parameters yields a new fingerprint and independent CSV.
+- For each pair the runner prints `[AOTR] camXX->camYY:
+  frames=..., corrected=..., accepted_bones=..., fallback=...`.
+- The report has 3 AOTR-specific columns: corrected frames, accepted
+  bones and fallback frames.
+- If `aotr_diagnostics.json` does not exist, has zero processed frames,
+  or all frames fallback, that camera pair fails explicitly rather
+  than being silently recorded as a valid AOTR metric.
+
+**Important:** If the report still shows
+`no_gt_v10_master_only_postopt` and populated Belief Master / Belief Slave
+arrays for all 21 joints, you are viewing the **legacy** path or stale cached
+results, not a validated AOTR run. Confirm the active Git branch and config
+before drawing any performance conclusions.
+
 ## Validation protocol
 
 Run isolated synthetic tests:
