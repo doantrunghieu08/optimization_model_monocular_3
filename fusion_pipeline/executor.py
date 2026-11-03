@@ -1126,6 +1126,53 @@ def run_fusion(config: dict) -> None:
         frame_results.append(result)
         previous_previous_raw, previous_raw = previous_raw, data
 
+    aotr_postprocessing = {"status": "disabled"}
+    if aotr_enabled and bool(aotr_cfg.get("sequence_stability", {}).get("enabled", False)):
+        # Offline second pass. Master/Fused sequences are synchronized and
+        # evaluated independently from any ground-truth data.
+        evidence = [r.get("aotr", {}).get("evidence_mode") for r in frame_results]
+        if evidence and all(mode == "3d_surrogate" for mode in evidence):
+            from fusion_pipeline.aotr_stability import postprocess_aotr_3d
+            master_sequence = [
+                _load_pose_frame(p, metadata_dir)["camera1"] for p in file_paths
+            ]
+            target_paths = [
+                output_dir / "keypoints3d" / f"fused_data_{_frame_index(p)}.json"
+                for p in file_paths
+            ]
+            fused_sequence = [read_json(p)["camera1"] for p in target_paths]
+            corrected_sequence, aotr_postprocessing = postprocess_aotr_3d(
+                master_sequence, fused_sequence,
+                config=aotr_cfg.get("sequence_stability", {}),
+            )
+            for i, target_path in enumerate(target_paths):
+                record = read_json(target_path)
+                record["camera1"] = corrected_sequence[i]
+                write_json(target_path, record)
+                metadata_path = output_dir / "metadata" / target_path.name
+                metadata = read_json(metadata_path)
+                original = master_sequence[i]
+                moved = [
+                    j for j in original
+                    if float(np.linalg.norm(
+                        np.asarray(corrected_sequence[i][j], dtype=float)
+                        - np.asarray(fused_sequence[i][j], dtype=float)
+                    )) > 1e-7
+                ]
+                if moved:
+                    metadata["aotr_stability_changed_joints"] = moved
+                    # A calibrated KEEP is no longer a byte-exact KEEP.
+                    decisions = metadata.get("joint_selection", {})
+                    for j in moved:
+                        if decisions.get(j) == "KEEP":
+                            decisions[j] = "POSTPROCESS"
+                    metadata["joint_selection"] = decisions
+                write_json(metadata_path, metadata)
+            print(f"[Fusion] AOTR sequence stability: {aotr_postprocessing}")
+        else:
+            aotr_postprocessing = {"status": "skipped_nonuniform_3d_evidence"}
+            print(f"[Fusion] AOTR sequence stability skipped: {aotr_postprocessing}")
+
     if selective_enabled:
         n_selected = sum(
             sum(mode != "KEEP" for mode in result.get("joint_selection", {}).values())
@@ -1231,6 +1278,7 @@ def run_fusion(config: dict) -> None:
             "fallback_frames": sum(not d for d in diagnostics) + sum(d.get("status") == "fallback" for d in diagnostics),
             "reason_counts": dict(Counter(d.get("reason", "pipeline_exception") for d in diagnostics)),
             "evidence_counts": dict(Counter(d.get("evidence_mode", "pipeline_exception") for d in diagnostics)),
+            "sequence_stability": aotr_postprocessing,
         }
         write_json(output_dir / "aotr_diagnostics.json", summary)
         print(f"[Fusion] AOTR diagnostics: {summary}")
