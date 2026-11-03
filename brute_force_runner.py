@@ -15,6 +15,12 @@ from config_loader import load_config
 
 VIDEO_FOLDER = "imageSequence"
 EVALUATION_PROTOCOL = "no_gt_v10_master_only_postopt"
+from fusion_pipeline.aotr_benchmark import (
+    aotr_enabled, cache_compatible, evaluation_protocol,
+    report_csv_name, verify_aotr_execution,
+)
+ACTIVE_EVALUATION_PROTOCOL = EVALUATION_PROTOCOL
+ACTIVE_REPORT_CSV_NAME = "brute_force_report.csv"
 
 HAS_GSPREAD = False
 try:
@@ -261,9 +267,9 @@ def _get_header_indices(header: list) -> dict:
     }
     return idx
 
-def _parse_history_row(row: list, idx: dict) -> tuple:
+def _parse_history_row(row: list, idx: dict, expected_protocol: str = EVALUATION_PROTOCOL) -> tuple:
     if idx.get('Segment', -1) == -1 or idx['Segment'] >= len(row): return None, None
-    if idx.get('Protocol', -1) == -1 or idx['Protocol'] >= len(row) or row[idx['Protocol']] != EVALUATION_PROTOCOL: return None, None
+    if idx.get('Protocol', -1) == -1 or idx['Protocol'] >= len(row) or row[idx['Protocol']] != expected_protocol: return None, None
     if row[idx['Segment']] == "End": return None, None
     if idx.get('mpjpe.all_method', -1) != -1 and row[idx['mpjpe.all_method']] in ("N/A", "", "inf"): return None, None
     
@@ -297,6 +303,9 @@ def _parse_history_row(row: list, idx: dict) -> tuple:
         "old_accel_error": sf('accel.baseline'),
         "le_mpjpe_master": get_val('mpjpe.all_le', "N/A"),
         "le_pa_mpjpe_master": get_val('pa-mpjpe.all_le', "N/A"),
+        "aotr_corrected_frames": sf('AOTR corrected frames'),
+        "aotr_accepted_bones": sf('AOTR accepted bones'),
+        "aotr_fallback_frames": sf('AOTR fallback frames'),
         "belief_master": get_val('belief Master', "[]"),
         "belief_slave": get_val('belief Slave', "[]"),
         "old_mpjpe": sf('mpjpe.all_baseline'),
@@ -332,7 +341,8 @@ def _parse_history_row(row: list, idx: dict) -> tuple:
     }
     return key, res
 
-def load_existing_spreadsheet_results(sheet_name: str) -> dict:
+def load_existing_spreadsheet_results(sheet_name: str, expected_protocol: str | None = None) -> dict:
+    expected_protocol = expected_protocol or ACTIVE_EVALUATION_PROTOCOL
     existing = {}
     if HAS_GSPREAD:
         try:
@@ -345,14 +355,14 @@ def load_existing_spreadsheet_results(sheet_name: str) -> dict:
                 )
                 if not any(idx.get(column, -1) == -1 for column in required):
                     for row in rows:
-                        key, res = _parse_history_row(row, idx)
+                        key, res = _parse_history_row(row, idx, expected_protocol=expected_protocol)
                         if key and key[0] != "N/A": existing[key] = res
                     return existing
         except Exception:
             pass
 
     ws_dir = Path(__file__).parent.resolve()
-    local_csv = ws_dir / "output" / "brute_force_report.csv"
+    local_csv = ws_dir / "output" / ACTIVE_REPORT_CSV_NAME
     if local_csv.exists():
         try:
             with open(local_csv, "r", encoding="utf-8-sig") as f:
@@ -361,7 +371,7 @@ def load_existing_spreadsheet_results(sheet_name: str) -> dict:
                 header, rows = reader[0], reader[1:]
                 idx = _get_header_indices(header)
                 for row in rows:
-                    key, res = _parse_history_row(row, idx)
+                    key, res = _parse_history_row(row, idx, expected_protocol=expected_protocol)
                     if key and key[0] != "N/A": existing[key] = res
                 print(f"[Local] Đã tải {len(existing)} kết quả cũ từ {local_csv.name}")
         except Exception:
@@ -385,6 +395,8 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
         'mble.baseline', 'mble.method', 'mble.le',
         # Accel Group
         'accel.baseline', 'accel.method', 'accel.le',
+        # AOTR activation / improvement coverage
+        'AOTR corrected frames', 'AOTR accepted bones', 'AOTR fallback frames',
         # Belief Group
         'belief Master', 'belief Slave',
         # Metadata
@@ -437,6 +449,10 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
                 fmt(res.get('old_accel_error', float('inf'))),
                 fmt(res.get('accel', float('inf'))),
                 fmt(res.get('le_accel_error', float('inf'))),
+                # AOTR diagnostics
+                fmt(res.get('aotr_corrected_frames')),
+                fmt(res.get('aotr_accepted_bones')),
+                fmt(res.get('aotr_fallback_frames')),
                 # Belief Group
                 res.get('belief_master', "[]"),
                 res.get('belief_slave', "[]"),
@@ -492,7 +508,7 @@ def generate_spreadsheet_report(all_results, sheet_name, worksheet_title=None, s
         rows_to_insert.append(["End"] * len(rows_to_insert[0]))
 
     ws_dir = Path(__file__).parent.resolve()
-    csv_path = ws_dir / "output" / "brute_force_report.csv"
+    csv_path = ws_dir / "output" / ACTIVE_REPORT_CSV_NAME
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
@@ -602,6 +618,8 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
     joint_metrics.update({f"PA-MPJPE_{k}": v for k, v in pa_jts.items()})
     os_v, usr, ts = get_system_metadata()
 
+    # Verify that this was a real AOTR execution, not stale legacy output.
+    aotr_summary = verify_aotr_execution(config)
     # Trích xuất metrics LE: ưu tiên đọc trực tiếp từ evaluation CSV, fallback sang os.environ
     le_m_val = parse_average_csv(eval_dir / "MPJPE_cam1.csv", "only_learnable_priority1_mm")
     le_pa_val = parse_average_csv(eval_dir / "PA-MPJPE_cam1.csv", "only_learnable_priority1_mm")
@@ -613,7 +631,7 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
     le_pa_mpjpe = f"{le_pa_val:.2f}" if le_pa_val != float('inf') else cam1_metrics.get("PA-MPJPE", "N/A")
 
     return {
-        "set": current_set, "protocol": EVALUATION_PROTOCOL,
+        "set": current_set, "protocol": evaluation_protocol(config),
         "master": camA_id, "supplement": camB_id,
         "alpha": belief_cfg["alpha"], "beta": belief_cfg["beta"], "mpjpe": mpjpe,
         "mpjpe_occ": mpjpe_occ, "mpjpe_vis": mpjpe_vis,
@@ -630,6 +648,9 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
         "% delta_accel": pd_accel, "% delta-accel": pd_accel,
         "% delta_mble": pd_mble, "% delta-mble": pd_mble,
         "joints": joint_metrics,
+        "aotr_corrected_frames": aotr_summary["corrected_frames"] if aotr_summary else None,
+        "aotr_accepted_bones": aotr_summary["accepted_bone_frames"] if aotr_summary else None,
+        "aotr_fallback_frames": aotr_summary["fallback_frames"] if aotr_summary else None,
         "os_version": os_v, "username": usr, "timestamp": ts
     }
 
@@ -644,6 +665,17 @@ def _evaluate_camera_pair(camA, camB, base_cfg, gt_dir, workspace, seg_name: str
     try:
         config = _setup_pipeline_config(base_cfg, gt_dir, camA, camB, workspace)
         run_pipeline(config, stage_override=None)
+        aotr_diag = verify_aotr_execution(config)
+        if aotr_diag:
+            print(
+                f"[AOTR] {camA['id']}->{camB['id']}: "
+                f"frames={aotr_diag['frames']}, corrected={aotr_diag['corrected_frames']}, "
+                f"accepted_bones={aotr_diag['accepted_bone_frames']}, "
+                f"fallback={aotr_diag['fallback_frames']}, "
+                f"reasons={aotr_diag.get('reason_counts', {})}"
+            )
+            if aotr_diag["accepted_bone_frames"] == 0:
+                print("[AOTR] WARNING: No bone updates; compare against Master, inspect diagnostics.")
         res = _parse_pipeline_results(config, current_set, camA["id"], camB["id"], seg_name)
 
         d_mpjpe = res.get('% delta_mpjpe', 0.0)
@@ -745,11 +777,14 @@ def _process_segment(seg, existing, base_cfg, ws_dir, sh_name, ws_title, all_res
         current_idx += 1
         print(f"\n--- [Tiến trình: {current_idx}/{total_pairs}] Master={cA['id']} | Supplement={cB['id']} ---")
 
-        if (seg_name, cA["id"], cB["id"]) in existing:
-            res = existing[(seg_name, cA["id"], cB["id"])]
+        cached = existing.get((seg_name, cA["id"], cB["id"]))
+        if cache_compatible(cached, ACTIVE_EVALUATION_PROTOCOL):
+            res = cached
             res.update({"set": res.get("set", extract_set_name(cA["pkl"])), "master": cA["id"], "supplement": cB["id"]})
             results.append(res)
             continue
+        if cached:
+            print(f"[BruteForce] IGNORE stale result with protocol={cached.get('protocol')!r}")
         
         res = _evaluate_camera_pair(cA, cB, base_cfg, str(ws_dir / seg["ground_truth_dir"]), ws_dir, seg_name)
         if res is not None:
@@ -771,20 +806,27 @@ def _process_segment(seg, existing, base_cfg, ws_dir, sh_name, ws_title, all_res
     return sorted_results, current_idx
 
 def run_brute_force():
+    global ACTIVE_EVALUATION_PROTOCOL, ACTIVE_REPORT_CSV_NAME
     WS_DIR = Path(__file__).parent.resolve()
     with open(WS_DIR / "configs/brute_force.yml", "r", encoding="utf-8") as f: brute_cfg = yaml.safe_load(f)
     # Gọi hàm load_config đã được "nâng cấp" để nó tự động parse biến môi trường
     base_cfg = load_config(WS_DIR / "configs/pipeline.yml")
+    ACTIVE_EVALUATION_PROTOCOL = evaluation_protocol(base_cfg)
+    ACTIVE_REPORT_CSV_NAME = report_csv_name(base_cfg)
+    print(f"[BruteForce] Active protocol: {ACTIVE_EVALUATION_PROTOCOL}")
+    print(f"[BruteForce] Results CSV: output/{ACTIVE_REPORT_CSV_NAME}")
+    print(f"[BruteForce] AOTR enabled: {aotr_enabled(base_cfg)}")
     # Kiểm tra xem file config đã nhận đúng giá trị chưa
     print("Alpha trong config:", base_cfg['fusion']['belief']['alpha'])
     print("Beta trong config:", base_cfg['fusion']['belief']['beta'])
     
     _, runner_name, _ = get_system_metadata()
-    default_sh_name = f"{runner_name}_brute_force_pipeline"
+    suffix = ACTIVE_EVALUATION_PROTOCOL.rsplit("__", 1)[-1] if aotr_enabled(base_cfg) else "legacy"
+    default_sh_name = f"{runner_name}_AOTR_brute_force_{suffix}" if aotr_enabled(base_cfg) else f"{runner_name}_brute_force_pipeline"
     sh_name = get_spreadsheet_name_input(default_name=default_sh_name, timeout=10)
     
     ws_title = f"Run_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
-    existing = load_existing_spreadsheet_results(sh_name)
+    existing = load_existing_spreadsheet_results(sh_name, expected_protocol=ACTIVE_EVALUATION_PROTOCOL)
     all_res = {}
 
     total_pairs = sum(
