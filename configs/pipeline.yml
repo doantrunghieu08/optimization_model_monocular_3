@@ -54,6 +54,25 @@ fusion:
     three_d_temporal_weight: 0.15
     three_d_jitter_epsilon: 0.06
     three_d_occluded_master_reliability: 0.15
+    # Two distinct no-GT hypotheses, enabled independently for ablation.
+    # Smooth only the Slave correction F-M, NOT natural Master motion.
+    sequence_stability:
+      enabled: true
+      temporal_stability:
+        enabled: true
+        shape_weight: 1.0
+        residual_accel_weight: 10.0
+        residual_velocity_weight: 0.5
+        minimum_retention: 0.20
+        max_iter: 160
+      # Reference is robust temporal median of Master limb totals, combined
+      # with the pre-existing 54/46 arm and 53/47 leg anatomical ratios.
+      # This CAN change even joint positions labeled KEEP in raw AOTR and
+      # does not guarantee better MBLE against GT: ablate explicitly.
+      anatomical_calibration:
+        enabled: true
+        arm_upper_fraction: 0.54
+        leg_thigh_fraction: 0.53
     min_2d_confidence: 0.35
     min_correspondences: 4
     alignment_median_max_m: 0.12
