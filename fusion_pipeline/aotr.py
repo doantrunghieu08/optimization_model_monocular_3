@@ -166,7 +166,8 @@ def _trust_region_1d(cost, max_iter, initial_radius):
 def optimize_aotr(
     master, slave, observations_master=None, observations_slave=None,
     K_master=None, K_slave=None, vis_master=None, vis_slave=None,
-    config=None,
+    config=None, prev_master=None, prev_slave=None,
+    prev_prev_master=None, prev_prev_slave=None,
 ):
     """Return (master-frame fused pose, diagnostics).
 
@@ -192,19 +193,27 @@ def optimize_aotr(
     if M.keys() != S.keys() or not all(np.isfinite(x).all() and x.shape == (3,) for x in list(M.values()) + list(S.values())):
         return fallback("invalid_input")
     K1, K2 = _intrinsics(K_master), _intrinsics(K_slave)
-    if K1 is None or K2 is None:
-        return fallback("missing_intrinsics")
     min_conf = float(cfg.get("min_2d_confidence", 0.35))
-    obs1 = _observations(observations_master, K1, M, min_conf)
-    obs2 = _observations(observations_slave, K2, M, min_conf)
     valid_vis1 = vis_master or {}
     valid_vis2 = vis_slave or {}
+    obs1 = _observations(observations_master, K1, M, min_conf)
+    obs2 = _observations(observations_slave, K2, M, min_conf)
     obs1 = {j: o for j, o in obs1.items() if valid_vis1.get(j, True)}
     obs2 = {j: o for j, o in obs2.items() if valid_vis2.get(j, True)}
     common_obs = set(obs1) & set(obs2)
     details["observations"] = len(common_obs)
-    if len(common_obs) < int(cfg.get("min_correspondences", 4)):
-        return fallback("insufficient_2d_correspondences")
+    if K1 is None or K2 is None or len(common_obs) < int(cfg.get("min_correspondences", 4)):
+        reason = "missing_intrinsics" if K1 is None or K2 is None else "insufficient_2d_correspondences"
+        if cfg.get("missing_2d_mode", "fail_closed") == "3d_surrogate":
+            # Explicit evidence mode; never fabricate image measurements.
+            from fusion_pipeline.aotr_3d import optimize_aotr_3d
+            return optimize_aotr_3d(
+                master, slave, vis_master=vis_master, vis_slave=vis_slave,
+                config=cfg, prev_master=prev_master, prev_slave=prev_slave,
+                prev_prev_master=prev_prev_master, prev_prev_slave=prev_prev_slave,
+            )
+        return fallback(reason)
+    details["evidence_mode"] = "two_view_2d"
 
     anchors = [j for j in TORSO if j in M and valid_vis1.get(j, True) and valid_vis2.get(j, True)]
     if len(anchors) < 3:
