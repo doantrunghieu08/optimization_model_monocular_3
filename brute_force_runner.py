@@ -306,6 +306,10 @@ def _parse_history_row(row: list, idx: dict, expected_protocol: str = EVALUATION
         "aotr_corrected_frames": sf('AOTR corrected frames'),
         "aotr_accepted_bones": sf('AOTR accepted bones'),
         "aotr_fallback_frames": sf('AOTR fallback frames'),
+        "aotr_stability_retention": sf('AOTR temporal retention %'),
+        "aotr_residual_accel_before": sf('AOTR residual accel before mm/f2'),
+        "aotr_residual_accel_after": sf('AOTR residual accel after mm/f2'),
+        "aotr_calibrated_bones": sf('AOTR anatomy calibrated bones'),
         "belief_master": get_val('belief Master', "[]"),
         "belief_slave": get_val('belief Slave', "[]"),
         "old_mpjpe": sf('mpjpe.all_baseline'),
@@ -397,6 +401,8 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
         'accel.baseline', 'accel.method', 'accel.le',
         # AOTR activation / improvement coverage
         'AOTR corrected frames', 'AOTR accepted bones', 'AOTR fallback frames',
+        'AOTR temporal retention %', 'AOTR residual accel before mm/f2',
+        'AOTR residual accel after mm/f2', 'AOTR anatomy calibrated bones',
         # Belief Group
         'belief Master', 'belief Slave',
         # Metadata
@@ -453,6 +459,10 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
                 fmt(res.get('aotr_corrected_frames')),
                 fmt(res.get('aotr_accepted_bones')),
                 fmt(res.get('aotr_fallback_frames')),
+                fmt(res.get('aotr_stability_retention')),
+                fmt(res.get('aotr_residual_accel_before')),
+                fmt(res.get('aotr_residual_accel_after')),
+                fmt(res.get('aotr_calibrated_bones')),
                 # Belief Group
                 res.get('belief_master', "[]"),
                 res.get('belief_slave', "[]"),
@@ -620,6 +630,7 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
 
     # Verify that this was a real AOTR execution, not stale legacy output.
     aotr_summary = verify_aotr_execution(config)
+    aotr_stability = (aotr_summary or {}).get("sequence_stability", {})
     # Trích xuất metrics LE: ưu tiên đọc trực tiếp từ evaluation CSV, fallback sang os.environ
     le_m_val = parse_average_csv(eval_dir / "MPJPE_cam1.csv", "only_learnable_priority1_mm")
     le_pa_val = parse_average_csv(eval_dir / "PA-MPJPE_cam1.csv", "only_learnable_priority1_mm")
@@ -651,6 +662,19 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
         "aotr_corrected_frames": aotr_summary["corrected_frames"] if aotr_summary else None,
         "aotr_accepted_bones": aotr_summary["accepted_bone_frames"] if aotr_summary else None,
         "aotr_fallback_frames": aotr_summary["fallback_frames"] if aotr_summary else None,
+        "aotr_stability_retention": (
+            100.0 * aotr_stability["mean_temporal_retention"]
+            if "mean_temporal_retention" in aotr_stability else None
+        ),
+        "aotr_residual_accel_before": (
+            1000.0 * aotr_stability["initial_residual_accel_m_frame2"]
+            if "initial_residual_accel_m_frame2" in aotr_stability else None
+        ),
+        "aotr_residual_accel_after": (
+            1000.0 * aotr_stability["final_residual_accel_m_frame2"]
+            if "final_residual_accel_m_frame2" in aotr_stability else None
+        ),
+        "aotr_calibrated_bones": aotr_stability.get("anatomically_calibrated_bones"),
         "os_version": os_v, "username": usr, "timestamp": ts
     }
 
