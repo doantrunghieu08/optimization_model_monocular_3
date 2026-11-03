@@ -412,6 +412,10 @@ def run_phase3_pipeline(
             K_master=(intrinsics_by_cam or {}).get("camera1"),
             K_slave=(intrinsics_by_cam or {}).get("camera2"),
             vis_master=vis1, vis_slave=vis2, config=aotr_cfg,
+            prev_master=(prev_raw or {}).get("camera1"),
+            prev_slave=(prev_raw or {}).get("camera2"),
+            prev_prev_master=(prev_prev_raw or {}).get("camera1"),
+            prev_prev_slave=(prev_prev_raw or {}).get("camera2"),
         )
         changed = [j for j, mode in diag["joint_selection"].items() if mode != "KEEP"]
         return {
@@ -430,6 +434,7 @@ def run_phase3_pipeline(
             "aotr": {k: v for k, v in diag.items() if k != "joint_selection"},
             "fusion_mode": "aotr",
             "fusion_mode_stats": {
+                "evidence_mode": diag.get("evidence_mode", "unknown"),
                 "accepted_bones": len(diag["accepted_bones"]),
                 "alignment_median_m": diag["alignment_median_m"],
             },
@@ -1225,6 +1230,7 @@ def run_fusion(config: dict) -> None:
             "accepted_bone_frames": sum(len(d.get("accepted_bones", [])) for d in diagnostics),
             "fallback_frames": sum(not d for d in diagnostics) + sum(d.get("status") == "fallback" for d in diagnostics),
             "reason_counts": dict(Counter(d.get("reason", "pipeline_exception") for d in diagnostics)),
+            "evidence_counts": dict(Counter(d.get("evidence_mode", "pipeline_exception") for d in diagnostics)),
         }
         write_json(output_dir / "aotr_diagnostics.json", summary)
         print(f"[Fusion] AOTR diagnostics: {summary}")
