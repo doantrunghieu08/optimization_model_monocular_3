@@ -340,6 +340,11 @@ def optimize_aotr(
             accepted.append({"joint": child, "alpha": round(alpha, 6),
                              "cost_gain": round(gain, 10)})
     pose = reconstruct(alphas) if accepted else M
+    # Preserve exact Master bits for joints with no meaningful displacement.
+    # FK arithmetic alone can introduce 1e-16 numerical differences in KEEP.
+    for j in M:
+        if float(np.linalg.norm(pose[j] - M[j])) <= 1e-10:
+            pose[j] = M[j].copy()
     # Report inherited motion explicitly: KEEP never secretly changes.
     for j, p in pose.items():
         moved = float(np.linalg.norm(p - M[j])) > 1e-7
