@@ -11,7 +11,7 @@
 git fetch origin
 git switch experiment/observability-aware-trust-region
 git pull --ff-only
-python run.py --config configs/pipeline.yml
+python main.py --config configs/pipeline.yml
 ```
 
 For a rollback **without changing branches**, set `fusion.aotr.enabled: false`
