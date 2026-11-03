@@ -38,6 +38,26 @@ paths:
 
 fusion:
   enabled: true
+  # EXPERIMENTAL optimization-only AOTR: this branch enables it by default.
+  # Toggle off to reproduce the unmodified legacy pipeline in this branch.
+  # Needs valid per-camera K + matched real 2D tracking keypoints;
+  # fails closed to raw Master if independent observations are unavailable.
+  aotr:
+    enabled: true
+    min_2d_confidence: 0.35
+    min_correspondences: 4
+    alignment_median_max_m: 0.12
+    alignment_q75_max_m: 0.18
+    ransac_threshold_m: 0.06
+    ransac_max_combos: 100
+    min_bone_direction_cos: -0.8
+    observability_ratio: 0.10
+    observed_prior_weight: 0.0001
+    unobserved_prior_weight: 0.003
+    huber_delta_normalized: 0.008
+    minimum_cost_reduction: 0.0000001
+    trust_max_iter: 12
+    trust_initial_radius: 0.25
   # V3 remains experimental: DISABLED by default following observed
   # performance regression. Default restores the pre-V3 pipeline.
   # Zero-GT heuristic is NOT a calibrated estimator of MPJPE improvement.
