@@ -143,7 +143,7 @@ def _fk_reconstruct(master, fused, scale, lengths):
     return out
 
 
-def postprocess_aotr_3d(master_frames, fused_frames, config=None):
+def postprocess_aotr_3d(master_frames, fused_frames, config=None, editable_mask=None):
     """Return (frames, diagnostics) with no access to GT.
 
     The optional bone calibration is an *additional hypothesis*, not an
@@ -158,6 +158,14 @@ def postprocess_aotr_3d(master_frames, fused_frames, config=None):
         return [], {"status": "empty"}
     if names != other_names:
         raise ValueError("AOTR Master/Fused joint ordering mismatch")
+    editable = (
+        np.ones(len(F), dtype=bool)
+        if editable_mask is None else np.asarray(editable_mask, dtype=bool)
+    )
+    if editable.shape != (len(F),):
+        raise ValueError("editable_mask must have one boolean per frame")
+    if np.any(~editable & (np.sum((F-M)**2, axis=(1,2)) > 1e-14)):
+        raise ValueError("Noneditable AOTR fallback frames contain Slave corrections")
 
     before = _residual_acceleration(F-M)
     if temporal.get("enabled", True):
@@ -179,6 +187,9 @@ def postprocess_aotr_3d(master_frames, fused_frames, config=None):
 
     output = []
     for i, master in enumerate(master_frames):
+        if not editable[i]:
+            output.append({j: list(master[j]) for j in names})
+            continue
         reconstructed = _fk_reconstruct(master, fused_frames[i], scales[i], lengths)
         # Preserve exact Master coordinates if no FK/length change occurred.
         for joint in names:
@@ -193,6 +204,7 @@ def postprocess_aotr_3d(master_frames, fused_frames, config=None):
         "initial_residual_accel_m_frame2": before,
         "final_residual_accel_m_frame2": _residual_acceleration(stabilized-M),
         "anatomically_calibrated_bones": len(lengths),
+        "frozen_fallback_frames": int(np.count_nonzero(~editable)),
         "mean_temporal_retention": float(np.mean(scales[active])) if np.any(active) else 1.0,
         "minimum_temporal_retention": float(np.min(scales[active])) if np.any(active) else 1.0,
     }
