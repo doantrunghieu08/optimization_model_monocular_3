@@ -951,6 +951,11 @@ def run_fusion(config: dict) -> None:
     else:
         output_dir.mkdir(parents=True, exist_ok=True)
 
+    # AOTR diagnostics must belong to the CURRENT pair/run. Do not allow
+    # a stale summary to masquerade as successful execution after failure.
+    if bool(fusion_cfg.get("aotr", {}).get("enabled", False)):
+        (output_dir / "aotr_diagnostics.json").unlink(missing_ok=True)
+
     occlusion_cfg = fusion_cfg["occlusion"]
     belief_cfg = fusion_cfg["belief"]
     occlusion_enabled = occlusion_cfg["enabled"]
