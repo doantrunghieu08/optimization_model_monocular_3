@@ -311,6 +311,8 @@ def optimize_aotr(
 
     alphas = {}
     initial_cost = float(energy(alphas))
+    if not np.isfinite(initial_cost) or initial_cost >= 1e8:
+        return fallback("invalid_baseline_projection")
     current_cost = initial_cost
     max_iter = int(cfg.get("trust_max_iter", 12))
     radius = float(cfg.get("trust_initial_radius", 0.25))
@@ -319,9 +321,10 @@ def optimize_aotr(
     for child, parent in bones:
         if child not in directions:
             continue
-        # A candidate must carry independently observed 2D evidence from
-        # both views for the corrected joint. No confidence-only hallucinations.
-        if child not in common_obs:
+        # Require independent Slave 2D. If Master is visibly occluded, the
+        # Slave view can still rescue the bone (with a null-space penalty).
+        # Do not treat a missing Master observation as occlusion by itself.
+        if child not in obs2 or (child not in obs1 and valid_vis1.get(child, True)):
             continue
         def probe(alpha):
             proposal = dict(alphas)
@@ -329,12 +332,13 @@ def optimize_aotr(
             return energy(proposal)
         alpha, best, n_eval = _trust_region_1d(probe, max_iter, radius)
         evaluations += n_eval
-        if alpha > 1e-5 and (current_cost - best) > min_gain:
+        gain = current_cost - best
+        if alpha > 1e-5 and gain > min_gain:
             alphas[child] = alpha
             current_cost = float(energy(alphas))
             evaluations += 1
             accepted.append({"joint": child, "alpha": round(alpha, 6),
-                             "cost_gain": round(current_cost - best + (probe(0.0)-best), 10)})
+                             "cost_gain": round(gain, 10)})
     pose = reconstruct(alphas) if accepted else M
     # Report inherited motion explicitly: KEEP never secretly changes.
     for j, p in pose.items():
