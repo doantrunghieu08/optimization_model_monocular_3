@@ -19,9 +19,11 @@ jobs:
       - name: Install small selective-fusion test dependencies
         run: python -m pip install numpy scipy trimesh
       - name: Check Python syntax for all fusion and regression modules
-        run: python -m compileall -q fusion_pipeline tests/test_selective_fusion.py tests/test_aotr.py
+        run: python -m compileall -q fusion_pipeline brute_force_runner.py tests/test_selective_fusion.py tests/test_aotr.py tests/test_aotr_benchmark.py
       - name: Run isolated selective fusion regressions and default-off guard
         run: python -m unittest discover -s tests -p 'test_selective*.py' -v
 
       - name: Run isolated AOTR geometric / trust-region regression tests
         run: python -m unittest discover -s tests -p 'test_aotr.py' -v
+      - name: Verify AOTR brute-force provenance and cache invalidation
+        run: python -m unittest discover -s tests -p 'test_aotr_benchmark.py' -v
