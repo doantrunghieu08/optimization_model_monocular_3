@@ -741,7 +741,7 @@ def _archive_old_spreadsheet(default_name: str):
 
 def get_spreadsheet_name_input(default_name: str = "Brute_Force_Report_Pipeline v260823", timeout: int = 10) -> str:
     if not HAS_GSPREAD:
-        print(f"\n[Local Mode] Báo cáo sẽ được lưu trực tiếp vào: output/brute_force_report.csv")
+        print(f"\n[Local Mode] Báo cáo sẽ được lưu trực tiếp vào: output/{ACTIVE_REPORT_CSV_NAME}")
         return default_name
     print(f"\n[?] Nhập tên file Google Spreadsheet (Mặc định: '{default_name}'):")
     print("    - ENTER / Bỏ trống: Sử dụng tên mặc định")
