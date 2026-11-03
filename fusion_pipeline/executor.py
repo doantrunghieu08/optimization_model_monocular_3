@@ -20,6 +20,7 @@ from fusion_pipeline.detector import require_ray_casting_backend
 from fusion_pipeline.detector import as_xyz
 from fusion_pipeline.detector import make_raw_judgement_fallback
 from fusion_pipeline.selective import reference_bone_lengths, select_slave_joints
+from fusion_pipeline.aotr import optimize_aotr
 from fusion_pipeline.diagnostics import summarize_selective_frames
 from fusion_pipeline.detector import compute_bone_distortion_score
 from fusion_pipeline.correction import apply_rotation_mismatch_corrections
@@ -366,6 +367,7 @@ def run_phase3_pipeline(
     reference_bones=None,
     prev_raw=None,
     prev_prev_raw=None,
+    aotr_cfg=None,
 ):
     cam1 = {k: as_xyz(v) for k, v in data_in["camera1"].items()}
     cam2 = {k: as_xyz(v) for k, v in data_in["camera2"].items()}
@@ -400,6 +402,39 @@ def run_phase3_pipeline(
             score = val[2] if isinstance(val, (list, tuple, np.ndarray)) and len(val) >= 3 else val
             if score is not None and float(score) < 0.25:
                 vis_dict[n] = False
+    # Experimental AOTR is a SEPARATE optimization-only path; legacy belief,
+    # selective gating and downstream global postprocessors must never overwrite it.
+    if bool((aotr_cfg or {}).get("enabled", False)):
+        fused, diag = optimize_aotr(
+            cam1, cam2,
+            observations_master=confidence2d_by_cam.get("camera1"),
+            observations_slave=confidence2d_by_cam.get("camera2"),
+            K_master=(intrinsics_by_cam or {}).get("camera1"),
+            K_slave=(intrinsics_by_cam or {}).get("camera2"),
+            vis_master=vis1, vis_slave=vis2, config=aotr_cfg,
+        )
+        changed = [j for j, mode in diag["joint_selection"].items() if mode != "KEEP"]
+        return {
+            "M": [], "M_after": [], "M_resolved": False,
+            "K1": [], "K2": changed, "A_new": [], "F": [],
+            "before_stats": (0., 0., 0., 0., 0.),
+            "after_stats": (0., 0., 0., 0., 0.),
+            "optimized": {
+                "camera1": fused,
+                "camera2": {j: v.tolist() for j, v in cam2.items()},
+            },
+            "joint_confidence": {"camera1": {}, "camera2": {}},
+            "vis1": {j: bool(v) for j, v in vis1.items()},
+            "vis2": {j: bool(v) for j, v in vis2.items()},
+            "joint_selection": diag["joint_selection"],
+            "aotr": {k: v for k, v in diag.items() if k != "joint_selection"},
+            "fusion_mode": "aotr",
+            "fusion_mode_stats": {
+                "accepted_bones": len(diag["accepted_bones"]),
+                "alignment_median_m": diag["alignment_median_m"],
+            },
+        }
+
     if belief_alpha is None or belief_beta is None:
         raise ValueError("fusion.belief.alpha and fusion.belief.beta must be provided in config")
     detected = detect_cross_view_errors(
@@ -929,7 +964,7 @@ def run_fusion(config: dict) -> None:
         inputs, occlusion_enabled, target_person=inputs.get("target_person"), include_other_person=multi_person_enabled
     )
     confidence2d_profiles = _load_2d_profiles(config, inputs)
-    occlusion_intrinsics = _load_occlusion_intrinsics(config) if occlusion_enabled and wham_loaded else None
+    occlusion_intrinsics = _load_occlusion_intrinsics(config) if (occlusion_enabled and wham_loaded) or bool(fusion_cfg.get("aotr", {}).get("enabled", False)) else None
 
     keypoints_dir = input_dir / "keypoints3d"
     metadata_dir = input_dir / "metadata"
@@ -944,6 +979,12 @@ def run_fusion(config: dict) -> None:
     frame_results = []
     selective_cfg = fusion_cfg.get("selective_joint_fusion", {})
     selective_enabled = bool(selective_cfg.get("enabled", False))
+    aotr_cfg = fusion_cfg.get("aotr", {})
+    aotr_enabled = bool(aotr_cfg.get("enabled", False))
+    if aotr_enabled and selective_enabled:
+        raise ValueError("fusion.aotr and fusion.selective_joint_fusion cannot both be enabled")
+    if aotr_enabled:
+        print("[Fusion] EXPERIMENTAL AOTR enabled: legacy gating, smoothing and global optimization bypassed")
     reference_bones = (
         reference_bone_lengths([read_json(p).get("camera1", {}) for p in file_paths])
         if selective_enabled else {}
@@ -1036,6 +1077,7 @@ def run_fusion(config: dict) -> None:
                 reference_bones=reference_bones,
                 prev_raw=previous_raw,
                 prev_prev_raw=previous_previous_raw,
+                aotr_cfg=aotr_cfg,
             )
             # 1. Lấy dữ liệu an toàn
                 
@@ -1055,6 +1097,8 @@ def run_fusion(config: dict) -> None:
             result = make_raw_judgement_fallback(data, frame_idx, e)
             if selective_enabled:
                 result["selective_error"] = f"{type(e).__name__}: {e}"
+            if aotr_enabled:
+                result["aotr_error"] = f"{type(e).__name__}: {e}"
 
         fused_keypoints = {
             "camera1": result.get("optimized", {}).get("camera1", {}),
@@ -1062,7 +1106,7 @@ def run_fusion(config: dict) -> None:
         }
         # In selective mode KEEP must be byte-for-byte equivalent to Master.
         # The old per-frame length projection can move even untouched joints.
-        if not selective_enabled:
+        if not selective_enabled and not aotr_enabled:
             for cam_k in ("camera1", "camera2"):
                 if cam_k in fused_keypoints and cam_k in data:
                     _enforce_bone_lengths(fused_keypoints[cam_k], data[cam_k])
@@ -1084,6 +1128,17 @@ def run_fusion(config: dict) -> None:
             "accepted_joint_frames": n_selected,
             "total_joint_frames": len(frame_results) * len(frame_results[0].get("joint_selection", {})) if frame_results else 0,
         }
+    elif aotr_enabled:
+        corrected = sum(
+            len(r.get("aotr", {}).get("accepted_bones", [])) for r in frame_results
+        )
+        pair_gate = {
+            "fusion_applied": corrected > 0,
+            "reason": "aotr_geometric_objective",
+            "accepted_bone_frames": corrected,
+            "total_frames": len(frame_results),
+        }
+        slave_better = corrected > 0
     else:
         slave_better, pair_gate = detect_pair_fusion_gate(frame_results, master_distorted=master_is_distorted)
     pair_gate["zero_gt_quality"] = pair_quality
@@ -1092,14 +1147,14 @@ def run_fusion(config: dict) -> None:
         metadata["pair_quality_gate"] = pair_gate
         write_json(metadata_path, metadata)
 
-    quality_fallback = (slave_is_noisy and not master_is_distorted) and not selective_enabled
+    quality_fallback = (slave_is_noisy and not master_is_distorted) and not selective_enabled and not aotr_enabled
     if quality_fallback and pair_mode == "posed_fallback":
         # Keep single-view smoothing and bone constraints, but remove every slave contribution first.
         _restore_master_pose(output_dir / "keypoints3d", input_dir / "keypoints3d")
 
     smoothing_cfg = fusion_cfg.get("smoothing", {})
     smoothing_enabled = smoothing_cfg.get("enabled", True)
-    if smoothing_enabled and not selective_enabled:
+    if smoothing_enabled and not selective_enabled and not aotr_enabled:
         smoothing_master_cfg = dict(master_cfg)
         smoothing_master_cfg["confidence_margin"] = effective_master_margin
         if not should_protect_master:
@@ -1114,7 +1169,7 @@ def run_fusion(config: dict) -> None:
         )
 
     opt_cfg = fusion_cfg.get("optimization", {})
-    if opt_cfg.get("enabled", True) and (not selective_enabled or selective_cfg.get("optimize_selected", False)):
+    if not aotr_enabled and opt_cfg.get("enabled", True) and (not selective_enabled or selective_cfg.get("optimize_selected", False)):
         from fusion_pipeline.optimization import optimize_sequence_gpu
         optimize_sequence_gpu(
             output_dir / "keypoints3d",
@@ -1126,11 +1181,11 @@ def run_fusion(config: dict) -> None:
             selection_only=selective_enabled,
         )
 
-    if fusion_cfg.get("pair_mode") == "posed_fallback":
+    if not aotr_enabled and fusion_cfg.get("pair_mode") == "posed_fallback":
         _restore_master_pose(output_dir / "keypoints3d", input_dir / "keypoints3d")
 
     pose_keypoints_dir = input_dir / "keypoints3d"
-    if not smoothing_enabled and not selective_enabled and pose_keypoints_dir.exists():
+    if not smoothing_enabled and not selective_enabled and not aotr_enabled and pose_keypoints_dir.exists():
         for f_path in (output_dir / "keypoints3d").glob("fused_data_*.json"):
             ref_path = pose_keypoints_dir / f_path.name.replace("fused_data_", "pose_data_")
             metadata_path = output_dir / "metadata" / f_path.name
@@ -1155,6 +1210,24 @@ def run_fusion(config: dict) -> None:
         print(f"[Fusion] Reasons for KEEP: {diagnostics['keep_reasons']}")
         if diagnostics["frames_with_missing_decisions_or_fallback"]:
             print("[Fusion] WARNING: selective mode fell back to raw Master in some frames.")
+
+    if aotr_enabled:
+        from collections import Counter
+        diagnostics = [r.get("aotr", {}) for r in frame_results]
+        summary = {
+            "mode": "aotr", "frames": len(frame_results),
+            "corrected_frames": sum(d.get("status") == "corrected" for d in diagnostics),
+            "accepted_bone_frames": sum(len(d.get("accepted_bones", [])) for d in diagnostics),
+            "fallback_frames": sum(not d for d in diagnostics) + sum(d.get("status") == "fallback" for d in diagnostics),
+            "reason_counts": dict(Counter(d.get("reason", "pipeline_exception") for d in diagnostics)),
+        }
+        write_json(output_dir / "aotr_diagnostics.json", summary)
+        print(f"[Fusion] AOTR diagnostics: {summary}")
+        # AOTR preserves every Master bone length via forward kinematics.
+        # Running anatomical-proportion rewriting here would override AOTR's
+        # immutable KEEP decisions and invalidate objective accounting.
+        print(f"\\n[Fusion] Done. Output: {output_dir}")
+        return
 
     # ponytail: enforce anatomical limb proportions across all fused frames
     for f_path in (output_dir / "keypoints3d").glob("fused_data_*.json"):
