@@ -139,6 +139,71 @@ class AOTRStabilityTests(unittest.TestCase):
         self.assertTrue(np.all(s <= 1.0))
         self.assertTrue(np.all(s[np.sum(delta**2,axis=(1,2))>1e-14] >= 0.2))
 
+    def test_aotr_skips_legacy_smoothing_and_anatomy_rewrite(self):
+        import ast
+        from pathlib import Path
+        source = (Path(__file__).resolve().parents[1] /
+                  "fusion_pipeline" / "executor.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        run_fusion = next(
+            node for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "run_fusion"
+        )
+        def calls(node, function):
+            return any(
+                isinstance(n, ast.Call) and
+                isinstance(n.func, ast.Name) and n.func.id == function
+                for n in ast.walk(node)
+            )
+        smoothing = [
+            n for n in ast.walk(run_fusion) if isinstance(n, ast.If)
+            and any(calls(stmt, "_apply_temporal_smoothing") for stmt in n.body)
+        ]
+        self.assertEqual(len(smoothing), 1)
+        self.assertIn("not aotr_enabled", ast.unparse(smoothing[0].test))
+        # AOTR terminates after its own diagnostic emission; the unconditional
+        # legacy _enforce_anatomical_limb_proportions loop comes later.
+        branch = [
+            n for n in ast.walk(run_fusion)
+            if isinstance(n, ast.If) and isinstance(n.test, ast.Name)
+            and n.test.id == "aotr_enabled" and
+            any(isinstance(stmt, ast.Return) for stmt in n.body)
+        ]
+        self.assertTrue(branch)
+        self.assertTrue(any(
+            calls(stmt, "_enforce_anatomical_limb_proportions")
+            for stmt in run_fusion.body
+        ))
+
+    def test_anatomy_toggle_really_changes_lengths_before_evaluation(self):
+        master, fused = _frames()
+        baseline, _ = postprocess_aotr_3d(master, fused, {
+            "temporal_stability": {"enabled": False},
+            "anatomical_calibration": {"enabled": False},
+        })
+        modified, diagnostics = postprocess_aotr_3d(master, fused, {
+            "temporal_stability": {"enabled": False},
+            "anatomical_calibration": {"enabled": True,
+                                       "arm_upper_fraction": 0.54,
+                                       "leg_thigh_fraction": 0.53},
+        })
+        self.assertEqual(diagnostics["anatomically_calibrated_bones"], 8)
+        def length(pose, child, parent):
+            return float(np.linalg.norm(
+                np.asarray(pose[child])-np.asarray(pose[parent])
+            ))
+        self.assertNotAlmostEqual(
+            length(baseline[0], "left_elbow", "left_shoulder"),
+            length(modified[0], "left_elbow", "left_shoulder"),
+            places=4,
+        )
+        self.assertAlmostEqual(
+            length(baseline[0], "left_elbow", "left_shoulder"),
+            length(master[0], "left_elbow", "left_shoulder"),
+            places=8,
+        )
+
     def test_no_ground_truth_access(self):
         from pathlib import Path
         source = (Path(__file__).resolve().parents[1] /
