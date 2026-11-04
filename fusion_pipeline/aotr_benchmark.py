@@ -8,7 +8,9 @@ import json
 from pathlib import Path
 
 LEGACY_PROTOCOL = "no_gt_v10_master_only_postopt"
-AOTR_REVISION = "aotr_fk_trustregion_v1"
+# v2: AOTR now bypasses legacy smoothing and unconditional anatomy rewriting.
+# Invalidate pre-fix cached CSVs and Google Sheet rows regardless of config.
+AOTR_REVISION = "aotr_fk_trustregion_v2_output_isolated"
 
 
 def aotr_enabled(config):
