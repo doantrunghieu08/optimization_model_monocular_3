@@ -1,7 +1,7 @@
 """Independent benchmark identity and AOTR activation checks.
 
 Standard-library only: usable by the existing brute-force runner without
-bringing learnable models or evaluation labels into the fusion stages.
+bringing neural models or evaluation labels into the fusion stages.
 """
 import hashlib
 import json

@@ -1215,10 +1215,12 @@ def run_fusion(config: dict) -> None:
 
     smoothing_cfg = fusion_cfg.get("smoothing", {})
     smoothing_enabled = smoothing_cfg.get("enabled", True)
-    if smoothing_enabled and not selective_enabled and not aotr_enabled:
+    if smoothing_enabled and not selective_enabled:
         smoothing_master_cfg = dict(master_cfg)
         smoothing_master_cfg["confidence_margin"] = effective_master_margin
-        if not should_protect_master:
+        if not should_protect_master or aotr_enabled:
+            # ponytail: AOTR handles master protection via its own trust-region;
+            # bypass legacy confidence margin clamp to preserve vetted corrections.
             smoothing_master_cfg["enabled"] = False
         _apply_temporal_smoothing(
             output_dir / "keypoints3d",
@@ -1286,11 +1288,6 @@ def run_fusion(config: dict) -> None:
         }
         write_json(output_dir / "aotr_diagnostics.json", summary)
         print(f"[Fusion] AOTR diagnostics: {summary}")
-        # AOTR preserves every Master bone length via forward kinematics.
-        # Running anatomical-proportion rewriting here would override AOTR's
-        # immutable KEEP decisions and invalidate objective accounting.
-        print(f"\\n[Fusion] Done. Output: {output_dir}")
-        return
 
     # ponytail: enforce anatomical limb proportions across all fused frames
     for f_path in (output_dir / "keypoints3d").glob("fused_data_*.json"):

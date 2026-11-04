@@ -222,22 +222,14 @@ def validate_config(config):
 
 def patch_numpy_and_inspect():
     import inspect
-    if not hasattr(np, 'float'):
-        np.float = float
-    if not hasattr(np, 'int'):
-        np.int = int
-    if not hasattr(np, 'bool'):
-        np.bool = bool
-    if not hasattr(np, 'object'):
-        np.object = object
-    if not hasattr(np, 'typeDict'):
-        np.typeDict = np.sctypeDict
-    if not hasattr(np, 'complex'):
-        np.complex = complex
-    if not hasattr(np, 'unicode'):
-        np.unicode = str
-    if not hasattr(np, 'str'):
-        np.str = str
+    for attr, target in [
+        ('float', float), ('int', int), ('bool', bool), ('object', object),
+        ('complex', complex), ('unicode', str), ('str', str)
+    ]:
+        if attr not in np.__dict__:
+            setattr(np, attr, target)
+    if 'typeDict' not in np.__dict__:
+        np.typeDict = getattr(np, 'sctypeDict', {})
     if not hasattr(inspect, 'getargspec'):
         inspect.getargspec = inspect.getfullargspec
 
