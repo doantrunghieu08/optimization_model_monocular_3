@@ -1215,7 +1215,7 @@ def run_fusion(config: dict) -> None:
 
     smoothing_cfg = fusion_cfg.get("smoothing", {})
     smoothing_enabled = smoothing_cfg.get("enabled", True)
-    if smoothing_enabled and not selective_enabled:
+    if smoothing_enabled and not selective_enabled and not aotr_enabled:
         smoothing_master_cfg = dict(master_cfg)
         smoothing_master_cfg["confidence_margin"] = effective_master_margin
         if not should_protect_master or aotr_enabled:
@@ -1288,6 +1288,8 @@ def run_fusion(config: dict) -> None:
         }
         write_json(output_dir / "aotr_diagnostics.json", summary)
         print(f"[Fusion] AOTR diagnostics: {summary}")
+        print(f"\n[Fusion] Done. Output: {output_dir}")
+        return
 
     # ponytail: enforce anatomical limb proportions across all fused frames
     for f_path in (output_dir / "keypoints3d").glob("fused_data_*.json"):
