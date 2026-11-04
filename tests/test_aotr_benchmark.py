@@ -14,7 +14,10 @@ class AOTRBenchmarkTests(unittest.TestCase):
     def test_legacy_cache_must_not_be_reused_for_aotr(self):
         cfg = {"fusion": {"aotr": {"enabled": True, "observed_prior_weight": 0.0001}}}
         protocol = evaluation_protocol(cfg)
-        self.assertIn("__aotr_fk_trustregion_v1__", protocol)
+        self.assertIn("__aotr_fk_trustregion_v2_output_isolated__", protocol)
+        self.assertFalse(cache_compatible({
+            "protocol": LEGACY_PROTOCOL + "__aotr_fk_trustregion_v1__e83f43ea9b57"
+        }, protocol))
         self.assertFalse(cache_compatible({"protocol": LEGACY_PROTOCOL}, protocol))
         self.assertTrue(cache_compatible({"protocol": protocol}, protocol))
         self.assertTrue(report_csv_name(cfg).startswith("brute_force_report_aotr_"))
