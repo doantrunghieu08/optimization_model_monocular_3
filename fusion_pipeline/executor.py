@@ -368,6 +368,7 @@ def run_phase3_pipeline(
     prev_raw=None,
     prev_prev_raw=None,
     aotr_cfg=None,
+    pair_mode="aggressive",
 ):
     cam1 = {k: as_xyz(v) for k, v in data_in["camera1"].items()}
     cam2 = {k: as_xyz(v) for k, v in data_in["camera2"].items()}
@@ -405,6 +406,30 @@ def run_phase3_pipeline(
     # Experimental AOTR is a SEPARATE optimization-only path; legacy belief,
     # selective gating and downstream global postprocessors must never overwrite it.
     if bool((aotr_cfg or {}).get("enabled", False)):
+        if pair_mode == "posed_fallback":
+            diag = {
+                "status": "fallback", "reason": "pair_mode_posed_fallback",
+                "joint_selection": {j: "KEEP" for j in cam1},
+                "accepted_bones": [], "evidence_mode": "posed_fallback",
+                "alignment_median_m": None, "cost_before": None, "cost_after": None,
+            }
+            return {
+                "M": [], "M_after": [], "M_resolved": False,
+                "K1": [], "K2": [], "A_new": [], "F": [],
+                "before_stats": (0., 0., 0., 0., 0.),
+                "after_stats": (0., 0., 0., 0., 0.),
+                "optimized": {
+                    "camera1": {j: list(np.asarray(v, dtype=float)) for j, v in cam1.items()},
+                    "camera2": {j: list(np.asarray(v, dtype=float)) for j, v in cam2.items()},
+                },
+                "joint_confidence": {"camera1": {}, "camera2": {}},
+                "vis1": {j: bool(v) for j, v in vis1.items()},
+                "vis2": {j: bool(v) for j, v in vis2.items()},
+                "joint_selection": diag["joint_selection"],
+                "aotr": diag,
+                "fusion_mode": "aotr",
+                "fusion_mode_stats": {"evidence_mode": "posed_fallback", "accepted_bones": 0, "alignment_median_m": None},
+            }
         fused, diag = optimize_aotr(
             cam1, cam2,
             observations_master=confidence2d_by_cam.get("camera1"),
@@ -1088,6 +1113,7 @@ def run_fusion(config: dict) -> None:
                 prev_raw=previous_raw,
                 prev_prev_raw=previous_previous_raw,
                 aotr_cfg=aotr_cfg,
+                pair_mode=pair_mode,
             )
             # 1. Lấy dữ liệu an toàn
                 
@@ -1131,7 +1157,7 @@ def run_fusion(config: dict) -> None:
         # Offline second pass. Master/Fused sequences are synchronized and
         # evaluated independently from any ground-truth data.
         evidence = [r.get("aotr", {}).get("evidence_mode") for r in frame_results]
-        if evidence and all(mode == "3d_surrogate" for mode in evidence):
+        if evidence:
             from fusion_pipeline.aotr_stability import postprocess_aotr_3d
             master_sequence = [
                 _load_pose_frame(p, metadata_dir)["camera1"] for p in file_paths
@@ -1141,9 +1167,14 @@ def run_fusion(config: dict) -> None:
                 for p in file_paths
             ]
             fused_sequence = [read_json(p)["camera1"] for p in target_paths]
+            stability_cfg = dict(aotr_cfg.get("sequence_stability", {}))
+            anat_cfg = dict(stability_cfg.get("anatomical_calibration", {}))
+            if "person_height_m" not in anat_cfg and config.get("inputs", {}).get("person_height_m") is not None:
+                anat_cfg["person_height_m"] = config["inputs"]["person_height_m"]
+            stability_cfg["anatomical_calibration"] = anat_cfg
             corrected_sequence, aotr_postprocessing = postprocess_aotr_3d(
                 master_sequence, fused_sequence,
-                config=aotr_cfg.get("sequence_stability", {}),
+                config=stability_cfg,
                 editable_mask=[
                     r.get("aotr", {}).get("status") != "fallback"
                     for r in frame_results
@@ -1174,7 +1205,7 @@ def run_fusion(config: dict) -> None:
                 write_json(metadata_path, metadata)
             print(f"[Fusion] AOTR sequence stability: {aotr_postprocessing}")
         else:
-            aotr_postprocessing = {"status": "skipped_nonuniform_3d_evidence"}
+            aotr_postprocessing = {"status": "skipped_no_frames"}
             print(f"[Fusion] AOTR sequence stability skipped: {aotr_postprocessing}")
 
     if selective_enabled:

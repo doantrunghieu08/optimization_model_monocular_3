@@ -176,6 +176,26 @@ class AOTRStabilityTests(unittest.TestCase):
             for stmt in run_fusion.body
         ))
 
+    def test_sequence_stability_also_runs_for_two_view_aotr(self):
+        import ast
+        from pathlib import Path
+        source = (Path(__file__).resolve().parents[1] /
+                  "fusion_pipeline" / "executor.py").read_text(encoding="utf-8")
+        run_fusion = next(
+            node for node in ast.parse(source).body
+            if isinstance(node, ast.FunctionDef) and node.name == "run_fusion"
+        )
+        gates = [
+            node for node in ast.walk(run_fusion)
+            if isinstance(node, ast.If) and any(
+                isinstance(child, ast.Call)
+                and isinstance(child.func, ast.Name)
+                and child.func.id == "postprocess_aotr_3d"
+                for child in ast.walk(node)
+            )
+        ]
+        self.assertEqual(ast.unparse(gates[-1].test), "evidence")
+
     def test_anatomy_toggle_really_changes_lengths_before_evaluation(self):
         master, fused = _frames()
         baseline, _ = postprocess_aotr_3d(master, fused, {

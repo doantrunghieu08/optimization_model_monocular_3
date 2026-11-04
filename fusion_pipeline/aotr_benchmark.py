@@ -8,9 +8,9 @@ import json
 from pathlib import Path
 
 LEGACY_PROTOCOL = "no_gt_v10_master_only_postopt"
-# v2: AOTR now bypasses legacy smoothing and unconditional anatomy rewriting.
-# Invalidate pre-fix cached CSVs and Google Sheet rows regardless of config.
-AOTR_REVISION = "aotr_fk_trustregion_v2_output_isolated"
+# v3: sequence stability also covers the real two-view AOTR path.
+# Invalidate results where enabled acceleration control was silently skipped.
+AOTR_REVISION = "aotr_fk_trustregion_v3_all_evidence_stable"
 
 
 def aotr_enabled(config):
@@ -57,10 +57,19 @@ def verify_aotr_execution(config):
     fallbacks = int(summary.get("fallback_frames", 0))
     if summary.get("mode") != "aotr" or frames <= 0:
         raise RuntimeError("AOTR output diagnostics are invalid: " + str(summary))
-    if fallbacks >= frames:
+    if fallbacks >= frames and "pair_mode_posed_fallback" not in summary.get("reason_counts", {}):
         raise RuntimeError(
             "All AOTR frames fell back to Master. "
             f"Reasons: {summary.get('reason_counts', {})}. "
             "Fix input/intrinsics/synchronization before benchmarking."
+        )
+    stability_enabled = bool(
+        config["fusion"]["aotr"].get("sequence_stability", {}).get("enabled", False)
+    )
+    stability_status = summary.get("sequence_stability", {}).get("status")
+    if stability_enabled and stability_status not in {"applied", "unchanged"}:
+        raise RuntimeError(
+            "AOTR sequence stability was enabled but did not run: "
+            + str(summary.get("sequence_stability", {}))
         )
     return summary

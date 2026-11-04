@@ -14,7 +14,7 @@ class AOTRBenchmarkTests(unittest.TestCase):
     def test_legacy_cache_must_not_be_reused_for_aotr(self):
         cfg = {"fusion": {"aotr": {"enabled": True, "observed_prior_weight": 0.0001}}}
         protocol = evaluation_protocol(cfg)
-        self.assertIn("__aotr_fk_trustregion_v2_output_isolated__", protocol)
+        self.assertIn("__aotr_fk_trustregion_v3_all_evidence_stable__", protocol)
         self.assertFalse(cache_compatible({
             "protocol": LEGACY_PROTOCOL + "__aotr_fk_trustregion_v1__e83f43ea9b57"
         }, protocol))
@@ -58,6 +58,23 @@ class AOTRBenchmarkTests(unittest.TestCase):
             }), encoding="utf-8")
             summary = verify_aotr_execution(cfg)
             self.assertEqual(summary["accepted_bone_frames"], 9)
+
+    def test_enabled_sequence_stability_cannot_be_silently_skipped(self):
+        with tempfile.TemporaryDirectory() as temp:
+            cfg = {
+                "fusion": {"aotr": {
+                    "enabled": True,
+                    "sequence_stability": {"enabled": True},
+                }},
+                "paths": {"fused_output_dir": temp},
+            }
+            (Path(temp) / "aotr_diagnostics.json").write_text(json.dumps({
+                "mode": "aotr", "frames": 20, "corrected_frames": 5,
+                "accepted_bone_frames": 9, "fallback_frames": 2,
+                "sequence_stability": {"status": "skipped_nonuniform_3d_evidence"},
+            }), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "enabled but did not run"):
+                verify_aotr_execution(cfg)
 
 
 if __name__ == "__main__":

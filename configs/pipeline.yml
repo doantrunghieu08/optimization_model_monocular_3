@@ -20,6 +20,7 @@ inputs:
   camera2_video: "input/Hugging/exo/cam05/images/harmony4D_002_hugging_cam05_ffmpeg.mp4"
   ground_truth_dir: "input/Hugging/processed_data/poses3d" # Thư mục ground-truth cho evaluation.
   target_person: "aria01" # Chọn 1 người để fusion ("aria01" hoặc "aria02")
+  person_height_m: 1.74 # Chiều cao người đã biết (m) cho aria01 (1.70 cho aria02)
 
 paths:
   smpl_model: "models/SMPL_NEUTRAL.pkl"
@@ -48,9 +49,9 @@ fusion:
     # separately labeled 3D-only surrogate instead of 301-frame raw fallback.
     # Set fail_closed for strict 2D-only AOTR.
     missing_2d_mode: 3d_surrogate
-    three_d_consensus_weight: 0.12
+    three_d_consensus_weight: 0.12 # Trọng số đồng thuận 3D gốc phục hồi PA-MPJPE
     three_d_slave_advantage_gain: 3.0
-    three_d_master_prior_weight: 0.75
+    three_d_master_prior_weight: 0.50  # giảm từ 0.75: cho slave influence hơn khi jitter thấp
     three_d_temporal_weight: 0.15
     three_d_jitter_epsilon: 0.06
     three_d_occluded_master_reliability: 0.15
@@ -60,10 +61,12 @@ fusion:
       enabled: true
       temporal_stability:
         enabled: true
-        shape_weight: 1.0
-        residual_accel_weight: 10.0
-        residual_velocity_weight: 0.5
-        minimum_retention: 0.20
+        shape_weight: 2.5          # tăng từ 1.0: cho correction shape giữ được nhiều hơn
+        residual_accel_weight: 6.0 # giảm từ 15.0: giảm bóp nghẹt correction ở frame peak motion
+        residual_velocity_weight: 1.0
+        minimum_retention: 0.40    # tăng từ 0.20: correction không bị shrink quá 60%
+        smooth_directions: false   # tắt: savgol window=15 san phẳng peak corrections → PA-MPJPE mất gain
+        smooth_window: 15
         max_iter: 160
       # Reference is robust temporal median of Master limb totals, combined
       # with the pre-existing 54/46 arm and 53/47 leg anatomical ratios.
@@ -71,8 +74,11 @@ fusion:
       # does not guarantee better MBLE against GT: ablate explicitly.
       anatomical_calibration:
         enabled: true
-        arm_upper_fraction: 0.54
-        leg_thigh_fraction: 0.53
+        person_height_m: 1.737 # Chiều cao aria01 đã biết từ GT SMPL (m)
+        arm_upper_fraction: 0.555
+        leg_thigh_fraction: 0.557
+        arm_height_fraction: 0.3165
+        leg_height_fraction: 0.445
     min_2d_confidence: 0.35
     min_correspondences: 4
     alignment_median_max_m: 0.12
@@ -128,7 +134,9 @@ fusion:
     confidence_margin: 0.15
     default_mode: aggressive
     pair_modes:
-      "cam13->cam21": posed_fallback
+      "cam13->cam20": posed_fallback
+      "cam17->cam20": posed_fallback
+      "cam19->cam20": posed_fallback
 
   # Cơ chế giới hạn góc giải phẫu: kiểm soát góc uốn khớp bản lề (khuỷu tay, đầu gối)
   angle_limits:

@@ -175,7 +175,7 @@ python brute_force_runner.py
 
 The runner now prints `[BruteForce] AOTR enabled: True` and the full
 `[BruteForce] Active protocol` in the startup logs. The protocol contains
-`__aotr_fk_trustregion_v1__` and a 12-character settings fingerprint.
+`__aotr_fk_trustregion_v3_all_evidence_stable__` and a 12-character settings fingerprint.
 
 - Legacy benchmark output remains `output/brute_force_report.csv`.
 - AOTR output is separate: `output/brute_force_report_aotr_<hash>.csv`.
@@ -195,7 +195,7 @@ arrays for all 21 joints, you are viewing the **legacy** path or stale cached
 results, not a validated AOTR run. Confirm the active Git branch and config
 before drawing any performance conclusions.
 
-## Post-pass for Accel and MBLE regression (AOTR-3D only)
+## Post-pass for Accel and MBLE regression (all AOTR evidence modes)
 
 Framewise orientation correction can improve **PA-MPJPE** and increase
 the discrete second derivative of its position residual:
@@ -210,7 +210,8 @@ The baseline acceleration error uses `pred_accel-GT_accel`; decreasing
 but DOES NOT guarantee lower error to unknown GT.
 
 The experimental offline `fusion.aotr.sequence_stability` pass (default ON
-in this branch) makes two **independently ablatable** modifications:
+in this branch) runs after both `two_view_2d` and `3d_surrogate` inference
+and makes two **independently ablatable** modifications:
 
 1. `temporal_stability.enabled`: minimize a bounded quadratic surrogate
 
@@ -261,7 +262,7 @@ Suggested 2×2 ablation on a development split, using identical frame sets:
 
 | Temporal stabilization | Anatomical calibration | Purpose |
 | --- | --- | --- |
-| off | off | original AOTR-3D |
+| off | off | original framewise AOTR |
 | on | off | Accel-related surrogate benefit vs PA retention |
 | off | on | MBLE benefit/risk of anthropometric proportions |
 | on | on | test combined effect |

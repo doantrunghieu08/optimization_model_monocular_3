@@ -526,6 +526,12 @@ def generate_spreadsheet_report(all_results, sheet_name, worksheet_title=None, s
             writer.writerows(rows_to_insert)
         if not silent:
             print(f"\n[Local] Đã lưu báo cáo CSV: {csv_path.resolve()}")
+    except PermissionError:
+        fallback_path = csv_path.with_name(f"{csv_path.stem}_{int(time.time())}.csv")
+        with open(fallback_path, "w", newline="", encoding="utf-8-sig") as f:
+            csv.writer(f).writerows(rows_to_insert)
+        if not silent:
+            print(f"\n[Local] File chính bị khóa (Excel mở?). Đã lưu vào fallback: {fallback_path.resolve()}")
     except Exception as e:
         if not silent: print(f"[-] Lỗi khi ghi CSV local: {e}")
 
@@ -829,12 +835,13 @@ def _process_segment(seg, existing, base_cfg, ws_dir, sh_name, ws_title, all_res
     )
     return sorted_results, current_idx
 
-def run_brute_force():
+def run_brute_force(base_cfg=None, brute_cfg=None):
     global ACTIVE_EVALUATION_PROTOCOL, ACTIVE_REPORT_CSV_NAME
     WS_DIR = Path(__file__).parent.resolve()
-    with open(WS_DIR / "configs/brute_force.yml", "r", encoding="utf-8") as f: brute_cfg = yaml.safe_load(f)
-    # Gọi hàm load_config đã được "nâng cấp" để nó tự động parse biến môi trường
-    base_cfg = load_config(WS_DIR / "configs/pipeline.yml")
+    if brute_cfg is None:
+        with open(WS_DIR / "configs/brute_force.yml", "r", encoding="utf-8") as f: brute_cfg = yaml.safe_load(f)
+    if base_cfg is None:
+        base_cfg = load_config(WS_DIR / "configs/pipeline.yml")
     ACTIVE_EVALUATION_PROTOCOL = evaluation_protocol(base_cfg)
     ACTIVE_REPORT_CSV_NAME = report_csv_name(base_cfg)
     print(f"[BruteForce] Active protocol: {ACTIVE_EVALUATION_PROTOCOL}")

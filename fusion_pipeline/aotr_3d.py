@@ -146,10 +146,11 @@ def optimize_aotr_3d(
         if not v1.get(child, True):
             qm *= float(cfg.get("three_d_occluded_master_reliability", 0.15))
         # Require actual evidence to favour Slave for large movements.
-        # A weak consensus floor allows measuring small corrections when
-        # both views appear equally reliable; it is not a 3D certification.
-        advantage = max(0.0, (qs-qm) / max(qs+qm, 1e-8))
-        wS = max(0.0, floor + advantage_scale*advantage)
+        # Scale consensus floor by relative Slave quality so toxic/degraded Slaves (qs << qm)
+        # cannot inject orientation errors into a clean, visible Master.
+        advantage = max(0.0, (qs - qm) / max(qs + qm, 1e-8))
+        rel_slave = qs / max(qs + qm, 1e-8)
+        wS = max(0.0, floor * rel_slave + advantage_scale * advantage)
         wM = max(0.0, master_weight)
         # Local Master orientation is regularized more heavily when it is
         # observed and temporally stable.
