@@ -384,7 +384,7 @@ def load_existing_spreadsheet_results(sheet_name: str, expected_protocol: str | 
 
 def _build_report_rows(all_results: dict, joint_keys: list) -> list:
     header = [
-        'Set', 'Segment', 'Protocol', 'Rank', 'Cam Master', 'Cam Slave', 'Alpha', 'Beta',
+        'Set', 'Segment', 'Target Person', 'Protocol', 'Rank', 'Cam Master', 'Cam Slave', 'Evaluated Frames', 'Alpha', 'Beta',
         # Key Improvement Deltas (placed side-by-side)
         '% delta_mpjpe', '% delta_pa-mpjpe', '% delta_accel', '% delta_mble',
         # MPJPE Group
@@ -422,8 +422,9 @@ def _build_report_rows(all_results: dict, joint_keys: list) -> list:
         valid_results = [r for r in results if r and r.get('mpjpe', float('inf')) != float('inf')]
         for rank, res in enumerate(valid_results, start=1):
             row = [
-                res.get('set', 'Unknown_Set'), seg_name, res.get('protocol', EVALUATION_PROTOCOL),
+                res.get('set', 'Unknown_Set'), seg_name, res.get('target_person', 'N/A'), res.get('protocol', EVALUATION_PROTOCOL),
                 rank, res['master'], res.get('supplement', 'N/A'),
+                res.get('evaluated_frames', 'N/A'),
                 res.get('alpha', 'N/A') if res.get('alpha') != float('inf') else "N/A",
                 res.get('beta', 'N/A') if res.get('beta') != float('inf') else "N/A",
                 # Key Improvement Deltas
@@ -567,7 +568,7 @@ def _resolve_pair_mode(master_cfg: dict, master: str, slave: str) -> str:
         raise ValueError(f"Unsupported fusion pair mode: {mode}")
     return mode
 
-def _setup_pipeline_config(base_cfg, gt_dir, camA, camB, workspace):
+def _setup_pipeline_config(base_cfg, gt_dir, camA, camB, workspace, target_person=None):
     import copy
     import torch
     cfg = copy.deepcopy(base_cfg)
@@ -579,6 +580,8 @@ def _setup_pipeline_config(base_cfg, gt_dir, camA, camB, workspace):
         "cam2_pkl": str(_resolve_input_path(workspace, camB["pkl"])),
         "camera2_video": str(_resolve_input_path(workspace, camB["video"]))
     })
+    if target_person is not None:
+        cfg["inputs"]["target_person"] = target_person
     cfg.setdefault("visualization", {})["enabled"] = False
     cfg.setdefault("runtime", {})["clean_output"] = True
     cfg["runtime"]["stage"] = "default"
@@ -649,6 +652,8 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
 
     return {
         "set": current_set, "protocol": evaluation_protocol(config),
+        "target_person": config.get("inputs", {}).get("target_person", "aria01"),
+        "evaluated_frames": aotr_summary.get("frames") if aotr_summary else None,
         "master": camA_id, "supplement": camB_id,
         "alpha": belief_cfg["alpha"], "beta": belief_cfg["beta"], "mpjpe": mpjpe,
         "mpjpe_occ": mpjpe_occ, "mpjpe_vis": mpjpe_vis,
@@ -684,7 +689,7 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
         "os_version": os_v, "username": usr, "timestamp": ts
     }
 
-def _evaluate_camera_pair(camA, camB, base_cfg, gt_dir, workspace, seg_name: str) -> dict:
+def _evaluate_camera_pair(camA, camB, base_cfg, gt_dir, workspace, seg_name: str, target_person=None) -> dict:
     current_set = extract_set_name(camA["pkl"])
     os_v, usr, ts = get_system_metadata()
     camA_pkl = _resolve_input_path(workspace, camA["pkl"])
@@ -693,8 +698,10 @@ def _evaluate_camera_pair(camA, camB, base_cfg, gt_dir, workspace, seg_name: str
         print(f"Bỏ qua cặp {camA['id']}-{camB['id']} do thiếu file pkl đầu vào.")
         return None
     try:
-        config = _setup_pipeline_config(base_cfg, gt_dir, camA, camB, workspace)
-        run_pipeline(config, stage_override=None)
+        config = _setup_pipeline_config(base_cfg, gt_dir, camA, camB, workspace, target_person=target_person)
+        executed = run_pipeline(config, stage_override=None)
+        if executed is False:
+            return None
         aotr_diag = verify_aotr_execution(config)
         if aotr_diag:
             print(
@@ -816,7 +823,10 @@ def _process_segment(seg, existing, base_cfg, ws_dir, sh_name, ws_title, all_res
         if cached:
             print(f"[BruteForce] IGNORE stale result with protocol={cached.get('protocol')!r}")
         
-        res = _evaluate_camera_pair(cA, cB, base_cfg, str(ws_dir / seg["ground_truth_dir"]), ws_dir, seg_name)
+        res = _evaluate_camera_pair(
+            cA, cB, base_cfg, str(ws_dir / seg["ground_truth_dir"]), ws_dir, seg_name,
+            target_person=seg.get("target_person")
+        )
         if res is not None:
             results.append(res)
         
@@ -878,4 +888,16 @@ def run_brute_force(base_cfg=None, brute_cfg=None):
     generate_spreadsheet_report_safe(all_res, sh_name, ws_title, silent=False, is_final=True)
 
 if __name__ == "__main__":
-    run_brute_force()
+    import argparse
+    parser = argparse.ArgumentParser(description="Brute Force Combinatorial Evaluation")
+    parser.add_argument("--config", type=str, default=None, help="Base pipeline config (default: configs/pipeline.yml)")
+    parser.add_argument("--brute-config", type=str, default=None, help="Brute force segments config (default: configs/brute_force.yml)")
+    args = parser.parse_args()
+
+    WS_DIR = Path(__file__).parent.resolve()
+    base_cfg = load_config(WS_DIR / args.config) if args.config else None
+    brute_cfg = None
+    if args.brute_config:
+        with open(WS_DIR / args.brute_config, "r", encoding="utf-8") as f:
+            brute_cfg = yaml.safe_load(f)
+    run_brute_force(base_cfg=base_cfg, brute_cfg=brute_cfg)

@@ -44,6 +44,16 @@ def slice_person_frames(person_data, start, frame_count):
     return out
 
 
+def select_person_frames(person_data, indices):
+    indices = np.asarray(indices, dtype=int)
+    total_frames = int(np.asarray(person_data["pose"]).shape[0])
+    out = copy.deepcopy(dict(person_data))
+    for key, value in list(out.items()):
+        if isinstance(value, np.ndarray) and value.ndim > 0 and value.shape[0] == total_frames:
+            out[key] = value[indices].copy()
+    return out
+
+
 def _shared_betas(*person_data: dict) -> np.ndarray:
     betas = []
     for person in person_data:
@@ -128,18 +138,28 @@ def run_pose_export(config: dict) -> None:
     cam2_tracking_frame_ids = _resolve_tracking_frame_ids(cam2_data)
 
     offset, _ = resolve_selected_offset_from_camera_profile(config)
-    # ponytail: absolute video timestamp alignment when both cameras provide frame_ids
     if cam1_tracking_frame_ids is not None and cam2_tracking_frame_ids is not None:
-        offset = int(cam1_tracking_frame_ids[0] - cam2_tracking_frame_ids[0])
-    cam1_start = max(0, -offset)
-    cam2_start = max(0, offset)
-    synced_total_frames = max(0, min(len(cam1_data["pose"]) - cam1_start, len(cam2_data["pose"]) - cam2_start))
+        common_frame_ids = sorted(set(cam1_tracking_frame_ids) & set(cam2_tracking_frame_ids))
+        if not common_frame_ids:
+            raise ValueError("Camera tracks have no overlapping frame_ids")
+        cam1_rows = {frame_id: row for row, frame_id in enumerate(cam1_tracking_frame_ids)}
+        cam2_rows = {frame_id: row for row, frame_id in enumerate(cam2_tracking_frame_ids)}
+        cam1_indices = [cam1_rows[frame_id] for frame_id in common_frame_ids]
+        cam2_indices = [cam2_rows[frame_id] for frame_id in common_frame_ids]
+        offset = 0
+    else:
+        cam1_start = max(0, -offset)
+        cam2_start = max(0, offset)
+        min_frames = max(0, min(len(cam1_data["pose"]) - cam1_start, len(cam2_data["pose"]) - cam2_start))
+        cam1_indices = list(range(cam1_start, cam1_start + min_frames))
+        cam2_indices = list(range(cam2_start, cam2_start + min_frames))
+        common_frame_ids = None
 
-    min_frames = synced_total_frames
+    min_frames = len(cam1_indices)
     sync_result = {
         "offset": offset,
-        "left_start": cam1_start,
-        "right_start": cam2_start,
+        "left_start": cam1_indices[0] if cam1_indices else 0,
+        "right_start": cam2_indices[0] if cam2_indices else 0,
         "frame_count": min_frames,
         "source_pkls": {
             "camera1": str(cam1_file.resolve()),
@@ -155,8 +175,8 @@ def run_pose_export(config: dict) -> None:
 
     j_regressor_path = paths.get("j_regressor_3d", "optimization_model_monocular/models/J_regressor_body25_plus_palm27.npy")
 
-    cam1_export_data = slice_person_frames(cam1_data, cam1_start, min_frames)
-    cam2_export_data = slice_person_frames(cam2_data, cam2_start, min_frames)
+    cam1_export_data = select_person_frames(cam1_data, cam1_indices)
+    cam2_export_data = select_person_frames(cam2_data, cam2_indices)
     if min_frames:
         # Keep the master baseline identical while giving both views one body shape.
         shared_betas = _shared_betas(cam1_export_data)
@@ -176,8 +196,8 @@ def run_pose_export(config: dict) -> None:
             "metadata": {
                 "camera_sync": sync_result,
                 "source_frame_indices": {
-                    "camera1": int(cam1_tracking_frame_ids[cam1_start + i]) if cam1_tracking_frame_ids is not None else cam1_start + i,
-                    "camera2": int(cam2_tracking_frame_ids[cam2_start + i]) if cam2_tracking_frame_ids is not None else cam2_start + i,
+                    "camera1": int(common_frame_ids[i]) if common_frame_ids is not None else cam1_indices[i],
+                    "camera2": int(common_frame_ids[i]) if common_frame_ids is not None else cam2_indices[i],
                 },
             }
         }

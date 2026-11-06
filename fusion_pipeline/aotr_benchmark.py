@@ -21,7 +21,23 @@ def evaluation_protocol(config):
     if not aotr_enabled(config):
         return LEGACY_PROTOCOL
     # A cached result is reusable only with exactly the same AOTR settings.
-    settings = config["fusion"]["aotr"]
+    inputs = config.get("inputs", {})
+    person = str(inputs.get("target_person", "aria01")).strip().lower()
+    if person in {"aria1", "aria_1", "aria-1"}:
+        person = "aria01"
+    elif person in {"aria2", "aria_2", "aria-2"}:
+        person = "aria02"
+    heights = inputs.get("person_heights", {})
+    heights_lower = {str(k).strip().lower(): v for k, v in heights.items()} if isinstance(heights, dict) else {}
+    p_val = heights_lower.get(person) if heights_lower else None
+    height = p_val.get("height_m") if isinstance(p_val, dict) else p_val
+    if height is None:
+        height = inputs.get("person_height_m")
+    settings = {
+        "aotr": config["fusion"]["aotr"],
+        "target_person": person,
+        "person_height_m": height,
+    }
     payload = json.dumps(settings, sort_keys=True, separators=(",", ":"), default=str)
     digest = hashlib.sha256((AOTR_REVISION + ":" + payload).encode("utf-8")).hexdigest()[:12]
     return f"{LEGACY_PROTOCOL}__{AOTR_REVISION}__{digest}"
@@ -57,9 +73,9 @@ def verify_aotr_execution(config):
     fallbacks = int(summary.get("fallback_frames", 0))
     if summary.get("mode") != "aotr" or frames <= 0:
         raise RuntimeError("AOTR output diagnostics are invalid: " + str(summary))
-    if fallbacks >= frames and "pair_mode_posed_fallback" not in summary.get("reason_counts", {}):
+    if fallbacks >= frames:
         raise RuntimeError(
-            "All AOTR frames fell back to Master. "
+            "All AOTR frames fell back to Master; this is not an AOTR benchmark. "
             f"Reasons: {summary.get('reason_counts', {})}. "
             "Fix input/intrinsics/synchronization before benchmarking."
         )

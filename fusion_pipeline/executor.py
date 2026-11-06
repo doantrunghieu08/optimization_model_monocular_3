@@ -120,12 +120,12 @@ def _load_verts_if_available(paths: dict, occlusion_enabled: bool, target_person
         print(f"[Fusion] Loaded Person 2 3D mesh for multi-person occlusion ray-casting")
 
     # ponytail: video timestamp offset for indexed mesh lookups
-    start_fid_1 = int(person_1["frame_ids"][0]) if ("frame_ids" in person_1 and len(person_1["frame_ids"]) > 0) else 0
-    start_fid_2 = int(person_2["frame_ids"][0]) if ("frame_ids" in person_2 and len(person_2["frame_ids"]) > 0) else 0
+    frame_rows_1 = {int(frame_id): row for row, frame_id in enumerate(person_1.get("frame_ids", range(verts_cam1.shape[0])))}
+    frame_rows_2 = {int(frame_id): row for row, frame_id in enumerate(person_2.get("frame_ids", range(verts_cam2.shape[0])))}
 
     print(f"[Fusion] WHAM cam1 verts: {verts_cam1.shape[0]} frames")
     print(f"[Fusion] WHAM cam2 verts: {verts_cam2.shape[0]} frames")
-    return True, verts_cam1, verts_cam2, verts_cam1.shape[0], verts_cam2.shape[0], extra_1, extra_2, start_fid_1, start_fid_2
+    return True, verts_cam1, verts_cam2, verts_cam1.shape[0], verts_cam2.shape[0], extra_1, extra_2, frame_rows_1, frame_rows_2
 
 
 def _load_pose_frame(path: Path, metadata_dir: Path):
@@ -995,7 +995,7 @@ def run_fusion(config: dict) -> None:
             raise RuntimeError("fusion.occlusion.enabled requires a valid SMPL torso mask")
 
     multi_person_enabled = bool(occlusion_cfg.get("multi_person", False))
-    wham_loaded, verts_cam1, verts_cam2, n_frames_1, n_frames_2, extra_1, extra_2, start_fid_1, start_fid_2 = _load_verts_if_available(
+    wham_loaded, verts_cam1, verts_cam2, n_frames_1, n_frames_2, extra_1, extra_2, frame_rows_1, frame_rows_2 = _load_verts_if_available(
         inputs, occlusion_enabled, target_person=inputs.get("target_person"), include_other_person=multi_person_enabled
     )
     confidence2d_profiles = _load_2d_profiles(config, inputs)
@@ -1068,9 +1068,9 @@ def run_fusion(config: dict) -> None:
             source_frames = _source_frame_indices(data, frame_idx)
             cam1_frame = source_frames["camera1"]
             cam2_frame = source_frames["camera2"]
-            idx1 = cam1_frame - start_fid_1
-            idx2 = cam2_frame - start_fid_2
-            if 0 <= idx1 < n_frames_1 and 0 <= idx2 < n_frames_2:
+            idx1 = frame_rows_1.get(cam1_frame)
+            idx2 = frame_rows_2.get(cam2_frame)
+            if idx1 is not None and idx2 is not None:
                 verts_input = {"camera1": verts_cam1[idx1], "camera2": verts_cam2[idx2]}
                 extra_input = None
                 if extra_1 is not None and extra_2 is not None:
@@ -1169,8 +1169,21 @@ def run_fusion(config: dict) -> None:
             fused_sequence = [read_json(p)["camera1"] for p in target_paths]
             stability_cfg = dict(aotr_cfg.get("sequence_stability", {}))
             anat_cfg = dict(stability_cfg.get("anatomical_calibration", {}))
-            if "person_height_m" not in anat_cfg and config.get("inputs", {}).get("person_height_m") is not None:
-                anat_cfg["person_height_m"] = config["inputs"]["person_height_m"]
+            inputs_cfg = config.get("inputs", {})
+            target_p = str(inputs_cfg.get("target_person", "aria01")).strip().lower()
+            heights = inputs_cfg.get("person_heights") or {}
+            heights_lower = {str(k).strip().lower(): v for k, v in heights.items()} if isinstance(heights, dict) else {}
+            p_entry = heights_lower.get(target_p)
+            if isinstance(p_entry, dict):
+                if "height_m" in p_entry:
+                    anat_cfg["person_height_m"] = float(p_entry["height_m"])
+                for frac_key in ("leg_thigh_fraction", "arm_upper_fraction", "leg_height_fraction", "arm_height_fraction"):
+                    if frac_key in p_entry:
+                        anat_cfg[frac_key] = float(p_entry[frac_key])
+            elif p_entry is not None:
+                anat_cfg["person_height_m"] = float(p_entry)
+            elif inputs_cfg.get("person_height_m") is not None:
+                anat_cfg["person_height_m"] = float(inputs_cfg["person_height_m"])
             stability_cfg["anatomical_calibration"] = anat_cfg
             corrected_sequence, aotr_postprocessing = postprocess_aotr_3d(
                 master_sequence, fused_sequence,

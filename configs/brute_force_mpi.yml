@@ -1,0 +1,30 @@
+segments:
+  - name: mpi_s1_seg_1
+    ground_truth_dir: input/MPI/S1/GT
+    target_person: S1
+    cameras:
+      - id: video_0
+        pkl: input/MPI/Segments/wham_out_video_0_seg_1/video_0_seg_1.pkl
+        video: input/MPI/Segments/wham_out_video_0_seg_1/output.mp4
+      - id: video_1
+        pkl: input/MPI/Segments/wham_out_video_1_seg_1/video_1_seg_1.pkl
+        video: input/MPI/Segments/wham_out_video_1_seg_1/output.mp4
+      - id: video_2
+        pkl: input/MPI/Segments/wham_out_video_2_seg_1/video_2_seg_1.pkl
+        video: input/MPI/Segments/wham_out_video_2_seg_1/output.mp4
+      - id: video_4
+        pkl: input/MPI/Segments/wham_out_video_4_seg_1/video_4_seg_1.pkl
+        video: input/MPI/Segments/wham_out_video_4_seg_1/output.mp4
+      - id: video_5
+        pkl: input/MPI/Segments/wham_out_video_5_seg_1/video_5_seg_1.pkl
+        video: input/MPI/Segments/wham_out_video_5_seg_1/output.mp4
+      - id: video_6
+        pkl: input/MPI/Segments/wham_out_video_6_seg_1/video_6_seg_1.pkl
+        video: input/MPI/Segments/wham_out_video_6_seg_1/output.mp4
+      - id: video_7
+        pkl: input/MPI/Segments/wham_out_video_7_seg_1/video_7_seg_1.pkl
+        video: input/MPI/Segments/wham_out_video_7_seg_1/output.mp4
+      - id: video_8
+        pkl: input/MPI/Segments/wham_out_video_8_seg_1/video_8_seg_1.pkl
+        video: input/MPI/Segments/wham_out_video_8_seg_1/output.mp4
+

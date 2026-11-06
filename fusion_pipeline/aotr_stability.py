@@ -92,19 +92,73 @@ def _temporal_scales(raw_delta, cfg):
                "optimizer_success": bool(result.success)}
 
 
+def _estimate_master_height(master_frames):
+    """Estimate natural vertical standing height of Master skeleton along kinematic chain."""
+    if not master_frames:
+        return 0.0
+    torso_lens = []
+    for f in master_frames:
+        if "neck" in f and "pelvis" in f:
+            torso_lens.append(float(np.linalg.norm(np.asarray(f["neck"]) - np.asarray(f["pelvis"]))))
+        elif "neck" in f and "left_hip" in f and "right_hip" in f:
+            hip_mid = 0.5 * (np.asarray(f["left_hip"]) + np.asarray(f["right_hip"]))
+            torso_lens.append(float(np.linalg.norm(np.asarray(f["neck"]) - hip_mid)))
+        elif "neck" in f and "left_hip" in f:
+            torso_lens.append(float(np.linalg.norm(np.asarray(f["neck"]) - np.asarray(f["left_hip"]))))
+    med_torso = float(np.median(torso_lens)) if torso_lens else 0.5
+
+    leg_lens = []
+    for f in master_frames:
+        for side in ("left", "right"):
+            h, k, a = f"{side}_hip", f"{side}_knee", f"{side}_ankle"
+            if h in f and k in f and a in f:
+                leg_lens.append(float(np.linalg.norm(np.asarray(f[k]) - np.asarray(f[h])) +
+                                      np.linalg.norm(np.asarray(f[a]) - np.asarray(f[k]))))
+    med_leg = float(np.median(leg_lens)) if leg_lens else 0.8
+
+    head_lens = []
+    for f in master_frames:
+        if "head" in f and "neck" in f:
+            head_lens.append(float(np.linalg.norm(np.asarray(f["head"]) - np.asarray(f["neck"]))))
+        elif "nose" in f and "neck" in f:
+            head_lens.append(float(np.linalg.norm(np.asarray(f["nose"]) - np.asarray(f["neck"]))))
+    med_head = float(np.median(head_lens)) if head_lens else 0.15 * med_torso
+
+    foot_lens = []
+    for f in master_frames:
+        for side in ("left", "right"):
+            a, ft = f"{side}_ankle", f"{side}_foot"
+            if a in f and ft in f:
+                foot_lens.append(float(np.linalg.norm(np.asarray(f[ft]) - np.asarray(f[a]))))
+            elif a in f and f"{side}_toe" in f:
+                foot_lens.append(float(np.linalg.norm(np.asarray(f[f"{side}_toe"]) - np.asarray(f[a]))))
+    med_foot = float(np.median(foot_lens)) if foot_lens else 0.06 * med_leg
+
+    return max(0.5, med_head + med_torso + med_leg + med_foot)
+
+
 def _anthropometric_targets(master_frames, cfg):
     """Sequence-stable lengths, inferred from known height or Master's limb total.
 
     Only humerus/forearm and femur/shank are modified. Other Master lengths
     stay as-is (including shoulders, wrists->hands and toe/foot segments).
+    When arm_upper_fraction or leg_thigh_fraction is omitted, proportions are
+    auto-derived from the subject's own Master sequence (generalized, zero-finetuning).
     """
     lengths = {}
-    if not cfg.get("enabled", False):
+    if not cfg.get("enabled", False) or not master_frames:
         return lengths
-    upper_frac = float(cfg.get("arm_upper_fraction", 0.54))
-    thigh_frac = float(cfg.get("leg_thigh_fraction", 0.53))
-    if not (0.0 < upper_frac < 1.0 and 0.0 < thigh_frac < 1.0):
-        raise ValueError("Anatomical length ratios must be in (0,1)")
+
+    upper_frac = cfg.get("arm_upper_fraction")
+    thigh_frac = cfg.get("leg_thigh_fraction")
+    if upper_frac is not None:
+        upper_frac = float(upper_frac)
+        if not (0.0 < upper_frac < 1.0):
+            raise ValueError("Anatomical length ratios must be in (0,1)")
+    if thigh_frac is not None:
+        thigh_frac = float(thigh_frac)
+        if not (0.0 < thigh_frac < 1.0):
+            raise ValueError("Anatomical length ratios must be in (0,1)")
 
     known_height = cfg.get("person_height_m")
     if known_height is not None:
@@ -113,28 +167,51 @@ def _anthropometric_targets(master_frames, cfg):
         except (TypeError, ValueError):
             known_height = None
 
-    arm_h_frac = float(cfg.get("arm_height_fraction", 0.294))
-    leg_h_frac = float(cfg.get("leg_height_fraction", 0.447))
+    scale = 1.0
+    if known_height is not None and known_height > 0:
+        h_m = _estimate_master_height(master_frames)
+        if h_m > 0:
+            scale = known_height / h_m
+
+    arm_h_frac = cfg.get("arm_height_fraction")
+    leg_h_frac = cfg.get("leg_height_fraction")
 
     for side in ("left", "right"):
         arms = (f"{side}_shoulder", f"{side}_elbow", f"{side}_wrist")
         legs = (f"{side}_hip", f"{side}_knee", f"{side}_ankle")
         for (root, mid, tip), ratio, h_frac in ((arms, upper_frac, arm_h_frac), (legs, thigh_frac, leg_h_frac)):
-            if known_height is not None and known_height > 0:
-                total = known_height * h_frac
+            uppers, lowers = [], []
+            for frame in master_frames:
+                if not all(j in frame for j in (root, mid, tip)):
+                    continue
+                a, b, c = (np.asarray(frame[j], dtype=float) for j in (root, mid, tip))
+                upper, lower = float(np.linalg.norm(b-a)), float(np.linalg.norm(c-b))
+                if upper > 1e-5 and lower > 1e-5:
+                    uppers.append(upper)
+                    lowers.append(lower)
+            if not uppers or not lowers:
+                continue
+
+            med_u = float(np.median(uppers))
+            med_l = float(np.median(lowers))
+            measured_total = med_u + med_l
+
+            if ratio is not None:
+                tgt_u, tgt_l = ratio, 1.0 - ratio
             else:
-                totals = []
-                for frame in master_frames:
-                    if not all(j in frame for j in (root, mid, tip)):
-                        continue
-                    a, b, c = (np.asarray(frame[j], dtype=float) for j in (root, mid, tip))
-                    upper, lower = float(np.linalg.norm(b-a)), float(np.linalg.norm(c-b))
-                    if upper > 1e-5 and lower > 1e-5:
-                        totals.append(upper+lower)
-                total = float(np.median(totals)) if totals else None
-            if total is not None:
-                lengths[(mid, root)] = total * ratio
-                lengths[(tip, mid)] = total * (1.0 - ratio)
+                # Generalized: auto-derived from subject's own Master sequence medians
+                tgt_u = med_u / measured_total
+                tgt_l = med_l / measured_total
+
+            if h_frac is not None:
+                total = known_height * float(h_frac)
+            elif known_height is not None and known_height > 0:
+                total = measured_total * scale
+            else:
+                total = measured_total
+
+            lengths[(mid, root)] = total * tgt_u
+            lengths[(tip, mid)] = total * tgt_l
     return lengths
 
 
@@ -143,19 +220,32 @@ def _fk_reconstruct(master, fused, scale, lengths):
 
     scale=0 preserves local orientation of Master; scale=1 preserves initial
     AOTR local orientation. Pelvis and neck stay at the Master positions.
+
+    When child was not corrected by AOTR (fused[child] == master[child]),
+    we use the master bone direction only — blending with uF would be
+    meaningless because uF is not an independent observation, just the
+    master vector shifted by the corrected parent. This avoids spurious
+    accel errors from FK propagation on blind/occluded joints.
+    # ponytail: use_master_dir_if_uncorrected; lift if stability needs downstream blend.
     """
     out = {j: np.asarray(p, dtype=float).copy() for j, p in master.items()}
     for child, parent in _ordered_bones(master):
         m_child, m_parent = np.asarray(master[child]), np.asarray(master[parent])
         f_child, f_parent = np.asarray(fused[child]), np.asarray(fused[parent])
-        uM, uF = _unit(m_child-m_parent), _unit(f_child-f_parent)
+        uM = _unit(m_child - m_parent)
         if uM is None:
             continue
-        if uF is None:
-            uF = uM
-        direction = _unit((1.0-scale)*uM + scale*uF)
-        if direction is None:
+        # Child not directly corrected: use master direction to avoid spurious accel
+        # from parent displacement feeding into the blend direction.
+        if np.linalg.norm(f_child - m_child) <= 1e-7:
             direction = uM
+        else:
+            uF = _unit(f_child - f_parent)
+            if uF is None:
+                uF = uM
+            direction = _unit((1.0 - scale) * uM + scale * uF)
+            if direction is None:
+                direction = uM
         target = lengths.get((child, parent), float(np.linalg.norm(m_child-m_parent)))
         out[child] = out[parent] + target * direction
     return out
@@ -220,40 +310,27 @@ def postprocess_aotr_3d(master_frames, fused_frames, config=None, editable_mask=
                 rec[joint] = np.asarray(master[joint]).copy()
         reconstructed_frames.append(rec)
 
-    # Direction smoothing is strictly opt-in; the bounded quadratic L-BFGS-B on residual
-    # delta2 already controls acceleration without flattening articulation peaks.
-    if savgol_filter is not None and temporal.get("smooth_directions", False) and n >= w_len and w_len >= 3:
-        smoothed_bone_dirs = {}
-        for child, parent in bones:
-            dirs = []
-            was_mod = False
-            for t in range(n):
-                c = reconstructed_frames[t][child]
-                p = reconstructed_frames[t][parent]
+    # Trajectory smoothing + FK bone projection eliminates camera jitter without flattening motion
+    if savgol_filter is not None and (temporal.get("smooth_trajectories", False) or temporal.get("smooth_directions", False)) and n >= w_len and w_len >= 3:
+        name_to_idx = {name: i for i, name in enumerate(names)}
+        curr_arr = np.array([[reconstructed_frames[t][j] for j in names] for t in range(n)], dtype=float)
+        sm_arr = savgol_filter(curr_arr, window_length=w_len, polyorder=2, axis=0)
+        proj_arr = sm_arr.copy()
+        for t in range(n):
+            if not editable[t]:
+                continue
+            for child, parent in bones:
+                ci, pi = name_to_idx[child], name_to_idx[parent]
                 mc = np.asarray(master_frames[t][child], dtype=float)
                 mp = np.asarray(master_frames[t][parent], dtype=float)
-                u = _unit(c - p)
-                uM = _unit(mc - mp)
-                if u is None:
-                    u = uM
-                dirs.append(u)
-                if editable[t] and (uM is not None) and float(np.linalg.norm(u - uM)) > 1e-6:
-                    was_mod = True
-            arr_dirs = np.array(dirs, dtype=float)
-            if was_mod and not np.isnan(arr_dirs).any():
-                sm = savgol_filter(arr_dirs, window_length=w_len, polyorder=2, axis=0)
-                norms = np.linalg.norm(sm, axis=-1, keepdims=True)
-                smoothed_bone_dirs[child] = sm / np.maximum(norms, 1e-9)
-            else:
-                smoothed_bone_dirs[child] = arr_dirs
-
+                tgt = lengths.get((child, parent), float(np.linalg.norm(mc - mp)))
+                diff = sm_arr[t, ci] - proj_arr[t, pi]
+                d_norm = float(np.linalg.norm(diff))
+                u = diff / d_norm if d_norm > 1e-6 else np.array([0.0, -1.0, 0.0])
+                proj_arr[t, ci] = proj_arr[t, pi] + tgt * u
         for t in range(n):
             if editable[t]:
-                for child, parent in bones:
-                    mc = np.asarray(master_frames[t][child], dtype=float)
-                    mp = np.asarray(master_frames[t][parent], dtype=float)
-                    tgt = lengths.get((child, parent), float(np.linalg.norm(mc - mp)))
-                    reconstructed_frames[t][child] = reconstructed_frames[t][parent] + tgt * smoothed_bone_dirs[child][t]
+                reconstructed_frames[t] = {names[j]: proj_arr[t, j] for j in range(len(names))}
 
     output = []
     for t in range(n):

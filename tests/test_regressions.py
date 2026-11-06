@@ -17,11 +17,12 @@ from fusion_pipeline.detector import require_ray_casting_backend
 from fusion_pipeline.optimization import optimize_sequence_gpu
 from learnable_pipeline.executor import _slice_person
 from learnable_pipeline.post_opt import post_optimize_smpl_sequence
-from pipeline import _evaluation_input_dirs, _require_evaluation_inputs
+from pipeline import _evaluation_input_dirs, _require_evaluation_inputs, check_cameras_synchronized, is_skip_unsynchronized, run_pipeline
 from pose_pipeline.executor import _shared_betas
 from preprocess_pipeline.calib import _estimate_intrinsics
 from preprocess_pipeline.extract_2d import _load_tracking_payload
 from preprocess_pipeline.offset_paper import load_pkl_data as load_offset_pkl_data
+from compat import resolve_person_payload
 
 
 class MetricTests(unittest.TestCase):
@@ -60,6 +61,19 @@ class MetricTests(unittest.TestCase):
 
 
 class SynchronizationTests(unittest.TestCase):
+    def test_person_fragments_are_merged_by_frame_id(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pkl_path = root / "cam.pkl"
+            (root / "person_mapping.txt").write_text("0 = aria02\n9 = aria02", encoding="utf-8")
+            raw = {
+                0: {"pose": np.full((2, 1), 1.0), "frame_ids": np.array([0, 1])},
+                9: {"pose": np.full((3, 1), 9.0), "frame_ids": np.array([4, 5, 6])},
+            }
+            merged = resolve_person_payload(raw, pkl_path=pkl_path, target_person="aria02")
+            np.testing.assert_array_equal(merged["frame_ids"], [0, 1, 4, 5, 6])
+            np.testing.assert_array_equal(merged["pose"].reshape(-1), [1, 1, 9, 9, 9])
+
     def test_occlusion_backend_is_validated(self):
         if importlib.util.find_spec("rtree") is None:
             with self.assertRaisesRegex(RuntimeError, "rtree"):
@@ -815,6 +829,47 @@ class MasterProtectionAndAngleLimitTests(unittest.TestCase):
             self.assertIn(0, gt)
             np.testing.assert_allclose(gt[0]["joints"]["left_shoulder"], [0.0, 0.0, 0.0])
 
+
+
+    def test_skip_unsynchronized_cameras(self):
+        import joblib
+        with tempfile.TemporaryDirectory() as tmp:
+            t = Path(tmp)
+            p1 = t / "cam1.pkl"
+            p2 = t / "cam2.pkl"
+            payload_10 = {0: {"pose": np.zeros((10, 72)), "trans": np.zeros((10, 3)), "betas": np.zeros(10), "frame_ids": list(range(10))}}
+            payload_20 = {0: {"pose": np.zeros((20, 72)), "trans": np.zeros((20, 3)), "betas": np.zeros(10), "frame_ids": list(range(20))}}
+            payload_10_offset = {0: {"pose": np.zeros((10, 72)), "trans": np.zeros((10, 3)), "betas": np.zeros(10), "frame_ids": list(range(5, 15))}}
+            payload_no_overlap = {0: {"pose": np.zeros((10, 72)), "trans": np.zeros((10, 3)), "betas": np.zeros(10), "frame_ids": list(range(20, 30))}}
+
+            joblib.dump(payload_10, p1)
+            joblib.dump(payload_20, p2)
+
+            cfg = {
+                "inputs": {"cam1_pkl": str(p1), "cam2_pkl": str(p2)},
+                "runtime": {"skip_unsynchronized_cameras": True},
+            }
+            self.assertTrue(is_skip_unsynchronized(cfg))
+            synced, reason = check_cameras_synchronized(cfg)
+            self.assertTrue(synced)
+            self.assertIn("10 shared frame_ids", reason)
+
+            # Different starts are valid when exact frame ids overlap.
+            joblib.dump(payload_10_offset, p2)
+            synced, reason = check_cameras_synchronized(cfg)
+            self.assertTrue(synced)
+            self.assertIn("5 shared frame_ids", reason)
+
+            joblib.dump(payload_no_overlap, p2)
+            synced, reason = check_cameras_synchronized(cfg)
+            self.assertFalse(synced)
+            self.assertIn("không có frame_id chung", reason)
+            self.assertFalse(run_pipeline(cfg))
+
+            # Test synchronized
+            joblib.dump(payload_10, p2)
+            synced, reason = check_cameras_synchronized(cfg)
+            self.assertTrue(synced)
 
 
 if __name__ == "__main__":

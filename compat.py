@@ -1,4 +1,5 @@
 import sys
+import copy
 import numpy as np
 import joblib
 import inspect
@@ -42,6 +43,66 @@ def parse_person_mapping(pkl_path):
     return mapping
 
 
+def _payload_frame_ids(payload):
+    frame_ids = payload.get("frame_ids")
+    if frame_ids is None and isinstance(payload.get("tracking_results_for_reproj"), dict):
+        frame_ids = payload["tracking_results_for_reproj"].get("frame_id")
+    if frame_ids is None:
+        return None
+    frame_ids = np.asarray(frame_ids).astype(int).reshape(-1)
+    return frame_ids if len(frame_ids) == len(payload.get("pose", [])) else None
+
+
+def _merge_frame_value(values, lengths, rows):
+    if any(value is None for value in values):
+        return None
+    if all(isinstance(value, dict) for value in values):
+        merged = {}
+        for key in values[0]:
+            if all(key in value for value in values):
+                item = _merge_frame_value([value[key] for value in values], lengths, rows)
+                if item is not None:
+                    merged[key] = item
+        return merged or None
+    if not all(hasattr(value, "__len__") and len(value) == length for value, length in zip(values, lengths)):
+        return None
+    selected = [values[candidate][row] for candidate, row in rows]
+    if all(isinstance(value, np.ndarray) for value in values):
+        return np.asarray(selected)
+    if all(isinstance(value, list) for value in values):
+        return selected
+    try:
+        import torch
+        if all(torch.is_tensor(value) for value in values):
+            return torch.stack(selected)
+    except ImportError:
+        pass
+    return None
+
+
+def _merge_person_tracks(candidates):
+    """Join re-ID fragments by absolute frame id; the longest track wins overlaps."""
+    candidates = sorted(candidates, key=lambda value: len(value.get("pose", [])), reverse=True)
+    frame_ids = [_payload_frame_ids(value) for value in candidates]
+    if len(candidates) == 1 or any(ids is None for ids in frame_ids):
+        return candidates[0]
+
+    chosen = {}
+    for candidate, ids in enumerate(frame_ids):
+        for row, frame_id in enumerate(ids):
+            chosen.setdefault(int(frame_id), (candidate, row))
+    ordered_ids = sorted(chosen)
+    rows = [chosen[frame_id] for frame_id in ordered_ids]
+    lengths = [len(ids) for ids in frame_ids]
+    merged = copy.deepcopy(candidates[0])
+    for key in set.intersection(*(set(value) for value in candidates)):
+        value = _merge_frame_value([candidate[key] for candidate in candidates], lengths, rows)
+        if value is not None:
+            merged[key] = value
+    merged["frame_ids"] = np.asarray(ordered_ids)
+    return merged
+
+
 def resolve_person_payload(wham_data, pkl_path=None, target_person=None):
     if not isinstance(wham_data, dict) and "defaultdict" not in str(type(wham_data)):
         if isinstance(wham_data, list):
@@ -68,7 +129,7 @@ def resolve_person_payload(wham_data, pkl_path=None, target_person=None):
                     elif str(track_id) in wham_data:
                         candidate_tracks.append(wham_data[str(track_id)])
             if candidate_tracks:
-                return max(candidate_tracks, key=lambda v: len(v.get("pose", [])) if isinstance(v, dict) else 0)
+                return _merge_person_tracks(candidate_tracks)
             if mapping:
                 # ponytail: strict identity - mapping exists but target is missing, never substitute another person
                 return None
@@ -79,6 +140,8 @@ def resolve_person_payload(wham_data, pkl_path=None, target_person=None):
             return wham_data[target_str]
         if target_str.isdigit() and int(target_str) in wham_data:
             return wham_data[int(target_str)]
+        if target_str.startswith("s") and target_str[1:].isdigit() and 0 in wham_data:
+            return wham_data[0]
 
         # ponytail: strict identity - do NOT guess or substitute another person when target_person is specified
         return None

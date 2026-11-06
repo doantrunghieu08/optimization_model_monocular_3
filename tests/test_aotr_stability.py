@@ -233,5 +233,45 @@ class AOTRStabilityTests(unittest.TestCase):
         self.assertNotIn("load_ground_truth", source)
 
 
+    def test_auto_derives_natural_ratios_when_fractions_omitted(self):
+        from fusion_pipeline.aotr_stability import _anthropometric_targets, _estimate_master_height
+        raw, _ = _frames()
+        unscaled = _anthropometric_targets(raw, {"enabled": True})
+        self.assertEqual(len(unscaled), 8)
+        expected_u = float(np.linalg.norm(np.array(raw[0]["left_elbow"]) - np.array(raw[0]["left_shoulder"])))
+        self.assertAlmostEqual(unscaled[("left_elbow", "left_shoulder")], expected_u, places=4)
+
+        h_known = 1.70
+        scaled = _anthropometric_targets(raw, {"enabled": True, "person_height_m": h_known})
+        h_est = _estimate_master_height(raw)
+        self.assertGreater(h_est, 1.0)
+        self.assertAlmostEqual(scaled[("left_elbow", "left_shoulder")], expected_u * (h_known / h_est), places=4)
+        self.assertIn(("left_knee", "left_hip"), scaled)
+
+    def test_smooth_trajectories_reduces_joint_acceleration_and_preserves_bone_lengths(self):
+        raw, fused = _frames(n=25)
+        # Add high-frequency jitter to fused
+        rng = np.random.RandomState(42)
+        for t in range(len(fused)):
+            for j in fused[t]:
+                fused[t][j] = (np.array(fused[t][j]) + rng.normal(0, 0.01, size=3)).tolist()
+        
+        before = _residual_acceleration(_stack(fused) - _stack(raw))
+        output, diag = postprocess_aotr_3d(raw, fused, {
+            "temporal_stability": {
+                "enabled": True,
+                "smooth_trajectories": True,
+                "smooth_window": 5,
+            },
+            "anatomical_calibration": {"enabled": True},
+        })
+        after = _residual_acceleration(_stack(output) - _stack(raw))
+        self.assertLess(after, before)
+        # Verify invariant bone lengths across frames
+        for child, parent in [("left_elbow", "left_shoulder"), ("left_wrist", "left_elbow")]:
+            lens = [np.linalg.norm(np.array(f[child]) - np.array(f[parent])) for f in output]
+            self.assertLess(float(np.std(lens)), 1e-9)
+
+
 if __name__ == "__main__":
     unittest.main()

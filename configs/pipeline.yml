@@ -1,84 +1,60 @@
 runtime:
-  # Chế độ chạy hiện tại của pipeline.
-  # - visualization: chạy full chuỗi preprocess -> evaluation -> visualization.
-  # - evaluation: chỉ kiểm tra và chạy evaluation trên output đã có sẵn.
-  stage: visualization
-  clean_output: true # xóa file output cũ trước khi ghi mới.
-
+  stage: evaluation
+  clean_output: true
+  skip_unsynchronized_cameras: true
 preprocess:
   offset_estimation:
-    max_frames: null # Số frame tối đa dùng cho ước lượng offset.
-
+    max_frames: null
 pose_export:
   enabled: true
-  use_world_coords: false # Giữ false (camera coords) để ray-casting khớp với WHAM mesh vertices
-
+  use_world_coords: false
 inputs:
-  cam1_pkl: "input/Hugging/exo/cam04/harmony4D_002_hugging_cam04_wham/wham_harmony4D_002_hugging_cam04_ffmpeg.pkl"
-  cam2_pkl: "input/Hugging/exo/cam05/harmony4D_002_hugging_cam05_wham/wham_harmony4D_002_hugging_cam05_ffmpeg.pkl"
-  camera1_video: "input/Hugging/exo/cam04/images/harmony4D_002_hugging_cam04_ffmpeg.mp4"
-  camera2_video: "input/Hugging/exo/cam05/images/harmony4D_002_hugging_cam05_ffmpeg.mp4"
-  ground_truth_dir: "input/Hugging/processed_data/poses3d" # Thư mục ground-truth cho evaluation.
-  target_person: "aria01" # Chọn 1 người để fusion ("aria01" hoặc "aria02")
-  person_height_m: 1.74 # Chiều cao người đã biết (m) cho aria01 (1.70 cho aria02)
-
+  cam1_pkl: input/Hugging/exo/cam04/harmony4D_002_hugging_cam04_wham/wham_harmony4D_002_hugging_cam04_ffmpeg.pkl
+  cam2_pkl: input/Hugging/exo/cam05/harmony4D_002_hugging_cam05_wham/wham_harmony4D_002_hugging_cam05_ffmpeg.pkl
+  camera1_video: input/Hugging/exo/cam04/images/harmony4D_002_hugging_cam04_ffmpeg.mp4
+  camera2_video: input/Hugging/exo/cam05/images/harmony4D_002_hugging_cam05_ffmpeg.mp4
+  ground_truth_dir: input/Hugging/processed_data/poses3d
+  target_person: aria02
+  person_heights:
+    aria01: 1.737
+    aria02: 1.7
 paths:
-  smpl_model: "models/SMPL_NEUTRAL.pkl"
-  segmentation: "models/smpl_partSegmentation_mapping.pkl"
-  keypoints3d_map: "configs/keypoints3D_map.yml"
-  keypoints2d_map: "configs/keypoints2D_map.yml"
-  j_regressor_3d: "models/J_regressor_body25_extended.npy"
-
-  preprocess_output_dir: "output/preprocess_results"
-  pose_output_dir: "output/pose_results"
-  fused_output_dir: "output/fused_results"
-  learnable_output_dir: "output/learnable_results"
-  learnable_extra_output_dir: "output/learnable_extra_results"
-  visualization_output_dir: "output/visualize_results"
-  evaluation_output_dir: "output/evaluation_results"
-
+  smpl_model: models/SMPL_NEUTRAL.pkl
+  segmentation: models/smpl_partSegmentation_mapping.pkl
+  keypoints3d_map: configs/keypoints3D_map.yml
+  keypoints2d_map: configs/keypoints2D_map.yml
+  j_regressor_3d: models/J_regressor_body25_extended.npy
+  preprocess_output_dir: output/preprocess_results
+  pose_output_dir: output/pose_results
+  fused_output_dir: output/fused_results
+  learnable_output_dir: output/learnable_results
+  learnable_extra_output_dir: output/learnable_extra_results
+  visualization_output_dir: output/visualize_results
+  evaluation_output_dir: output/evaluation_results
 fusion:
   enabled: true
-  # EXPERIMENTAL optimization-only AOTR: this branch enables it by default.
-  # Toggle off to reproduce the unmodified legacy pipeline in this branch.
-  # Needs valid per-camera K + matched real 2D tracking keypoints;
-  # fails closed to raw Master if independent observations are unavailable.
   aotr:
     enabled: true
-    # Auto-select independent 2D geometry when available; otherwise run the
-    # separately labeled 3D-only surrogate instead of 301-frame raw fallback.
-    # Set fail_closed for strict 2D-only AOTR.
     missing_2d_mode: 3d_surrogate
-    three_d_consensus_weight: 0.12 # Trọng số đồng thuận 3D gốc phục hồi PA-MPJPE
+    three_d_consensus_weight: 0.12
     three_d_slave_advantage_gain: 3.0
-    three_d_master_prior_weight: 0.50  # giảm từ 0.75: cho slave influence hơn khi jitter thấp
+    three_d_master_prior_weight: 0.5
     three_d_temporal_weight: 0.15
     three_d_jitter_epsilon: 0.06
     three_d_occluded_master_reliability: 0.15
-    # Two distinct no-GT hypotheses, enabled independently for ablation.
-    # Smooth only the Slave correction F-M, NOT natural Master motion.
     sequence_stability:
       enabled: true
       temporal_stability:
         enabled: true
-        shape_weight: 2.5          # tăng từ 1.0: cho correction shape giữ được nhiều hơn
-        residual_accel_weight: 6.0 # giảm từ 15.0: giảm bóp nghẹt correction ở frame peak motion
-        residual_velocity_weight: 1.0
-        minimum_retention: 0.40    # tăng từ 0.20: correction không bị shrink quá 60%
-        smooth_directions: false   # tắt: savgol window=15 san phẳng peak corrections → PA-MPJPE mất gain
-        smooth_window: 15
+        shape_weight: 2.5
+        residual_accel_weight: 1.0
+        residual_velocity_weight: 0.5
+        minimum_retention: 0.8
+        smooth_trajectories: true
+        smooth_window: 7
         max_iter: 160
-      # Reference is robust temporal median of Master limb totals, combined
-      # with the pre-existing 54/46 arm and 53/47 leg anatomical ratios.
-      # This CAN change even joint positions labeled KEEP in raw AOTR and
-      # does not guarantee better MBLE against GT: ablate explicitly.
       anatomical_calibration:
         enabled: true
-        person_height_m: 1.737 # Chiều cao aria01 đã biết từ GT SMPL (m)
-        arm_upper_fraction: 0.555
-        leg_thigh_fraction: 0.557
-        arm_height_fraction: 0.3165
-        leg_height_fraction: 0.445
     min_2d_confidence: 0.35
     min_correspondences: 4
     alignment_median_max_m: 0.12
@@ -86,105 +62,81 @@ fusion:
     ransac_threshold_m: 0.06
     ransac_max_combos: 100
     min_bone_direction_cos: -0.8
-    observability_ratio: 0.10
+    observability_ratio: 0.1
     observed_prior_weight: 0.0001
     unobserved_prior_weight: 0.003
     huber_delta_normalized: 0.008
-    minimum_cost_reduction: 0.0000001
+    minimum_cost_reduction: 1.0e-07
     trust_max_iter: 12
     trust_initial_radius: 0.25
-  # V3 remains experimental: DISABLED by default following observed
-  # performance regression. Default restores the pre-V3 pipeline.
-  # Zero-GT heuristic is NOT a calibrated estimator of MPJPE improvement.
-  # Enable only for explicit A/B benchmarking on held-out pairs.
   selective_joint_fusion:
     enabled: false
-    quality_margin_visible: 0.10
+    quality_margin_visible: 0.1
     quality_margin_occluded: 0.06
     max_displacement_visible: 0.12
     max_displacement_occluded: 0.35
     max_bone_relative_error: 0.15
     minimum_slave_2d_support: 0.15
-    minimum_slave_belief: 0.10
+    minimum_slave_belief: 0.1
     alignment_median_max_m: 0.08
     alignment_q75_max_m: 0.12
     blend_strength: 0.35
-    # Original global smoothing/optimizer can move joints labelled KEEP.
-    # Turn on selected-only optimizer only after validating held-out sequences.
     optimize_selected: false
   belief:
-    alpha: 0.001 # alpha: hệ số phạt theo khoảng cách 3D (0.001 để phân biệt nhẹ góc nhìn gần/xa)
-    beta: 0.8 # beta: hệ số trộn tin cậy của láng giềng xương trong harmonic mean, càng lớn thì belief càng chịu ảnh hưởng bởi skeleton lân cận.
-
+    alpha: 0.001
+    beta: 0.8
   occlusion:
-    enabled: true  # Phát hiện che khuất bằng 3D ray-casting
-    tau: 0.05 # Ngưỡng khoảng cách (m) trước joint để kết luận joint bị che khuất.
-
-  # Cơ chế Uncertainty-Gating: ngăn chặn việc thay thế khớp nếu camera phụ không đáng tin cậy
-  uncertainty_gating:
-    consensus_blend_strength: 0.50
     enabled: true
-    max_displacement: 0.35 # Khoảng cách tối đa (m) giữa tọa độ ánh xạ và mục tiêu
-    min_confidence: 0.1    # Ngưỡng tin cậy tối thiểu của camera phụ
-    consensus_threshold: 0.08 # Ngưỡng (m) đồng thuận đa góc nhìn để blend các khớp cùng nhìn thấy rõ
-
-  # Chỉ cho camera phụ sửa joint đang nhìn rõ khi belief cao hơn đủ lớn.
+    tau: 0.05
+  uncertainty_gating:
+    consensus_blend_strength: 0.5
+    enabled: true
+    max_displacement: 0.35
+    min_confidence: 0.1
+    consensus_threshold: 0.08
   master_protection:
     enabled: true
     confidence_margin: 0.15
     default_mode: aggressive
     pair_modes:
-      "cam13->cam20": posed_fallback
-      "cam17->cam20": posed_fallback
-      "cam19->cam20": posed_fallback
-
-  # Cơ chế giới hạn góc giải phẫu: kiểm soát góc uốn khớp bản lề (khuỷu tay, đầu gối)
+      cam13->cam20: posed_fallback
+      cam17->cam20: posed_fallback
+      cam19->cam20: posed_fallback
   angle_limits:
     enabled: true
-    min_angle_deg: 30.0   # Tránh gập ép quá mức
-    max_angle_deg: 175.0  # Tránh gập ngược / hyperextension
-
-  # Bộ lọc làm mượt quỹ đạo thời gian (giảm rung giật / giảm Accel Error)
+    min_angle_deg: 30.0
+    max_angle_deg: 175.0
   smoothing:
     enabled: true
     window_length: 5
     polyorder: 2
-
-  # Cấu hình RANSAC dùng để ước lượng similarity transform giữa 2 camera.
   ransac:
-    threshold: 0.05 # Ngưỡng sai khác để coi một joint là inlier.
-    max_combos: 500 # Số tổ hợp mẫu tối đa khi không thể liệt kê toàn bộ triplet.
-
-  # Cấu hình tối ưu hóa nhóm điểm F bằng PyTorch GPU Autograd + Adam (thay thế SLSQP CPU)
+    threshold: 0.05
+    max_combos: 500
   optimization:
     enabled: true
     regularization: true
-    regularization_lambda: 1.0 # Hệ số phạt của proximity regularization.
-    temporal_lambda: 2.0 # Hệ số phạt theo thời gian so với frame trước.
-    max_iter: 35 # Số vòng lặp tối đa cho PyTorch GPU Adam.
-
+    regularization_lambda: 1.0
+    temporal_lambda: 2.0
+    max_iter: 35
 learnable:
   enabled: false
-  checkpoint: "models/best_ckpt.pth.tar"
-
+  checkpoint: models/best_ckpt.pth.tar
 learnable_extra:
   enabled: false
-
 visualization:
   enabled: false
-  target_fps: 10 # FPS của video render.
-  dpi: 100 # DPI của figure matplotlib.
-  max_frames: null # Giới hạn số frame render, null nghĩa là render hết frame có thể ghép.
-  # Danh sách camera cần render.
+  target_fps: 10
+  dpi: 100
+  max_frames: null
   cameras:
-    - camera1
-    - camera2
-
+  - camera1
+  - camera2
 evaluation:
   enabled: true
-  testcase_name: null #đánh giá testcase hay dataset
+  testcase_name: null
   metrics:
-    pa_mpjpe: true # PA-MPJPE là metric mặc định đang bật.
+    pa_mpjpe: true
     mpjpe: true
     pck: false
     pck_threshold_mm: 150.0

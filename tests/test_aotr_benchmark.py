@@ -32,6 +32,18 @@ class AOTRBenchmarkTests(unittest.TestCase):
         self.assertNotEqual(report_csv_name(first), report_csv_name(second))
         self.assertFalse(cache_compatible({"protocol": a}, b))
 
+    def test_person_and_height_cannot_share_cache(self):
+        first = {
+            "inputs": {"target_person": "aria01", "person_heights": {"aria01": 1.737}},
+            "fusion": {"aotr": {"enabled": True}},
+        }
+        second = {
+            "inputs": {"target_person": "aria02", "person_heights": {"aria02": 1.700}},
+            "fusion": {"aotr": {"enabled": True}},
+        }
+        self.assertNotEqual(evaluation_protocol(first), evaluation_protocol(second))
+        self.assertNotEqual(report_csv_name(first), report_csv_name(second))
+
     def test_legacy_still_uses_original_report(self):
         cfg = {"fusion": {"aotr": {"enabled": False}}}
         self.assertEqual(evaluation_protocol(cfg), LEGACY_PROTOCOL)
@@ -50,6 +62,13 @@ class AOTRBenchmarkTests(unittest.TestCase):
                 "reason_counts": {"missing_intrinsics": 20},
             }), encoding="utf-8")
             with self.assertRaisesRegex(RuntimeError, "All AOTR frames"):
+                verify_aotr_execution(cfg)
+            diag.write_text(json.dumps({
+                "mode": "aotr", "frames": 20, "corrected_frames": 0,
+                "accepted_bone_frames": 0, "fallback_frames": 20,
+                "reason_counts": {"pair_mode_posed_fallback": 20},
+            }), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "not an AOTR benchmark"):
                 verify_aotr_execution(cfg)
             diag.write_text(json.dumps({
                 "mode": "aotr", "frames": 20, "corrected_frames": 5,
