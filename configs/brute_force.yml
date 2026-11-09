@@ -1,6 +1,6 @@
 segments:
 - name: mma_001
-  ground_truth_dir: input/MMA/processed_data/poses3d
+  ground_truth_dir: input/MMA/processed_data/smpl
   cameras:
   - id: cam01
     pkl: input/MMA/exo/cam01/hmr4d_results_aria01.pt

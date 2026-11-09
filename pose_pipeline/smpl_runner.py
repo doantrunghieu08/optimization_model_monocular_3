@@ -41,12 +41,14 @@ def get_3d_joints_for_frame(model, person_data, frame_idx, regressor_path, map_p
             transl=curr_trans_t,
         )
 
-    vertices = output.vertices[0].cpu().numpy()
-    j_reg = np.load(regressor_path)
-    if j_reg.shape[1] != 6890:
-        raise ValueError(f"Expected (_, 6890) for SMPL vertices, got {j_reg.shape}")
-
-    joints_all = j_reg @ vertices
+    if hasattr(output, "joints") and output.joints is not None:
+        joints_all = output.joints[0].cpu().numpy()
+    else:
+        vertices = output.vertices[0].cpu().numpy()
+        j_reg = np.load(regressor_path)
+        if j_reg.shape[1] != 6890:
+            raise ValueError(f"Expected (_, 6890) for SMPL vertices, got {j_reg.shape}")
+        joints_all = j_reg @ vertices
 
     map_data = load_keypoints3d_map(map_path)
     result = {}

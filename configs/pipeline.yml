@@ -18,7 +18,7 @@ inputs:
   cam2_pkl: "input/MMA/exo/cam02/hmr4d_results_aria01.pt"
   camera1_video: "input/MMA/exo/cam01/0_input_video.mp4"
   camera2_video: "input/MMA/exo/cam02/0_input_video.mp4"
-  ground_truth_dir: "input/MMA/processed_data/poses3d" # Thư mục ground-truth cho evaluation.
+  ground_truth_dir: "input/MMA/processed_data/smpl" # Thư mục ground-truth cho evaluation.
   target_person: "aria01" # Chọn 1 người để fusion ("aria01" hoặc "aria02")
 
 paths:
@@ -26,7 +26,7 @@ paths:
   segmentation: "models/smpl_partSegmentation_mapping.pkl"
   keypoints3d_map: "configs/keypoints3D_map.yml"
   keypoints2d_map: "configs/keypoints2D_map.yml"
-  j_regressor_3d: "models/J_regressor_body25_extended.npy"
+  j_regressor_3d: "models/J_regressor_smpl_45.npy"
 
   preprocess_output_dir: "output/preprocess_results"
   pose_output_dir: "output/pose_results"
@@ -58,6 +58,7 @@ fusion:
     # Turn on selected-only optimizer only after validating held-out sequences.
     optimize_selected: false
   belief:
+    use_confidence2d: true # Bat de tron confidence 2D vao belief; tat cho ablation baseline.
     alpha: 0.001 # alpha: hệ số phạt theo khoảng cách 3D (0.001 để phân biệt nhẹ góc nhìn gần/xa)
     beta: 0.8 # beta: hệ số trộn tin cậy của láng giềng xương trong harmonic mean, càng lớn thì belief càng chịu ảnh hưởng bởi skeleton lân cận.
 

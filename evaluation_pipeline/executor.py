@@ -202,6 +202,7 @@ HUGGING_SMPL_INDICES = {
     "left_elbow": 18, "right_elbow": 19,
     "left_wrist": 20, "right_wrist": 21,
     "left_hand": 22, "right_hand": 23,
+    "left_toe": 29, "right_toe": 32,
 }
 
 

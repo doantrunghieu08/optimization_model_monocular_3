@@ -936,7 +936,9 @@ def run_fusion(config: dict) -> None:
     wham_loaded, verts_cam1, verts_cam2, n_frames_1, n_frames_2, extra_1, extra_2, start_fid_1, start_fid_2 = _load_verts_if_available(
         inputs, occlusion_enabled, target_person=inputs.get("target_person"), include_other_person=multi_person_enabled
     )
-    confidence2d_profiles = _load_2d_profiles(config, inputs)
+    use_confidence2d = bool(belief_cfg.get("use_confidence2d", True))
+    confidence2d_profiles = _load_2d_profiles(config, inputs) if use_confidence2d else {}
+    print(f"[Fusion] 2D confidence in belief: {'enabled' if use_confidence2d else 'disabled'}")
     occlusion_intrinsics = _load_occlusion_intrinsics(config) if occlusion_enabled and wham_loaded else None
 
     keypoints_dir = input_dir / "keypoints3d"

@@ -841,5 +841,24 @@ class MasterProtectionAndAngleLimitTests(unittest.TestCase):
 
 
 
+    def test_smpl_keypoints_mapping_matches_ground_truth(self):
+        # ponytail: verify 21 keypoint indices match canonical SMPL definition and GT mapping
+        import yaml
+        from evaluation_pipeline.executor import HUGGING_SMPL_INDICES
+        with open("configs/keypoints3D_map.yml") as f:
+            kmap = yaml.safe_load(f)
+        keypoints = {kp["name"]: kp["regressor_index"] for kp in kmap["keypoints"]}
+        self.assertEqual(len(keypoints), 21)
+        self.assertEqual(len(HUGGING_SMPL_INDICES), 21)
+        for name, idx in keypoints.items():
+            self.assertIn(name, HUGGING_SMPL_INDICES)
+            self.assertEqual(HUGGING_SMPL_INDICES[name], idx)
+        self.assertEqual(keypoints["pelvis"], 0)
+        self.assertEqual(keypoints["left_hand"], 22)
+        self.assertEqual(keypoints["right_hand"], 23)
+        self.assertEqual(keypoints["left_toe"], 29)
+        self.assertEqual(keypoints["right_toe"], 32)
+
+
 if __name__ == "__main__":
     unittest.main()
