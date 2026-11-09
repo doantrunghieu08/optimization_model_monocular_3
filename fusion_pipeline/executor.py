@@ -74,6 +74,14 @@ def _extract_other_person_verts(wham_raw, target_person=None, pkl_path=None):
         target_str = "aria02"
     mapping = parse_person_mapping(pkl_path) if pkl_path else {}
     other_person = "aria02" if target_str == "aria01" else ("aria01" if target_str == "aria02" else None)
+    # ponytail: GVHMR sibling other-person lookup
+    if other_person and pkl_path:
+        cand = list(Path(pkl_path).parent.glob(f"*{other_person}*.pt"))
+        if cand:
+            from compat import load_joblib_compat, resolve_person_payload
+            p_other = resolve_person_payload(load_joblib_compat(cand[0]), pkl_path=cand[0], target_person=other_person)
+            if p_other:
+                return p_other.get("verts_cam", p_other.get("verts"))
     if other_person and mapping:
         for k, v in wham_raw.items():
             if mapping.get(str(k), mapping.get(k, "")) == other_person and isinstance(v, dict):

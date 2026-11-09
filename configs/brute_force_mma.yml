@@ -1,0 +1,65 @@
+segments:
+- name: mma_001
+  ground_truth_dir: input/MMA/processed_data/poses3d
+  cameras:
+  - id: cam01
+    pkl: input/MMA/exo/cam01/hmr4d_results_aria01.pt
+    video: input/MMA/exo/cam01/0_input_video.mp4
+  - id: cam02
+    pkl: input/MMA/exo/cam02/hmr4d_results_aria01.pt
+    video: input/MMA/exo/cam02/0_input_video.mp4
+  - id: cam03
+    pkl: input/MMA/exo/cam03/hmr4d_results_aria01.pt
+    video: input/MMA/exo/cam03/0_input_video.mp4
+  - id: cam04
+    pkl: input/MMA/exo/cam04/hmr4d_results_aria01.pt
+    video: input/MMA/exo/cam04/0_input_video.mp4
+  - id: cam05
+    pkl: input/MMA/exo/cam05/hmr4d_results_aria01.pt
+    video: input/MMA/exo/cam05/0_input_video.mp4
+  - id: cam06
+    pkl: input/MMA/exo/cam06/hmr4d_results_aria01.pt
+    video: input/MMA/exo/cam06/0_input_video.mp4
+  - id: cam07
+    pkl: input/MMA/exo/cam07/hmr4d_results_aria01.pt
+    video: input/MMA/exo/cam07/0_input_video.mp4
+  - id: cam08
+    pkl: input/MMA/exo/cam08/hmr4d_results_aria01.pt
+    video: input/MMA/exo/cam08/0_input_video.mp4
+  - id: cam09
+    pkl: input/MMA/exo/cam09/hmr4d_results_aria01.pt
+    video: input/MMA/exo/cam09/0_input_video.mp4
+  - id: cam10
+    pkl: input/MMA/exo/cam10/hmr4d_results_aria01.pt
+    video: input/MMA/exo/cam10/0_input_video.mp4
+  - id: cam11
+    pkl: input/MMA/exo/cam11/hmr4d_results_aria01.pt
+    video: input/MMA/exo/cam11/0_input_video.mp4
+  - id: cam12
+    pkl: input/MMA/exo/cam12/hmr4d_results_aria01.pt
+    video: input/MMA/exo/cam12/0_input_video.mp4
+  - id: cam13
+    pkl: input/MMA/exo/cam13/hmr4d_results_aria01.pt
+    video: input/MMA/exo/cam13/0_input_video.mp4
+  - id: cam14
+    pkl: input/MMA/exo/cam14/hmr4d_results_aria01.pt
+    video: input/MMA/exo/cam14/0_input_video.mp4
+  - id: cam15
+    pkl: input/MMA/exo/cam15/hmr4d_results_aria01.pt
+    video: input/MMA/exo/cam15/0_input_video.mp4
+  - id: cam16
+    pkl: input/MMA/exo/cam16/hmr4d_results_aria01.pt
+    video: input/MMA/exo/cam16/0_input_video.mp4
+  - id: cam17
+    pkl: input/MMA/exo/cam17/hmr4d_results_aria01.pt
+    video: input/MMA/exo/cam17/0_input_video.mp4
+  - id: cam18
+    pkl: input/MMA/exo/cam18/hmr4d_results_aria01.pt
+    video: input/MMA/exo/cam18/0_input_video.mp4
+  - id: cam19
+    pkl: input/MMA/exo/cam19/hmr4d_results_aria01.pt
+    video: input/MMA/exo/cam19/0_input_video.mp4
+  - id: cam20
+    pkl: input/MMA/exo/cam20/hmr4d_results_aria01.pt
+    video: input/MMA/exo/cam20/0_input_video.mp4
+

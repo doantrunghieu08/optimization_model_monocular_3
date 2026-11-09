@@ -22,8 +22,93 @@ from pathlib import Path
 
 
 def load_joblib_compat(filepath):
+    p = Path(filepath)
+    if p.suffix.lower() in ('.pt', '.pth'):
+        try:
+            import torch
+            return torch.load(p, map_location='cpu', weights_only=False)
+        except Exception:
+            pass
     with open(filepath, 'rb') as f:
         return joblib.load(f)
+
+
+_smpl_model_cache = None
+
+
+def _gvhmr_to_payload(data, pkl_path=None, target_str=None):
+    # ponytail: translate GVHMR HMR4D prediction into canonical SMPL payload
+    incam = data.get("smpl_params_incam", {})
+    glob = data.get("smpl_params_global", {})
+
+    def _to_np(x):
+        if x is None:
+            return None
+        return x.detach().cpu().numpy() if hasattr(x, "detach") else np.asarray(x)
+
+    bp = _to_np(incam.get("body_pose"))
+    if bp is not None and bp.shape[1] == 63:
+        bp = np.pad(bp, ((0, 0), (0, 6)))
+    go = _to_np(incam.get("global_orient"))
+    pose = np.concatenate([go, bp], axis=-1) if (go is not None and bp is not None) else None
+    trans = _to_np(incam.get("transl"))
+    betas = _to_np(incam.get("betas"))
+
+    bp_g = _to_np(glob.get("body_pose", bp))
+    if bp_g is not None and bp_g.shape[1] == 63:
+        bp_g = np.pad(bp_g, ((0, 0), (0, 6)))
+    go_g = _to_np(glob.get("global_orient"))
+    pose_world = np.concatenate([go_g, bp_g], axis=-1) if (go_g is not None and bp_g is not None) else None
+    trans_world = _to_np(glob.get("transl"))
+
+    n_frames = len(pose) if pose is not None else 0
+    frame_ids = np.arange(n_frames)
+
+    # ponytail: generate SMPL mesh vertices for 3D ray-casting occlusion
+    verts = None
+    try:
+        global _smpl_model_cache
+        if _smpl_model_cache is None:
+            patch_numpy_and_inspect()
+            from pose_pipeline.smpl_runner import create_smpl_model
+            _smpl_model_cache = create_smpl_model("models/SMPL_NEUTRAL.pkl")
+        import torch
+        with torch.no_grad():
+            out = _smpl_model_cache(
+                body_pose=torch.tensor(pose[:, 3:], dtype=torch.float32),
+                global_orient=torch.tensor(pose[:, :3], dtype=torch.float32),
+                transl=torch.tensor(trans, dtype=torch.float32),
+                betas=torch.tensor(betas, dtype=torch.float32),
+            )
+            verts = out.vertices.cpu().numpy()
+    except Exception:
+        pass
+
+    tracking = None
+    if pkl_path is not None:
+        p = Path(pkl_path)
+        pattern = f"preprocess/vitpose*{target_str}*.pt" if target_str else "preprocess/vitpose*.pt"
+        vit_files = list(p.parent.glob(pattern)) or list(p.parent.glob("preprocess/vitpose*.pt"))
+        if vit_files:
+            try:
+                import torch
+                kpts = torch.load(vit_files[0], map_location="cpu", weights_only=False)
+                kpts_np = kpts.cpu().numpy() if hasattr(kpts, "cpu") else np.asarray(kpts)
+                tracking = {"keypoints": kpts_np, "frame_id": np.arange(len(kpts_np))}
+            except Exception:
+                pass
+
+    return {
+        "pose": pose,
+        "trans": trans,
+        "betas": betas,
+        "pose_world": pose_world,
+        "trans_world": trans_world,
+        "frame_ids": frame_ids,
+        "verts": verts,
+        "verts_cam": verts,
+        "tracking_results_for_reproj": tracking,
+    }
 
 
 def parse_person_mapping(pkl_path):
@@ -43,6 +128,31 @@ def parse_person_mapping(pkl_path):
 
 
 def resolve_person_payload(wham_data, pkl_path=None, target_person=None):
+    if target_person is not None and pkl_path is not None:
+        target_str = str(target_person).strip().lower()
+        if target_str in ("aria1", "aria_1", "aria-1"):
+            target_str = "aria01"
+        elif target_str in ("aria2", "aria_2", "aria-2"):
+            target_str = "aria02"
+        p = Path(pkl_path)
+        if p.suffix.lower() in (".pt", ".pth") and target_str not in p.stem.lower():
+            candidates = list(p.parent.glob(f"*{target_str}*.pt"))
+            if candidates:
+                wham_data = load_joblib_compat(candidates[0])
+                pkl_path = candidates[0]
+
+    # ponytail: handle GVHMR HMR4D prediction dict
+    if isinstance(wham_data, dict) and "smpl_params_incam" in wham_data:
+        target_str = str(target_person).strip().lower() if target_person else None
+        if target_str in ("aria1", "aria_1", "aria-1"):
+            target_str = "aria01"
+        elif target_str in ("aria2", "aria_2", "aria-2"):
+            target_str = "aria02"
+        subj = str(wham_data.get("subject", "")).lower()
+        if target_str and subj and target_str != subj:
+            return None
+        return _gvhmr_to_payload(wham_data, pkl_path=pkl_path, target_str=target_str)
+
     if not isinstance(wham_data, dict) and "defaultdict" not in str(type(wham_data)):
         if isinstance(wham_data, list):
             for v in wham_data:

@@ -1,5 +1,6 @@
 #version 260826_fixed
 import os
+import sys
 import platform
 import getpass
 import yaml
@@ -70,6 +71,8 @@ def extract_set_name(pkl_path: str) -> str:
                 return parts[idx - 1]
         except ValueError:
             pass
+    if "MMA" in parts:
+        return "mma"
     return "Seq1"
 
 def _resolve_input_path(workspace: Path, path_str: str | Path) -> Path:
@@ -772,7 +775,13 @@ def _process_segment(seg, existing, base_cfg, ws_dir, sh_name, ws_title, all_res
 
 def run_brute_force():
     WS_DIR = Path(__file__).parent.resolve()
-    with open(WS_DIR / "configs/brute_force.yml", "r", encoding="utf-8") as f: brute_cfg = yaml.safe_load(f)
+    cfg_arg = next((arg for arg in sys.argv[1:] if arg.endswith((".yml", ".yaml"))), None)
+    cfg_path = Path(cfg_arg) if cfg_arg else (WS_DIR / "configs/brute_force_mma.yml" if (WS_DIR / "configs/brute_force_mma.yml").exists() else WS_DIR / "configs/brute_force.yml")
+    if not cfg_path.is_absolute():
+        cfg_path = WS_DIR / cfg_path
+    with open(cfg_path, "r", encoding="utf-8") as f:
+        brute_cfg = yaml.safe_load(f)
+    print(f"[BruteForce] Sử dụng cấu hình: {cfg_path.name}")
     # Gọi hàm load_config đã được "nâng cấp" để nó tự động parse biến môi trường
     base_cfg = load_config(WS_DIR / "configs/pipeline.yml")
     # Kiểm tra xem file config đã nhận đúng giá trị chưa

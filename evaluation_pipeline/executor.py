@@ -62,19 +62,34 @@ def _frame_index_from_path(p: Path) -> int:
 
 def _resolve_root_joint(joints: dict) -> np.ndarray:
     if "left_hip" in joints and "right_hip" in joints:
-        return (joints["left_hip"] + joints["right_hip"]) / 2.0
+        return (np.asarray(joints["left_hip"], dtype=float) + np.asarray(joints["right_hip"], dtype=float)) / 2.0
     raise ValueError("Missing left_hip or right_hip for root alignment")
 
-def _compute_mpjpe(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], keys: list[str]) -> tuple[float, dict[str, float]]:
+def _align_camera_to_world_rigid(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], keys: list[str]) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+    """Align camera-frame root-centered predicted pose to world-frame root-centered truth pose.
+
+    Applies pure 3D rotation R in SO(3) without changing scale (scale=1.0) or limb lengths.
+    """
     pred_root = _resolve_root_joint(pred)
     truth_root = _resolve_root_joint(truth)
+    P = np.array([np.asarray(pred[k], dtype=float) - pred_root for k in keys])
+    T = np.array([np.asarray(truth[k], dtype=float) - truth_root for k in keys])
+    H = np.dot(T.T, P)
+    U, _, Vt = np.linalg.svd(H)
+    corr = np.eye(3)
+    corr[-1, -1] = np.sign(np.linalg.det(np.dot(U, Vt)))
+    R = np.dot(np.dot(U, corr), Vt)
+    P_world = np.dot(P, R.T)
+    p_dict = {k: P_world[i] for i, k in enumerate(keys)}
+    t_dict = {k: T[i] for i, k in enumerate(keys)}
+    return p_dict, t_dict
 
+def _compute_mpjpe(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], keys: list[str]) -> tuple[float, dict[str, float]]:
+    p_dict, t_dict = _align_camera_to_world_rigid(pred, truth, keys)
     errors = []
     errors_dict = {}
     for k in keys:
-        p = pred[k] - pred_root
-        t = truth[k] - truth_root
-        err = float(np.linalg.norm(p - t) * 1000.0)
+        err = float(np.linalg.norm(p_dict[k] - t_dict[k]) * 1000.0)
         errors.append(err)
         errors_dict[k] = err
     return float(np.mean(errors)), errors_dict
@@ -113,14 +128,11 @@ def _compute_pa_mpjpe(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray],
     return float(np.mean(errors)), errors_dict
 
 def _compute_pck(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], keys: list[str], threshold_mm: float) -> tuple[float, dict[str, float]]:
-    pred_root = _resolve_root_joint(pred)
-    truth_root = _resolve_root_joint(truth)
+    p_dict, t_dict = _align_camera_to_world_rigid(pred, truth, keys)
     correct = []
     correct_dict = {}
     for k in keys:
-        p = pred[k] - pred_root
-        t = truth[k] - truth_root
-        err = float(np.linalg.norm(p - t) * 1000.0)
+        err = float(np.linalg.norm(p_dict[k] - t_dict[k]) * 1000.0)
         value = 100.0 if err <= threshold_mm else 0.0
         correct.append(value)
         correct_dict[k] = value

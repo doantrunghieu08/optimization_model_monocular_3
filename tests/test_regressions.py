@@ -815,6 +815,30 @@ class MasterProtectionAndAngleLimitTests(unittest.TestCase):
             self.assertIn(0, gt)
             np.testing.assert_allclose(gt[0]["joints"]["left_shoulder"], [0.0, 0.0, 0.0])
 
+    def test_gvhmr_payload_conversion(self):
+        # ponytail: verify GVHMR HMR4D output converts to standard SMPL payload
+        from compat import resolve_person_payload
+        fake_gvhmr = {
+            "smpl_params_incam": {
+                "body_pose": np.zeros((2, 63), dtype=np.float32),
+                "global_orient": np.zeros((2, 3), dtype=np.float32),
+                "transl": np.zeros((2, 3), dtype=np.float32),
+                "betas": np.zeros((2, 10), dtype=np.float32),
+            },
+            "smpl_params_global": {
+                "body_pose": np.zeros((2, 63), dtype=np.float32),
+                "global_orient": np.zeros((2, 3), dtype=np.float32),
+                "transl": np.zeros((2, 3), dtype=np.float32),
+            },
+            "subject": "aria01",
+        }
+        payload = resolve_person_payload(fake_gvhmr, target_person="aria01")
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["pose"].shape, (2, 72))
+        self.assertEqual(payload["trans"].shape, (2, 3))
+        self.assertEqual(payload["betas"].shape, (2, 10))
+        self.assertEqual(payload["pose_world"].shape, (2, 72))
+
 
 
 if __name__ == "__main__":
