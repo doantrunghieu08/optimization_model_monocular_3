@@ -18,7 +18,7 @@ inputs:
   cam2_pkl: "input/MMA/exo/cam02/hmr4d_results_aria01.pt"
   camera1_video: "input/MMA/exo/cam01/0_input_video.mp4"
   camera2_video: "input/MMA/exo/cam02/0_input_video.mp4"
-  ground_truth_dir: "input/MMA/processed_data/smpl" # Thư mục ground-truth cho evaluation.
+  ground_truth_dir: "input/MMA/processed_data/poses3d" # Thư mục ground-truth cho evaluation.
   target_person: "aria01" # Chọn 1 người để fusion ("aria01" hoặc "aria02")
 
 paths:
