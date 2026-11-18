@@ -1,0 +1,34 @@
+# VCS / tooling
+.git
+.github
+.claude
+.cursor
+.code-review-graph
+.pytest_cache
+.vscode
+.idea
+**/__pycache__
+**/*.py[cod]
+
+# Local-only deps and environments
+.runtime-deps
+venv
+.venv
+env
+.env
+
+# Data and results: mounted from the RunPod network volume instead
+input
+output
+scratch
+*.log
+brute_force_report.*
+
+# Licensed / large weights: put SMPL *.pkl on the volume (/workspace/models)
+**/*.pkl
+**/*.pt
+**/*.onnx
+
+# Notebooks and docs are not needed at runtime
+*.ipynb
+docs
