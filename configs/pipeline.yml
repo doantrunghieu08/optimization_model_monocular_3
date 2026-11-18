@@ -14,10 +14,7 @@ inputs:
   camera1_video: input/Hugging/exo/cam04/images/harmony4D_002_hugging_cam04_ffmpeg.mp4
   camera2_video: input/Hugging/exo/cam05/images/harmony4D_002_hugging_cam05_ffmpeg.mp4
   ground_truth_dir: input/Hugging/processed_data/poses3d
-  target_person: aria02
-  person_heights:
-    aria01: 1.737
-    aria02: 1.7
+  target_person: aria01
 paths:
   smpl_model: models/SMPL_NEUTRAL.pkl
   segmentation: models/smpl_partSegmentation_mapping.pkl
@@ -33,6 +30,33 @@ paths:
   evaluation_output_dir: output/evaluation_results
 fusion:
   enabled: true
+  # Phương pháp dung hợp (cả hai đều cần aotr.enabled=true):
+  # - aotr    : trust-region lấy Master làm gốc (mặc định).
+  # - partwise: trộn đối xứng hướng xương, căn Slave theo từng phần thân (hông/vai),
+  #             trọng số theo độ sâu, giữ chiều dài xương Master. Xem MODEL_CHANGES.md.
+  method: aotr
+  partwise:
+    # Tham số logistic học MỘT LẦN trên split design (aria01, cam02/04/13/19) và đóng băng.
+    # w_Master = sigmoid(a + b * ((depth_M - depth_S) - mu) / sd), depth = z của tâm hông (m).
+    depth_logit:
+      a: -1.2388837544067565e-05
+      b: 1.6761106970863668
+      mu: 4.2041772210435745e-05
+      sd: 1.3685969107519123
+    rotation_half_window: 4
+    sequence_stability:
+      enabled: true
+      temporal_stability:
+        enabled: true
+        shape_weight: 2.5
+        residual_accel_weight: 1.0
+        residual_velocity_weight: 0.5
+        minimum_retention: 0.8
+        smooth_trajectories: true
+        smooth_window: 7
+        max_iter: 160
+      anatomical_calibration:
+        enabled: false
   aotr:
     enabled: true
     missing_2d_mode: 3d_surrogate
@@ -53,8 +77,10 @@ fusion:
         smooth_trajectories: true
         smooth_window: 7
         max_iter: 160
+      # Khóa chiều dài xương = Master (baseline) từng frame. Bật lại sẽ scale chi theo
+      # chiều cao ước lượng (sai ~12%) -> MBLE Hugging 22 -> 41 mm.
       anatomical_calibration:
-        enabled: true
+        enabled: false
     min_2d_confidence: 0.35
     min_correspondences: 4
     alignment_median_max_m: 0.12
@@ -135,6 +161,14 @@ visualization:
 evaluation:
   enabled: true
   testcase_name: null
+  # Loại các frame mà track WHAM bám nhầm người (tráo ID) khỏi phần đánh giá.
+  # Tạo bằng: python build_identity_mask.py configs/brute_force.yml configs/identity_mask_hugging_002.json
+  # 043_Grappling2: nhãn người tạo bằng python -m preprocessing_data.label_persons (xem README).
+  identity_mask:
+    path:
+      - configs/identity_mask_hugging_002.json
+      - configs/identity_mask_grappling2_043.json
+    margin_mm: 10.0
   metrics:
     pa_mpjpe: true
     mpjpe: true

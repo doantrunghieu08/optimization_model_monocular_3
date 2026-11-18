@@ -104,5 +104,61 @@ class AOTR3DTests(unittest.TestCase):
         self.assertTrue(all(np.isfinite(v).all() for v in map(np.asarray, out.values())))
 
 
+def _bone_angle(pose_a, pose_b, child, parent):
+    a = np.asarray(pose_a[child]) - np.asarray(pose_a[parent])
+    b = np.asarray(pose_b[child]) - np.asarray(pose_b[parent])
+    c = float(a @ b / np.linalg.norm(a) / np.linalg.norm(b))
+    return float(np.degrees(np.arccos(np.clip(c, -1.0, 1.0))))
+
+
+class MasterProtectionOptionTests(unittest.TestCase):
+    def test_options_off_by_default_are_identical(self):
+        master, slave = fixture()
+        base, _ = optimize_aotr_3d(master, slave)
+        explicit, _ = optimize_aotr_3d(master, slave, config={
+            "three_d_floor_requires_advantage": False,
+            "three_d_max_disagreement_deg": None,
+            "three_d_max_correction_deg": None,
+        })
+        self.assertEqual(base, explicit)
+
+    def test_disagreement_gate_keeps_visible_master(self):
+        master, slave = fixture()
+        fused, diag = optimize_aotr_3d(
+            master, slave, config={"three_d_max_disagreement_deg": 5.0})
+        self.assertEqual(fused["left_wrist"], master["left_wrist"])
+        self.assertGreater(diag["disagreement_gated_bones"], 0)
+
+    def test_disagreement_gate_still_rescues_occluded_master(self):
+        master, slave = fixture()
+        fused, _ = optimize_aotr_3d(
+            master, slave, vis_master={"left_wrist": False},
+            config={"three_d_max_disagreement_deg": 5.0})
+        self.assertNotEqual(fused["left_wrist"], master["left_wrist"])
+
+    def test_correction_cap_bounds_visible_bone_rotation(self):
+        master, slave = fixture()
+        fused, _ = optimize_aotr_3d(
+            master, slave, vis_master={"left_wrist": False},
+            config={"three_d_max_correction_deg": 2.0})
+        # Occluded: cap does not apply.
+        self.assertGreater(_bone_angle(fused, master, "left_wrist", "left_elbow"), 2.0)
+        prev = (master, slave, master, slave)
+        visible, _ = optimize_aotr_3d(
+            master, slave, config={"three_d_max_correction_deg": 2.0},
+            prev_master=prev[0], prev_slave=prev[1],
+            prev_prev_master=prev[2], prev_prev_slave=prev[3])
+        self.assertLessEqual(
+            _bone_angle(visible, master, "left_wrist", "left_elbow"), 2.0 + 1e-6)
+
+    def test_floor_requires_advantage_blocks_equal_quality_slave(self):
+        master, slave = fixture()
+        fused, diag = optimize_aotr_3d(
+            master, slave, config={"three_d_floor_requires_advantage": True})
+        # No temporal evidence -> equal quality -> no advantage -> Master kept.
+        self.assertEqual(fused, master)
+        self.assertEqual(diag["status"], "unchanged")
+
+
 if __name__ == "__main__":
     unittest.main()

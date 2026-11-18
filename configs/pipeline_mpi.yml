@@ -57,8 +57,9 @@ fusion:
         smooth_trajectories: true
         smooth_window: 7
         max_iter: 160
+      # Khóa chiều dài xương = Master (baseline) từng frame.
       anatomical_calibration:
-        enabled: true
+        enabled: false
     min_2d_confidence: 0.35
     min_correspondences: 4
     alignment_median_max_m: 0.12

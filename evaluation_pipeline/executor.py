@@ -179,6 +179,29 @@ def _load_json(p: Path) -> dict:
         return json.load(f)
 
 
+def _identity_excluded_ids(mask_cfg, pkl_stem: str, person: str) -> set[int]:
+    """GT frame ids whose input track follows the wrong person (see build_identity_mask.py).
+
+    mask_cfg: {"path": <json>, "margin_mm": float} or None. Evaluation-set filter only.
+    """
+    if not mask_cfg or not mask_cfg.get("path"):
+        return set()
+    data = mask_cfg.get("_data")
+    if data is None:
+        # path may be one file or a list (one mask per dataset); margins are merged by pkl stem.
+        raw_paths = mask_cfg["path"] if isinstance(mask_cfg["path"], (list, tuple)) else [mask_cfg["path"]]
+        data = {"margins": {}}
+        for raw in raw_paths:
+            path = Path(raw)
+            if not path.is_absolute():
+                path = Path(__file__).resolve().parents[1] / path
+            data["margins"].update(_load_json(path).get("margins", {}))
+        mask_cfg["_data"] = data
+    margin = float(mask_cfg.get("margin_mm", 10.0))
+    per_frame = data.get("margins", {}).get(pkl_stem, {}).get(str(person).lower(), {})
+    return {int(fid) for fid, value in per_frame.items() if float(value) > margin}
+
+
 def _load_frame_map(frame_dir: Path, frame_offset: int = 0) -> dict[int, Path]:
     frame_map = {}
     for path in frame_dir.glob("*.json"):
@@ -222,6 +245,13 @@ def _load_ground_truth(path: Path, truth_dir: Path = None, target_person: str = 
         npy_files = sorted((search_dir / "poses3d").glob("*.npy"))
     if not npy_files and (search_dir / "smpl").exists():
         npy_files = sorted((search_dir / "smpl").glob("*.npy"))
+
+    if npy_files and any(p.stem.isdigit() for p in npy_files):
+        # Download duplicates such as "00059(1).npy" would otherwise be keyed by list position.
+        skipped = [p.name for p in npy_files if not p.stem.isdigit()]
+        if skipped:
+            print(f"[Evaluation] GT: ignoring {len(skipped)} non-numeric file(s), e.g. {skipped[:3]}")
+        npy_files = [p for p in npy_files if p.stem.isdigit()]
 
     if npy_files:
         gt_map = {}
@@ -503,6 +533,13 @@ def run_evaluation(config: dict) -> None:
     source_frame_ids = {cam: {} for cam in CAMERAS}
     evaluated_frames = []
 
+    id_mask_cfg = eval_cfg.get("identity_mask")
+    identity_excluded = {
+        "camera1": _identity_excluded_ids(id_mask_cfg, cam1_gt_stem, target_person),
+        "camera2": _identity_excluded_ids(id_mask_cfg, cam2_gt_stem, target_person),
+    }
+    identity_skipped = 0
+
     for frame in frames:
         # Resolve actual frame_id from metadata
         metadata_path = Path(paths["pose_output_dir"]) / "metadata" / f"pose_data_{frame}.json"
@@ -516,7 +553,10 @@ def run_evaluation(config: dict) -> None:
         
         if cam1_frame_id not in gt_cam1_data or cam2_frame_id not in gt_cam2_data:
             continue
-            
+        if cam1_frame_id in identity_excluded["camera1"] or cam2_frame_id in identity_excluded["camera2"]:
+            identity_skipped += 1
+            continue
+
         evaluated_frames.append(frame)
 
         fused_metadata_path = Path(paths.get("fused_output_dir", "")) / "metadata" / f"fused_data_{frame}.json"
@@ -801,7 +841,10 @@ def run_evaluation(config: dict) -> None:
         # Lưu vào biến môi trường của OS
         os.environ["LEARNABLE_EXTRA_METRICS"] = summary_str
         print(f"[Evaluation] Đã lưu metrics vào os.environ['LEARNABLE_EXTRA_METRICS']: {summary_str}")
-    
+
+    if id_mask_cfg and id_mask_cfg.get("path"):
+        print(f"[Evaluation] Identity mask: excluded {identity_skipped} frame(s) "
+              f"(margin > {float(id_mask_cfg.get('margin_mm', 10.0))} mm)")
     print(f"[Evaluation] Done. Output: {out_dir}")
 
 """## 12. Visualization phase"""

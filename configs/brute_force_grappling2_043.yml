@@ -1,0 +1,69 @@
+segments:
+- name: 043_grappling2_aria01
+  target_person: aria01
+  ground_truth_dir: input/043_Grappling2/processed_data/poses3d
+  cameras: &id001
+  - id: cam01
+    pkl: input/043_Grappling2/exo/cam01/harmony4D_043_grappling2_cam01_wham/wham_harmony4D_043_grappling2_cam01_ffmpeg.pkl
+    video: input/043_Grappling2/exo/cam01/images/harmony4D_043_grappling2_cam01_ffmpeg.mp4
+  - id: cam02
+    pkl: input/043_Grappling2/exo/cam02/harmony4D_043_grappling2_cam02_wham/wham_harmony4D_043_grappling2_cam02_ffmpeg.pkl
+    video: input/043_Grappling2/exo/cam02/images/harmony4D_043_grappling2_cam02_ffmpeg.mp4
+  - id: cam03
+    pkl: input/043_Grappling2/exo/cam03/harmony4D_043_grappling2_cam03_wham/wham_harmony4D_043_grappling2_cam03_ffmpeg.pkl
+    video: input/043_Grappling2/exo/cam03/images/harmony4D_043_grappling2_cam03_ffmpeg.mp4
+  - id: cam04
+    pkl: input/043_Grappling2/exo/cam04/harmony4D_043_grappling2_cam04_wham/wham_harmony4D_043_grappling2_cam04_ffmpeg.pkl
+    video: input/043_Grappling2/exo/cam04/images/harmony4D_043_grappling2_cam04_ffmpeg.mp4
+  - id: cam05
+    pkl: input/043_Grappling2/exo/cam05/harmony4D_043_grappling2_cam05_wham/wham_harmony4D_043_grappling2_cam05_ffmpeg.pkl
+    video: input/043_Grappling2/exo/cam05/images/harmony4D_043_grappling2_cam05_ffmpeg.mp4
+  - id: cam06
+    pkl: input/043_Grappling2/exo/cam06/harmony4D_043_grappling2_cam06_wham/wham_harmony4D_043_grappling2_cam06_ffmpeg.pkl
+    video: input/043_Grappling2/exo/cam06/images/harmony4D_043_grappling2_cam06_ffmpeg.mp4
+  - id: cam07
+    pkl: input/043_Grappling2/exo/cam07/harmony4D_043_grappling2_cam07_wham/wham_harmony4D_043_grappling2_cam07_ffmpeg.pkl
+    video: input/043_Grappling2/exo/cam07/images (1)/harmony4D_043_grappling2_cam07_ffmpeg.mp4
+  - id: cam08
+    pkl: input/043_Grappling2/exo/cam08/harmony4D_043_grappling2_cam08_wham/wham_harmony4D_043_grappling2_cam08_ffmpeg.pkl
+    video: input/043_Grappling2/exo/cam08/images/harmony4D_043_grappling2_cam08_ffmpeg.mp4
+  - id: cam09
+    pkl: input/043_Grappling2/exo/cam09/harmony4D_043_grappling2_cam09_wham/wham_harmony4D_043_grappling2_cam09_ffmpeg.pkl
+    video: input/043_Grappling2/exo/cam09/images/harmony4D_043_grappling2_cam09_ffmpeg.mp4
+  - id: cam10
+    pkl: input/043_Grappling2/exo/cam10/harmony4D_043_grappling2_cam10_wham/wham_harmony4D_043_grappling2_cam10_ffmpeg.pkl
+    video: input/043_Grappling2/exo/cam10/images/harmony4D_043_grappling2_cam10_ffmpeg.mp4
+  - id: cam11
+    pkl: input/043_Grappling2/exo/cam11/harmony4D_043_grappling2_cam11_wham/wham_harmony4D_043_grappling2_cam11_ffmpeg.pkl
+    video: input/043_Grappling2/exo/cam11/images/harmony4D_043_grappling2_cam11_ffmpeg.mp4
+  - id: cam12
+    pkl: input/043_Grappling2/exo/cam12/harmony4D_043_grappling2_cam12_wham/wham_harmony4D_043_grappling2_cam12_ffmpeg.pkl
+    video: input/043_Grappling2/exo/cam12/images/harmony4D_043_grappling2_cam12_ffmpeg.mp4
+  - id: cam13
+    pkl: input/043_Grappling2/exo/cam13/harmony4D_043_grappling2_cam13_wham/wham_harmony4D_043_grappling2_cam13_ffmpeg.pkl
+    video: input/043_Grappling2/exo/cam13/images/harmony4D_043_grappling2_cam13_ffmpeg.mp4
+  - id: cam14
+    pkl: input/043_Grappling2/exo/cam14/harmony4D_043_grappling2_cam14_wham/wham_harmony4D_043_grappling2_cam14_ffmpeg.pkl
+    video: input/043_Grappling2/exo/cam14/images/harmony4D_043_grappling2_cam14_ffmpeg.mp4
+  - id: cam15
+    pkl: input/043_Grappling2/exo/cam15/harmony4D_043_grappling2_cam15_wham/wham_harmony4D_043_grappling2_cam15_ffmpeg.pkl
+    video: input/043_Grappling2/exo/cam15/images/harmony4D_043_grappling2_cam15_ffmpeg.mp4
+  - id: cam16
+    pkl: input/043_Grappling2/exo/cam16/harmony4D_043_grappling2_cam16_wham/wham_harmony4D_043_grappling2_cam16_ffmpeg.pkl
+    video: input/043_Grappling2/exo/cam16/images/harmony4D_043_grappling2_cam16_ffmpeg.mp4
+  - id: cam17
+    pkl: input/043_Grappling2/exo/cam17/harmony4D_043_grappling2_cam17_wham/wham_harmony4D_043_grappling2_cam17_ffmpeg.pkl
+    video: input/043_Grappling2/exo/cam17/images/harmony4D_043_grappling2_cam17_ffmpeg.mp4
+  - id: cam18
+    pkl: input/043_Grappling2/exo/cam18/harmony4D_043_grappling2_cam18_wham/wham_harmony4D_043_grappling2_cam18_ffmpeg.pkl
+    video: input/043_Grappling2/exo/cam18/images/harmony4D_043_grappling2_cam18_ffmpeg.mp4
+  - id: cam19
+    pkl: input/043_Grappling2/exo/cam19/harmony4D_043_grappling2_cam19_wham/wham_harmony4D_043_grappling2_cam19_ffmpeg.pkl
+    video: input/043_Grappling2/exo/cam19/images/harmony4D_043_grappling2_cam19_ffmpeg.mp4
+  - id: cam20
+    pkl: input/043_Grappling2/exo/cam20/harmony4D_043_grappling2_cam20_wham/wham_harmony4D_043_grappling2_cam20_ffmpeg.pkl
+    video: input/043_Grappling2/exo/cam20/images/harmony4D_043_grappling2_cam20_ffmpeg.mp4
+- name: 043_grappling2_aria02
+  target_person: aria02
+  ground_truth_dir: input/043_Grappling2/processed_data/poses3d
+  cameras: *id001

@@ -1018,6 +1018,15 @@ def run_fusion(config: dict) -> None:
     aotr_enabled = bool(aotr_cfg.get("enabled", False))
     if aotr_enabled and selective_enabled:
         raise ValueError("fusion.aotr and fusion.selective_joint_fusion cannot both be enabled")
+    fusion_method = str(fusion_cfg.get("method", "aotr")).strip().lower()
+    if fusion_method not in ("aotr", "partwise"):
+        raise ValueError(f"Unsupported fusion.method={fusion_method!r}; use 'aotr' or 'partwise'")
+    if fusion_method == "partwise":
+        if not aotr_enabled:
+            raise ValueError("fusion.method=partwise runs on the AOTR per-frame path; set fusion.aotr.enabled=true")
+        if bool(config.get("pose_export", {}).get("use_world_coords", False)):
+            raise ValueError("fusion.method=partwise needs camera-frame poses (pose_export.use_world_coords=false)")
+        print("[Fusion] Method: partwise (per-frame AOTR pass only for visibility/metadata; camera1 replaced)")
     if aotr_enabled:
         print("[Fusion] EXPERIMENTAL AOTR enabled: legacy gating, smoothing and global optimization bypassed")
     reference_bones = (
@@ -1153,7 +1162,8 @@ def run_fusion(config: dict) -> None:
         previous_previous_raw, previous_raw = previous_raw, data
 
     aotr_postprocessing = {"status": "disabled"}
-    if aotr_enabled and bool(aotr_cfg.get("sequence_stability", {}).get("enabled", False)):
+    if (aotr_enabled and fusion_method == "aotr"
+            and bool(aotr_cfg.get("sequence_stability", {}).get("enabled", False))):
         # Offline second pass. Master/Fused sequences are synchronized and
         # evaluated independently from any ground-truth data.
         evidence = [r.get("aotr", {}).get("evidence_mode") for r in frame_results]
@@ -1318,17 +1328,41 @@ def run_fusion(config: dict) -> None:
         if diagnostics["frames_with_missing_decisions_or_fallback"]:
             print("[Fusion] WARNING: selective mode fell back to raw Master in some frames.")
 
+    if aotr_enabled and fusion_method == "partwise":
+        from fusion_pipeline.partwise import fuse_partwise
+        (output_dir / "partwise_diagnostics.json").unlink(missing_ok=True)
+        master_sequence, slave_sequence = [], []
+        for p in file_paths:
+            pose = _load_pose_frame(p, metadata_dir)
+            master_sequence.append(pose["camera1"])
+            slave_sequence.append(pose["camera2"])
+        fused_sequence, partwise_diag = fuse_partwise(
+            master_sequence, slave_sequence, fusion_cfg.get("partwise", {}))
+        for p, fused_cam1 in zip(file_paths, fused_sequence):
+            name = f"fused_data_{_frame_index(p)}.json"
+            record = read_json(output_dir / "keypoints3d" / name)
+            record["camera1"] = fused_cam1
+            write_json(output_dir / "keypoints3d" / name, record)
+            meta_path = output_dir / "metadata" / name
+            meta = read_json(meta_path)
+            meta["fusion_mode"] = "partwise"
+            meta["joint_selection"] = {j: "PARTWISE" for j in fused_cam1}
+            write_json(meta_path, meta)
+        write_json(output_dir / "partwise_diagnostics.json", partwise_diag)
+        print(f"[Fusion] Partwise diagnostics: {partwise_diag}")
+
     if aotr_enabled:
         from collections import Counter
         diagnostics = [r.get("aotr", {}) for r in frame_results]
         summary = {
-            "mode": "aotr", "frames": len(frame_results),
+            "mode": fusion_method, "frames": len(frame_results),
             "corrected_frames": sum(d.get("status") == "corrected" for d in diagnostics),
             "accepted_bone_frames": sum(len(d.get("accepted_bones", [])) for d in diagnostics),
             "fallback_frames": sum(not d for d in diagnostics) + sum(d.get("status") == "fallback" for d in diagnostics),
             "reason_counts": dict(Counter(d.get("reason", "pipeline_exception") for d in diagnostics)),
             "evidence_counts": dict(Counter(d.get("evidence_mode", "pipeline_exception") for d in diagnostics)),
-            "sequence_stability": aotr_postprocessing,
+            "sequence_stability": (partwise_diag.get("sequence_stability") if fusion_method == "partwise"
+                                   else aotr_postprocessing),
         }
         write_json(output_dir / "aotr_diagnostics.json", summary)
         print(f"[Fusion] AOTR diagnostics: {summary}")

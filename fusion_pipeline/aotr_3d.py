@@ -38,6 +38,27 @@ def _bone_jitter(current, prev, prev_prev, child, parent):
     return float(np.linalg.norm(u0 - 2.0 * u1 + u2))
 
 
+def _angle_deg(a, b):
+    return float(np.degrees(np.arccos(np.clip(float(a @ b), -1.0, 1.0))))
+
+
+def _cap_alpha(uM, uS, alpha, max_deg):
+    """Largest alpha' <= alpha whose blended direction is within max_deg of uM."""
+    def dev(a):
+        u = _unit((1.0-a)*uM + a*uS)
+        return 0.0 if u is None else _angle_deg(u, uM)
+    if dev(alpha) <= max_deg:
+        return alpha
+    lo, hi = 0.0, alpha
+    for _ in range(40):
+        mid = 0.5*(lo+hi)
+        if dev(mid) <= max_deg:
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
 def _as_pose(pose):
     if not isinstance(pose, dict):
         return None
@@ -122,6 +143,13 @@ def optimize_aotr_3d(
     temporal_weight = float(cfg.get("three_d_temporal_weight", 0.15))
     jitter_smoothing = max(1e-5, float(cfg.get("three_d_jitter_epsilon", 0.06)))
     min_gain = max(0.0, float(cfg.get("minimum_cost_reduction", 1e-7)))
+    # Master-protection options (ablation). Defaults reproduce the original behaviour.
+    # They only restrict bones whose Master joint is visible; occluded Master bones keep
+    # the original rescue path.
+    floor_needs_advantage = bool(cfg.get("three_d_floor_requires_advantage", False))
+    max_disagree = cfg.get("three_d_max_disagreement_deg")
+    max_correct = cfg.get("three_d_max_correction_deg")
+    gated_bones = 0
 
     for child, parent in bones:
         uM = _bone_dir(M, child, parent)
@@ -132,6 +160,12 @@ def optimize_aotr_3d(
         if uS is None or float(uM @ uS) < float(cfg.get("min_bone_direction_cos", -0.8)):
             continue
         if float(np.linalg.norm(uM-uS)) < 1e-6:
+            continue
+        master_visible = bool(v1.get(child, True))
+        if (max_disagree is not None and master_visible
+                and _angle_deg(uM, uS) > float(max_disagree)):
+            # Large disagreement with no independent evidence: undecidable, keep Master.
+            gated_bones += 1
             continue
 
         jm = _bone_jitter(M, prior_M, older_M, child, parent)
@@ -150,7 +184,10 @@ def optimize_aotr_3d(
         # cannot inject orientation errors into a clean, visible Master.
         advantage = max(0.0, (qs - qm) / max(qs + qm, 1e-8))
         rel_slave = qs / max(qs + qm, 1e-8)
-        wS = max(0.0, floor * rel_slave + advantage_scale * advantage)
+        floor_term = floor * rel_slave
+        if floor_needs_advantage and master_visible and advantage <= 0.0:
+            floor_term = 0.0
+        wS = max(0.0, floor_term + advantage_scale * advantage)
         wM = max(0.0, master_weight)
         # Local Master orientation is regularized more heavily when it is
         # observed and temporally stable.
@@ -174,6 +211,9 @@ def optimize_aotr_3d(
             cost, int(cfg.get("trust_max_iter", 12)),
             float(cfg.get("trust_initial_radius", 0.25)),
         )
+        if max_correct is not None and master_visible and alpha > 0.0:
+            alpha = _cap_alpha(uM, uS, alpha, float(max_correct))
+            best = float(cost(alpha))
         before = float(cost(0.0))
         total_before += before
         evaluations += n_eval
@@ -194,6 +234,7 @@ def optimize_aotr_3d(
 
     details["evaluations"] = evaluations
     details["temporal_evidence_bones"] = jitter_count
+    details["disagreement_gated_bones"] = gated_bones
     details["cost_before"] = total_before
     details["cost_after"] = total_after
     details["accepted_bones"] = accepted

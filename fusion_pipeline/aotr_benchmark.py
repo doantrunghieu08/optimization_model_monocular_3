@@ -11,6 +11,11 @@ LEGACY_PROTOCOL = "no_gt_v10_master_only_postopt"
 # v3: sequence stability also covers the real two-view AOTR path.
 # Invalidate results where enabled acceleration control was silently skipped.
 AOTR_REVISION = "aotr_fk_trustregion_v3_all_evidence_stable"
+PARTWISE_REVISION = "partwise_depth_logit_v1"
+
+
+def fusion_method(config):
+    return str(config.get("fusion", {}).get("method", "aotr")).strip().lower()
 
 
 def aotr_enabled(config):
@@ -38,14 +43,24 @@ def evaluation_protocol(config):
         "target_person": person,
         "person_height_m": height,
     }
+    method = fusion_method(config)
+    revision = AOTR_REVISION
+    if method == "partwise":
+        revision = PARTWISE_REVISION
+        settings["partwise"] = config["fusion"].get("partwise", {})
+    # Excluding identity-swapped frames changes the metrics: never reuse unmasked caches.
+    id_mask = config.get("evaluation", {}).get("identity_mask")
+    if id_mask and id_mask.get("path"):
+        settings["identity_mask"] = {"path": str(id_mask["path"]), "margin_mm": id_mask.get("margin_mm", 10.0)}
     payload = json.dumps(settings, sort_keys=True, separators=(",", ":"), default=str)
-    digest = hashlib.sha256((AOTR_REVISION + ":" + payload).encode("utf-8")).hexdigest()[:12]
-    return f"{LEGACY_PROTOCOL}__{AOTR_REVISION}__{digest}"
+    digest = hashlib.sha256((revision + ":" + payload).encode("utf-8")).hexdigest()[:12]
+    return f"{LEGACY_PROTOCOL}__{revision}__{digest}"
 
 
 def report_csv_name(config):
     if aotr_enabled(config):
-        return "brute_force_report_aotr_" + evaluation_protocol(config).rsplit("__", 1)[-1] + ".csv"
+        prefix = "partwise" if fusion_method(config) == "partwise" else "aotr"
+        return f"brute_force_report_{prefix}_" + evaluation_protocol(config).rsplit("__", 1)[-1] + ".csv"
     return "brute_force_report.csv"
 
 
@@ -68,6 +83,8 @@ def verify_aotr_execution(config):
             "Fusion did not execute AOTR; cannot label these metrics as AOTR."
         )
     summary = json.loads(report.read_text(encoding="utf-8"))
+    if fusion_method(config) == "partwise":
+        return _verify_partwise(config, summary)
     frames = int(summary.get("frames", 0))
     corrected = int(summary.get("corrected_frames", 0))
     fallbacks = int(summary.get("fallback_frames", 0))
@@ -88,4 +105,19 @@ def verify_aotr_execution(config):
             "AOTR sequence stability was enabled but did not run: "
             + str(summary.get("sequence_stability", {}))
         )
+    return summary
+
+
+def _verify_partwise(config, summary):
+    """Partwise replaces camera1 for every frame; its own diagnostics must exist and match."""
+    report = Path(config["paths"]["fused_output_dir"]) / "partwise_diagnostics.json"
+    if summary.get("mode") != "partwise" or not report.is_file():
+        raise RuntimeError("fusion.method=partwise but partwise diagnostics are missing: " + str(summary))
+    diag = json.loads(report.read_text(encoding="utf-8"))
+    if int(diag.get("frames", 0)) <= 0 or int(diag["frames"]) != int(summary.get("frames", -1)):
+        raise RuntimeError("Partwise diagnostics do not cover the current pair: " + str(diag))
+    stab_enabled = bool(config["fusion"].get("partwise", {}).get("sequence_stability", {}).get("enabled", True))
+    status = diag.get("sequence_stability", {}).get("status")
+    if stab_enabled and status not in {"applied", "unchanged"}:
+        raise RuntimeError("Partwise sequence stability was enabled but did not run: " + str(diag))
     return summary
