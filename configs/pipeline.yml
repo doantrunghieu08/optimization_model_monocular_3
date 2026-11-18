@@ -163,6 +163,11 @@ evaluation:
   testcase_name: null
   # Loại các frame mà track WHAM bám nhầm người (tráo ID) khỏi phần đánh giá.
   # Tạo bằng: python build_identity_mask.py configs/brute_force.yml configs/identity_mask_hugging_002.json
+  # Bộ khớp chấm điểm: coco17 (Harmony4D 3D keypoints: 12 khớp thân + mũi/mắt/tai) | priority1 (cũ, 12 khớp)
+  joint_set: coco17
+  # Căn chỉnh MPJPE: sequence = gốc tâm hông + MỘT phép xoay cố định mỗi camera cho cả chuỗi
+  # (thay cho extrinsics khi không có); frame = xoay lại từng frame (cũ, dễ dãi hơn).
+  mpjpe_alignment: sequence
   # 043_Grappling2: nhãn người tạo bằng python -m preprocessing_data.label_persons (xem README).
   identity_mask:
     path:

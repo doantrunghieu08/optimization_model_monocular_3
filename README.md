@@ -20,13 +20,23 @@ experiments behind each decision, and the negative results.
 | Evaluation | `evaluation_pipeline/` | PA-MPJPE, MPJPE, MBLE and Accel against GT; this is the only stage that reads GT |
 | Dataset prep (offline) | `preprocessing_data/`, `build_identity_mask.py` | Person labelling for datasets without a mapping file, and the identity mask used by evaluation |
 
-Metric definitions (in `evaluation_pipeline/executor.py`) are computed on the 12 GT joints
-(shoulders, elbows, wrists, hips, knees, ankles):
+Metric definitions (in `evaluation_pipeline/executor.py`):
 
-* **MPJPE** is root-centred at the hip midpoint, with an optimal rotation and no scale.
+* **Joint set** (`evaluation.joint_set`). The default `coco17` uses the Harmony4D COCO-17
+  keypoints: 12 body joints plus nose, eyes and ears. Face points come from SMPL mesh
+  vertices and are stored as `<cam>_face` outside the 21-joint skeleton; after fusion they
+  follow the fused neck→head bone. The legacy `priority1` uses the 12 body joints only.
+* **MPJPE** (`evaluation.mpjpe_alignment`):
+  * default `sequence`: root-centred at the hip midpoint, with **one rotation per camera for
+    the whole sequence**. This stands in for the static-camera extrinsics, which are not
+    available locally, so per-frame orientation errors are counted.
+  * legacy `frame`: re-rotates every frame. This hides those errors and gives much lower
+    numbers.
 * **PA-MPJPE** uses full Procrustes alignment.
 * **MBLE** is the mean absolute bone-length error.
 * **Accel** is the second-difference error over consecutive frames, in the camera frame.
+
+Every module is scored on the same joints in each frame.
 
 ### Fusion methods
 
@@ -67,6 +77,21 @@ and the skeleton is rebuilt with the Master bone lengths, so MBLE equals the bas
 ---
 
 ## Results (Hugging 002, WHAM)
+
+> **Scoring note.** The tables below were produced with the **legacy scoring**
+> (`joint_set: priority1`, `mpjpe_alignment: frame`). Under the current default (COCO-17 +
+> sequence-aligned MPJPE), one held-out pair (cam03→cam05) gives the following PA / MPJPE:
+>
+> | Method | PA-MPJPE | MPJPE |
+> |---|---|---|
+> | mono | 35.2 | 113.4 |
+> | aotr | 33.3 | 113.2 |
+> | partwise | 30.0 | 112.9 |
+>
+> So fusion improves PA-MPJPE but barely changes MPJPE. Both methods keep the Master's
+> global torso orientation, and WHAM's per-frame orientation error (median 4–12° on clean
+> frames, front/back flips on some cameras) dominates the standard MPJPE. A full re-run
+> under the new scoring is pending.
 
 Protocol: design split = aria01, cam02/04/13/19; held-out split = aria02, cam03/05/17/20.
 The two splits share no subject and no camera. Configs were frozen and selections locked

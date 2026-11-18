@@ -52,6 +52,11 @@ def evaluation_protocol(config):
     id_mask = config.get("evaluation", {}).get("identity_mask")
     if id_mask and id_mask.get("path"):
         settings["identity_mask"] = {"path": str(id_mask["path"]), "margin_mm": id_mask.get("margin_mm", 10.0)}
+    # Scoring definition changes the numbers: joint set and MPJPE alignment are part of the identity.
+    ev = config.get("evaluation", {})
+    if ev.get("joint_set", "priority1") != "priority1" or ev.get("mpjpe_alignment", "frame") != "frame":
+        settings["scoring"] = {"joint_set": ev.get("joint_set", "priority1"),
+                               "mpjpe_alignment": ev.get("mpjpe_alignment", "frame")}
     payload = json.dumps(settings, sort_keys=True, separators=(",", ":"), default=str)
     digest = hashlib.sha256((revision + ":" + payload).encode("utf-8")).hexdigest()[:12]
     return f"{LEGACY_PROTOCOL}__{revision}__{digest}"

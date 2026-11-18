@@ -6,7 +6,7 @@ from tqdm import tqdm  # Thêm thư viện tqdm tạo progress bar
 
 from pose_pipeline.smpl_runner import create_smpl_model
 from config_loader import resolve_inputs
-from pose_pipeline.smpl_runner import get_3d_joints_for_frame
+from pose_pipeline.smpl_runner import get_3d_joints_for_frame, get_face_points_for_frame
 from json_io import write_json
 from compat import load_joblib_compat, resolve_person_payload
 from preprocess_pipeline.calib import resolve_selected_offset_from_camera_profile
@@ -192,6 +192,10 @@ def run_pose_export(config: dict) -> None:
             "camera1": get_3d_joints_for_frame(model, cam1_export_data, i, j_regressor_path, paths["keypoints3d_map"], use_world=use_world),
             "camera2": get_3d_joints_for_frame(model, cam2_export_data, i, j_regressor_path, paths["keypoints3d_map"], use_world=use_world),
         }
+        if bool(pose_cfg.get("export_face", True)):
+            # COCO face keypoints kept outside the 21-joint skeleton (evaluation only).
+            keypoints3d_data["camera1_face"] = get_face_points_for_frame(model, cam1_export_data, i, use_world=use_world)
+            keypoints3d_data["camera2_face"] = get_face_points_for_frame(model, cam2_export_data, i, use_world=use_world)
         metadata_data = {
             "metadata": {
                 "camera_sync": sync_result,

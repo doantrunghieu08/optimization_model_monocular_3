@@ -94,6 +94,35 @@ def _compute_mpjpe(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], ke
         errors_dict[k] = err
     return float(np.mean(errors)), errors_dict
 
+COCO17_NAMES = [
+    "nose", "left_eye", "right_eye", "left_ear", "right_ear",
+    "left_shoulder", "right_shoulder", "left_elbow", "right_elbow", "left_wrist", "right_wrist",
+    "left_hip", "right_hip", "left_knee", "right_knee", "left_ankle", "right_ankle",
+]
+
+
+def _sequence_rotation(frames: list[tuple[dict, dict, list[str]]]) -> np.ndarray:
+    """Single rotation R (pred -> truth) over all frames of a sequence, root = hip midpoint."""
+    P_all, T_all = [], []
+    for pred, truth, keys in frames:
+        pr, tr = _resolve_root_joint(pred), _resolve_root_joint(truth)
+        P_all.extend(np.asarray(pred[k], dtype=float) - pr for k in keys)
+        T_all.extend(np.asarray(truth[k], dtype=float) - tr for k in keys)
+    P, T = np.asarray(P_all), np.asarray(T_all)
+    U, _, Vt = np.linalg.svd(T.T @ P)
+    corr = np.eye(3)
+    corr[-1, -1] = np.sign(np.linalg.det(U @ Vt))
+    return U @ corr @ Vt
+
+
+def _compute_mpjpe_fixed_rotation(pred, truth, keys, R) -> tuple[float, dict[str, float]]:
+    """Root-centred MPJPE with a given (sequence-level) rotation, no per-frame alignment."""
+    pr, tr = _resolve_root_joint(pred), _resolve_root_joint(truth)
+    errors = {k: float(np.linalg.norm(R @ (np.asarray(pred[k], dtype=float) - pr)
+                                      - (np.asarray(truth[k], dtype=float) - tr)) * 1000.0) for k in keys}
+    return float(np.mean(list(errors.values()))), errors
+
+
 def _compute_pa_mpjpe(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], keys: list[str]) -> tuple[float, dict[str, float]]:
     P = np.array([pred[k] for k in keys], dtype=float)
     T = np.array([truth[k] for k in keys], dtype=float)
@@ -277,6 +306,7 @@ def _load_ground_truth(path: Path, truth_dir: Path = None, target_person: str = 
                     gt_map[fid] = {"joints": joints, "frame_id": fid}
                 elif isinstance(pdata, np.ndarray) and pdata.ndim == 2:
                     coco_map = {
+                        "nose": 0, "left_eye": 1, "right_eye": 2, "left_ear": 3, "right_ear": 4,
                         "left_shoulder": 5, "right_shoulder": 6,
                         "left_elbow": 7, "right_elbow": 8,
                         "left_wrist": 9, "right_wrist": 10,
@@ -428,6 +458,12 @@ def run_evaluation(config: dict) -> None:
     canonical_names = set(joint_names)
     priority1_names = map_data.get("priority1", [])
     priority2_names = map_data.get("priority2", [])
+    joint_set = str(eval_cfg.get("joint_set", "priority1")).lower()
+    if joint_set == "coco17":
+        # Harmony4D 3D keypoints are COCO-17; face points come from "<cam>_face" in the outputs.
+        priority1_names = list(COCO17_NAMES)
+    elif joint_set != "priority1":
+        raise ValueError(f"evaluation.joint_set must be 'priority1' or 'coco17', got {joint_set!r}")
     skeleton = map_data.get("skeleton", [])
 
     truth_dir = Path(inputs["ground_truth_dir"])
@@ -533,6 +569,11 @@ def run_evaluation(config: dict) -> None:
     source_frame_ids = {cam: {} for cam in CAMERAS}
     evaluated_frames = []
 
+    mpjpe_alignment = str(eval_cfg.get("mpjpe_alignment", "frame")).lower()
+    if mpjpe_alignment not in ("frame", "sequence"):
+        raise ValueError(f"evaluation.mpjpe_alignment must be 'frame' or 'sequence', got {mpjpe_alignment!r}")
+    mpjpe_cache = {cam: {} for cam in CAMERAS}
+
     id_mask_cfg = eval_cfg.get("identity_mask")
     identity_excluded = {
         "camera1": _identity_excluded_ids(id_mask_cfg, cam1_gt_stem, target_person),
@@ -580,13 +621,22 @@ def run_evaluation(config: dict) -> None:
                 if frame not in results[metric][cam]:
                     results[metric][cam][frame] = {}
 
+            preds_by_mod = {}
             for mod in module_names:
                 mod_path = module_frame_maps[mod][frame]
                 mod_data = _load_json(mod_path)
                 if cam not in mod_data:
                     raise ValueError(f"Missing {cam} in {mod_path}")
+                pj = {k: np.array(v, dtype=float) for k, v in mod_data[cam].items()}
+                # Optional COCO face points (nose/eyes/ears) stored outside the 21-joint skeleton.
+                for k, v in (mod_data.get(f"{cam}_face") or {}).items():
+                    pj.setdefault(k, np.array(v, dtype=float))
+                preds_by_mod[mod] = pj
+            # Score every module on the same joints (e.g. face points present in all modules).
+            common_keys = set(truth_joints.keys()).intersection(*(set(p) for p in preds_by_mod.values()))
 
-                pred_joints = {k: np.array(v, dtype=float) for k, v in mod_data[cam].items()}
+            for mod in module_names:
+                pred_joints = preds_by_mod[mod]
 
                 if mble_enabled:
                     mean_mble, bone_details = _compute_mble(pred_joints, truth_joints, skeleton)
@@ -597,8 +647,8 @@ def run_evaluation(config: dict) -> None:
                 if accel_enabled:
                     sequences[cam][frame][mod] = pred_joints
                 
-                # Filter priority names to only include keys present in both pred and truth
-                available_keys = set(pred_joints.keys()) & set(truth_joints.keys())
+                # Filter priority names to keys present in the truth and in every module's prediction
+                available_keys = common_keys
                 valid_priority1 = [k for k in priority1_names if k in available_keys]
                 valid_priority2 = [k for k in priority2_names if k in available_keys]
                 
@@ -624,6 +674,9 @@ def run_evaluation(config: dict) -> None:
                     vis_errs = [dict_p1[k] for k in vis_keys if k in dict_p1]
                     results["MPJPE"][cam][frame][mod]["occ_mm"] = float(np.mean(occ_errs)) if occ_errs else float("nan")
                     results["MPJPE"][cam][frame][mod]["vis_mm"] = float(np.mean(vis_errs)) if vis_errs else float("nan")
+                    if mpjpe_alignment == "sequence" and valid_priority1:
+                        mpjpe_cache[cam].setdefault(mod, {})[frame] = (
+                            pred_joints, truth_joints, valid_priority1, valid_priority2, occ_keys, vis_keys)
 
                 if metric_enabled["PA-MPJPE"]:
                     results["PA-MPJPE"][cam][frame].setdefault(mod, {})
@@ -654,6 +707,23 @@ def run_evaluation(config: dict) -> None:
                     vis_errs = [dict_p1[k] for k in vis_keys if k in dict_p1]
                     results["PCK"][cam][frame][mod]["occ_mm"] = float(np.mean(occ_errs)) if occ_errs else float("nan")
                     results["PCK"][cam][frame][mod]["vis_mm"] = float(np.mean(vis_errs)) if vis_errs else float("nan")
+
+    if metric_enabled["MPJPE"] and mpjpe_alignment == "sequence":
+        # One rigid rotation per (camera, module) for the whole sequence, standing in for the
+        # static camera extrinsics; per-frame orientation errors are therefore counted.
+        for cam in CAMERAS:
+            for mod, frames_data in mpjpe_cache[cam].items():
+                R = _sequence_rotation([(p, t, k1) for p, t, k1, *_ in frames_data.values()])
+                for frame, (p, t, k1, k2, occ_keys, vis_keys) in frames_data.items():
+                    entry = results["MPJPE"][cam][frame][mod]
+                    m1, d1 = _compute_mpjpe_fixed_rotation(p, t, k1, R)
+                    entry["priority1_mm"], entry["priority1_details"] = m1, d1
+                    if k2:
+                        entry["priority2_mm"], entry["priority2_details"] = _compute_mpjpe_fixed_rotation(p, t, k2, R)
+                    occ_errs = [d1[k] for k in occ_keys if k in d1]
+                    vis_errs = [d1[k] for k in vis_keys if k in d1]
+                    entry["occ_mm"] = float(np.mean(occ_errs)) if occ_errs else float("nan")
+                    entry["vis_mm"] = float(np.mean(vis_errs)) if vis_errs else float("nan")
 
     module_output_names = {
         mod: EVALUATION_OUTPUT_MODULE_NAMES.get(mod, mod)

@@ -22,6 +22,22 @@ def create_smpl_model(model_path):
     return model.eval()
 
 
+# COCO face keypoints taken from SMPL mesh vertices (same vertex ids as smplx's extra joints).
+FACE_VERTEX_IDS = {"nose": 332, "right_eye": 6260, "left_eye": 2800, "right_ear": 4071, "left_ear": 583}
+
+
+def get_face_points_for_frame(model, person_data, frame_idx, use_world: bool = False):
+    """COCO nose/eyes/ears for one frame, in the same frame as get_3d_joints_for_frame."""
+    pose_key = "pose_world" if use_world and "pose_world" in person_data else "pose"
+    trans_key = "trans_world" if use_world and "trans_world" in person_data else "trans"
+    pose = torch.tensor(np.ascontiguousarray(person_data[pose_key][frame_idx:frame_idx + 1]), dtype=torch.float32)
+    trans = torch.tensor(np.ascontiguousarray(person_data[trans_key][frame_idx:frame_idx + 1]), dtype=torch.float32)
+    betas = torch.tensor(np.ascontiguousarray(person_data["betas"][frame_idx:frame_idx + 1]), dtype=torch.float32)
+    with torch.no_grad():
+        verts = model(betas=betas, global_orient=pose[:, :3], body_pose=pose[:, 3:], transl=trans).vertices[0].cpu().numpy()
+    return {name: [float(v) for v in verts[vid]] for name, vid in FACE_VERTEX_IDS.items()}
+
+
 def get_3d_joints_for_frame(model, person_data, frame_idx, regressor_path, map_path, use_world: bool = False):
     pose_key = "pose_world" if use_world and "pose_world" in person_data else "pose"
     trans_key = "trans_world" if use_world and "trans_world" in person_data else "trans"

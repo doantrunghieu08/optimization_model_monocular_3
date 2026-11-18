@@ -48,6 +48,20 @@ Giao thức kiểm chứng chung, trừ khi ghi khác:
 - **Mã protocol của brute force** giờ bao gồm `fusion.method`, cấu hình `partwise` và `identity_mask`, nên không dùng lại cache sai phương pháp hoặc cache chưa mask. Báo cáo tách thành `brute_force_report_aotr_*` và `brute_force_report_partwise_*`.
 - **Xương bàn tay dài 0 mm** (wrist trùng hand) không đi theo khớp cha trong FK. Đã sửa; metric không đổi.
 
+### 2.5. Cách chấm điểm mới, bám theo Harmony4D
+- **Giao thức chính thức của Harmony4D** (bài NeurIPS 2024): chỉ có benchmark khôi phục mesh từ **một view**, metric MPJPE, PA-MPJPE, PVE, … tính bằng mm. Tập test gồm 7 nhóm sequence: 01_hugging, 03_grappling2, 05_sword2, 06_sword3, 08_ballroom2, 15_mma4, 16_mma5. Tác giả **không** công bố danh sách sequence con, bộ khớp dùng cho MPJPE, hay script đánh giá.
+- `evaluation.joint_set: coco17` (mặc định): 12 khớp thân cộng mũi, mắt, tai.
+  - Regressor body25 không có mắt/tai riêng (các hàng trùng nhau), nên các điểm này lấy từ đỉnh mesh SMPL (332, 6260, 2800, 4071, 583).
+  - Chúng được ghi riêng (`<cam>_face`) vì pipeline gắn cứng 21 khớp, và sau fusion đi theo xương cổ → đầu (`fusion_pipeline/face.py`).
+- `evaluation.mpjpe_alignment: sequence` (mặc định): căn gốc tâm hông với **một** phép xoay cố định mỗi camera cho cả chuỗi, thay cho extrinsics. Trên máy chỉ Hugging có intrinsics; extrinsics (COLMAP `images.txt`) chỉ có cho 15_mma4 trên Drive.
+- Mọi module được chấm trên cùng bộ khớp trong mỗi frame. Mã protocol của brute force bao gồm cả cách chấm.
+- **Phát hiện** (held-out cam03 → cam05):
+  - MPJPE mono là 113.4 theo cách mới, so với 45.1 khi xoay từng frame.
+  - Fusion: aotr 113.2, partwise 112.9. PA vẫn cải thiện (35.2 → 30.0).
+  - Lý do: cả hai phương pháp giữ hướng thân của Master. Lỗi hướng của WHAM (trung vị 4–12° trên frame sạch, cam03 có frame đoán nhầm trước/sau) chi phối MPJPE chuẩn.
+  - **Fusion hướng toàn thân** là hướng cải tiến tiếp theo.
+- Các kết quả ở mục 4–6 dùng **cách chấm cũ** (`priority1`, `frame`) và cần chạy lại.
+
 ---
 
 ## 3. Phương pháp mới: `partwise`

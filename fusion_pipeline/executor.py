@@ -1352,6 +1352,20 @@ def run_fusion(config: dict) -> None:
         print(f"[Fusion] Partwise diagnostics: {partwise_diag}")
 
     if aotr_enabled:
+        # Evaluation-only COCO face points follow the fused neck->head bone.
+        from fusion_pipeline.face import attach_face
+        for p in file_paths:
+            pose = read_json(p)
+            if "camera1_face" not in pose:
+                continue
+            target = output_dir / "keypoints3d" / f"fused_data_{_frame_index(p)}.json"
+            record = read_json(target)
+            for cam in ("camera1", "camera2"):
+                if f"{cam}_face" in pose and cam in record:
+                    record[f"{cam}_face"] = attach_face(pose[cam], record[cam], pose[f"{cam}_face"])
+            write_json(target, record)
+
+    if aotr_enabled:
         from collections import Counter
         diagnostics = [r.get("aotr", {}) for r in frame_results]
         summary = {
