@@ -621,43 +621,6 @@ KINEMATIC_CHAINS = (
 )
 
 
-def _enforce_anatomical_limb_proportions(points: dict) -> None:
-    # ponytail: partitions limb lengths anatomically (humerus 54%, femur 53%) to eliminate monocular hinge bias
-    for side in ("left", "right"):
-        sh, el, wr, hd = f"{side}_shoulder", f"{side}_elbow", f"{side}_wrist", f"{side}_hand"
-        if sh in points and el in points and wr in points:
-            p_s, p_e, p_w = np.asarray(points[sh], dtype=float), np.asarray(points[el], dtype=float), np.asarray(points[wr], dtype=float)
-            v_up, v_lo = p_e - p_s, p_w - p_e
-            d_up, d_lo = float(np.linalg.norm(v_up)), float(np.linalg.norm(v_lo))
-            l_tot = d_up + d_lo
-            if d_up > 1e-6 and d_lo > 1e-6 and l_tot > 0.1:
-                new_el = p_s + v_up * (0.54 * l_tot / d_up)
-                new_wr = new_el + v_lo * (0.46 * l_tot / d_lo)
-                d_wr = new_wr - p_w
-                points[el] = [round(float(x), 6) for x in new_el]
-                points[wr] = [round(float(x), 6) for x in new_wr]
-                if hd in points:
-                    points[hd] = [round(float(x), 6) for x in (np.asarray(points[hd], dtype=float) + d_wr)]
-
-        hip, kn, an = f"{side}_hip", f"{side}_knee", f"{side}_ankle"
-        ft, toe = f"{side}_foot", f"{side}_toe"
-        if hip in points and kn in points and an in points:
-            p_h, p_k, p_a = np.asarray(points[hip], dtype=float), np.asarray(points[kn], dtype=float), np.asarray(points[an], dtype=float)
-            v_th, v_sh = p_k - p_h, p_a - p_k
-            d_th, d_sh = float(np.linalg.norm(v_th)), float(np.linalg.norm(v_sh))
-            l_tot = d_th + d_sh
-            if d_th > 1e-6 and d_sh > 1e-6 and l_tot > 0.1:
-                new_kn = p_h + v_th * (0.53 * l_tot / d_th)
-                new_an = new_kn + v_sh * (0.47 * l_tot / d_sh)
-                d_an = new_an - p_a
-                points[kn] = [round(float(x), 6) for x in new_kn]
-                points[an] = [round(float(x), 6) for x in new_an]
-                if ft in points:
-                    points[ft] = [round(float(x), 6) for x in (np.asarray(points[ft], dtype=float) + d_an)]
-                if toe in points:
-                    points[toe] = [round(float(x), 6) for x in (np.asarray(points[toe], dtype=float) + d_an)]
-
-
 def _enforce_bone_lengths(points: dict, ref_points: dict) -> None:
     # ponytail: minimal forward kinematic bone projection, locks lengths to SMPL baseline
     for child, parent in KINEMATIC_CHAINS:
@@ -788,6 +751,7 @@ def _apply_temporal_smoothing(
     master_protection: dict | None = None,
     window_length: int = 5,
     polyorder: int = 2,
+    enforce_bone_lengths: bool = True,
 ) -> None:
     try:
         from scipy.signal import savgol_filter
@@ -870,9 +834,10 @@ def _apply_temporal_smoothing(
                     confidence.get("camera2", {}),
                     master_margin=float(master_cfg.get("confidence_margin", 0.15)),
                 )
-            for cam in ("camera1", "camera2"):
-                if cam in d and cam in ref_d:
-                    _enforce_bone_lengths(d[cam], ref_d[cam])
+            if enforce_bone_lengths:
+                for cam in ("camera1", "camera2"):
+                    if cam in d and cam in ref_d:
+                        _enforce_bone_lengths(d[cam], ref_d[cam])
 
     for f, d in zip(files, all_data):
         write_json(f, d)
@@ -954,6 +919,7 @@ def run_fusion(config: dict) -> None:
     frame_results = []
     selective_cfg = fusion_cfg.get("selective_joint_fusion", {})
     selective_enabled = bool(selective_cfg.get("enabled", False))
+    enforce_bone_lengths = bool(fusion_cfg.get("enforce_bone_lengths", True))
     reference_bones = (
         reference_bone_lengths([read_json(p).get("camera1", {}) for p in file_paths])
         if selective_enabled else {}
@@ -1072,7 +1038,7 @@ def run_fusion(config: dict) -> None:
         }
         # In selective mode KEEP must be byte-for-byte equivalent to Master.
         # The old per-frame length projection can move even untouched joints.
-        if not selective_enabled:
+        if not selective_enabled and enforce_bone_lengths:
             for cam_k in ("camera1", "camera2"):
                 if cam_k in fused_keypoints and cam_k in data:
                     _enforce_bone_lengths(fused_keypoints[cam_k], data[cam_k])
@@ -1102,6 +1068,23 @@ def run_fusion(config: dict) -> None:
         metadata["pair_quality_gate"] = pair_gate
         write_json(metadata_path, metadata)
 
+    fusion_method = str(fusion_cfg.get("method", "legacy")).lower()
+    if fusion_method == "aniso" and not selective_enabled:
+        # Stage 1 above only supplies beliefs/occlusion; keypoints are recomputed from raw poses.
+        from fusion_pipeline.aniso import run_aniso_fusion
+        info = run_aniso_fusion(
+            output_dir / "keypoints3d",
+            metadata_dir=output_dir / "metadata",
+            pose_dir=input_dir / "keypoints3d",
+            aniso_cfg=fusion_cfg.get("aniso", {}),
+            enforce_bone_lengths=enforce_bone_lengths,
+        )
+        write_json(output_dir / "aniso_fusion_info.json", info)
+        print(f"\n[Fusion] Done. Output: {output_dir}")
+        return
+    if fusion_method not in ("legacy", "aniso"):
+        raise ValueError(f"Unsupported fusion.method: {fusion_method} (expected 'aniso' or 'legacy')")
+
     quality_fallback = (slave_is_noisy and not master_is_distorted) and not selective_enabled
     if quality_fallback and pair_mode == "posed_fallback":
         # Keep single-view smoothing and bone constraints, but remove every slave contribution first.
@@ -1121,6 +1104,7 @@ def run_fusion(config: dict) -> None:
             master_protection=smoothing_master_cfg,
             window_length=int(smoothing_cfg.get("window_length", 5)),
             polyorder=int(smoothing_cfg.get("polyorder", 2)),
+            enforce_bone_lengths=enforce_bone_lengths,
         )
 
     opt_cfg = fusion_cfg.get("optimization", {})
@@ -1134,23 +1118,23 @@ def run_fusion(config: dict) -> None:
             master_only=pair_mode == "posed_fallback",
             anchor_cam="camera1" if selective_enabled else ("camera2" if master_is_distorted else "camera1"),
             selection_only=selective_enabled,
+            protect_master=should_protect_master and master_cfg.get("enabled", True),
         )
 
     if fusion_cfg.get("pair_mode") == "posed_fallback":
         _restore_master_pose(output_dir / "keypoints3d", input_dir / "keypoints3d")
 
     pose_keypoints_dir = input_dir / "keypoints3d"
-    if not smoothing_enabled and not selective_enabled and pose_keypoints_dir.exists():
+    if not smoothing_enabled and not opt_cfg.get("enabled", True) and not selective_enabled and pose_keypoints_dir.exists() and enforce_bone_lengths:
         for f_path in (output_dir / "keypoints3d").glob("fused_data_*.json"):
             ref_path = pose_keypoints_dir / f_path.name.replace("fused_data_", "pose_data_")
-            metadata_path = output_dir / "metadata" / f_path.name
-            if ref_path.exists() and metadata_path.exists():
+            if ref_path.exists():
                 d_f = read_json(f_path)
                 d_p = read_json(ref_path)
-                d_m = read_json(metadata_path)
-                if "camera1" in d_f and "camera1" in d_p:
-                    _enforce_bone_lengths(d_f["camera1"], d_p["camera1"])
-                    write_json(f_path, d_f)
+                for cam in ("camera1", "camera2"):
+                    if cam in d_f and cam in d_p:
+                        _enforce_bone_lengths(d_f[cam], d_p[cam])
+                write_json(f_path, d_f)
 
     if selective_enabled:
         diagnostics = summarize_selective_frames(frame_results)
@@ -1166,13 +1150,6 @@ def run_fusion(config: dict) -> None:
         if diagnostics["frames_with_missing_decisions_or_fallback"]:
             print("[Fusion] WARNING: selective mode fell back to raw Master in some frames.")
 
-    # ponytail: enforce anatomical limb proportions across all fused frames
-    for f_path in (output_dir / "keypoints3d").glob("fused_data_*.json"):
-        d_f = read_json(f_path)
-        for cam in ("camera1", "camera2"):
-            if cam in d_f:
-                _enforce_anatomical_limb_proportions(d_f[cam])
-        write_json(f_path, d_f)
 
     print(f"\n[Fusion] Done. Output: {output_dir}")
 

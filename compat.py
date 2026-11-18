@@ -1,3 +1,4 @@
+import re
 import sys
 import numpy as np
 import joblib
@@ -127,27 +128,40 @@ def parse_person_mapping(pkl_path):
     return mapping
 
 
+def _normalize_target_person(target_person):
+    s = str(target_person).strip().lower()
+    return {
+        "aria1": "aria01", "aria_1": "aria01", "aria-1": "aria01",
+        "aria2": "aria02", "aria_2": "aria02", "aria-2": "aria02",
+    }.get(s, s)
+
+
+def resolve_target_pt_path(pkl_path, target_person):
+    p = Path(pkl_path)
+    if not target_person or p.suffix.lower() not in (".pt", ".pth"):
+        return p
+    target_str = _normalize_target_person(target_person)
+    if target_str and target_str not in p.stem.lower() and p.parent.exists():
+        # ponytail: resolve target sibling .pt once up front before callers log or load stale path
+        direct = p.with_name(re.sub(r"aria[_-]?0?[12]", target_str, p.name, flags=re.IGNORECASE))
+        if direct != p and direct.exists():
+            return direct
+        candidates = sorted(p.parent.glob(f"*{target_str}*{p.suffix}"))
+        if candidates:
+            return candidates[0]
+    return p
+
+
 def resolve_person_payload(wham_data, pkl_path=None, target_person=None):
     if target_person is not None and pkl_path is not None:
-        target_str = str(target_person).strip().lower()
-        if target_str in ("aria1", "aria_1", "aria-1"):
-            target_str = "aria01"
-        elif target_str in ("aria2", "aria_2", "aria-2"):
-            target_str = "aria02"
-        p = Path(pkl_path)
-        if p.suffix.lower() in (".pt", ".pth") and target_str not in p.stem.lower():
-            candidates = list(p.parent.glob(f"*{target_str}*.pt"))
-            if candidates:
-                wham_data = load_joblib_compat(candidates[0])
-                pkl_path = candidates[0]
+        resolved_pt = resolve_target_pt_path(pkl_path, target_person)
+        if resolved_pt != Path(pkl_path):
+            wham_data = load_joblib_compat(resolved_pt)
+            pkl_path = resolved_pt
 
     # ponytail: handle GVHMR HMR4D prediction dict
     if isinstance(wham_data, dict) and "smpl_params_incam" in wham_data:
-        target_str = str(target_person).strip().lower() if target_person else None
-        if target_str in ("aria1", "aria_1", "aria-1"):
-            target_str = "aria01"
-        elif target_str in ("aria2", "aria_2", "aria-2"):
-            target_str = "aria02"
+        target_str = _normalize_target_person(target_person) if target_person else None
         subj = str(wham_data.get("subject", "")).lower()
         if target_str and subj and target_str != subj:
             return None
@@ -161,11 +175,7 @@ def resolve_person_payload(wham_data, pkl_path=None, target_person=None):
         return None
 
     if target_person is not None:
-        target_str = str(target_person).strip().lower()
-        if target_str in ("aria1", "aria_1", "aria-1"):
-            target_str = "aria01"
-        elif target_str in ("aria2", "aria_2", "aria-2"):
-            target_str = "aria02"
+        target_str = _normalize_target_person(target_person)
 
         if pkl_path is not None:
             mapping = parse_person_mapping(pkl_path)

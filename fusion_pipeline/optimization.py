@@ -211,6 +211,7 @@ def optimize_sequence_gpu(
     master_only: bool = False,
     anchor_cam: str = "camera1",
     selection_only: bool = False,
+    protect_master: bool | None = None,
 ) -> None:
     """
     Tối ưu hóa toàn bộ chuỗi frame (Batch Sequence Optimization) bằng PyTorch Autograd trên GPU.
@@ -277,10 +278,6 @@ def optimize_sequence_gpu(
 
     ref_bones1_t = torch.tensor(ref_bones1, device=device, dtype=torch.float32)
     ref_bones2_t = torch.tensor(ref_bones2, device=device, dtype=torch.float32)
-    low1 = (BONE_LENGTH_MIN_SCALE * ref_bones1_t) ** 2
-    up1 = (BONE_LENGTH_MAX_SCALE * ref_bones1_t) ** 2
-    low2 = (BONE_LENGTH_MIN_SCALE * ref_bones2_t) ** 2
-    up2 = (BONE_LENGTH_MAX_SCALE * ref_bones2_t) ** 2
 
     p1_init = torch.tensor(p1_fused_np, device=device, dtype=torch.float32)
     p2_init = torch.tensor(p2_fused_np, device=device, dtype=torch.float32)
@@ -289,102 +286,80 @@ def optimize_sequence_gpu(
     conf2_np = np.ones((T, N), dtype=np.float32)
     for t, meta in enumerate(all_meta):
         jc = meta.get("joint_confidence", {})
-        c1 = jc.get("camera1", {})
-        c2 = jc.get("camera2", {})
+        c1 = jc.get("camera1", {}) if isinstance(jc, dict) else {}
+        c2 = jc.get("camera2", {}) if isinstance(jc, dict) else {}
+        v1 = meta.get("vis1", {})
+        v2 = meta.get("vis2", {})
         for j_name, j_idx in name_to_idx.items():
-            if isinstance(c1, dict) and j_name in c1:
-                conf1_np[t, j_idx] = float(c1[j_name])
-            if isinstance(c2, dict) and j_name in c2:
-                conf2_np[t, j_idx] = float(c2[j_name])
+            val1 = float(c1.get(j_name, 1.0)) if isinstance(c1, dict) else 1.0
+            val2 = float(c2.get(j_name, 1.0)) if isinstance(c2, dict) else 1.0
+            vis_w1 = 1.0 if (not v1 or v1.get(j_name, True)) else DEFAULT_OCCLUDED_FACTOR
+            vis_w2 = 1.0 if (not v2 or v2.get(j_name, True)) else DEFAULT_OCCLUDED_FACTOR
+            conf1_np[t, j_idx] = val1 * vis_w1
+            conf2_np[t, j_idx] = val2 * vis_w2
 
-    c1_t = torch.tensor(conf1_np, device=device, dtype=torch.float32)
-    c2_t = torch.tensor(conf2_np, device=device, dtype=torch.float32)
-
-    delta1 = torch.zeros_like(p1_init, requires_grad=True)
-    delta2 = torch.zeros_like(p2_init, requires_grad=True)
+    c1_t = torch.clamp(torch.tensor(conf1_np, device=device, dtype=torch.float32), min=0.05, max=1.0)
+    c2_t = torch.clamp(torch.tensor(conf2_np, device=device, dtype=torch.float32), min=0.05, max=1.0)
 
     torso_anchors = [name_to_idx[n] for n in ("pelvis", "neck", "left_shoulder", "right_shoulder", "left_hip", "right_hip") if n in name_to_idx]
     anchor_idx_t = torch.tensor(torso_anchors, device=device, dtype=torch.long)
 
-    hinge_pairs = [
-        (name_to_idx[a], name_to_idx[b], name_to_idx[c])
-        for a, b, c in HINGE_TRIPLETS
-        if a in name_to_idx and b in name_to_idx and c in name_to_idx
-    ]
-
-    optimizer = torch.optim.Adam([delta1] if master_only else [delta1, delta2], lr=0.005)
     opt_cfg = (config or {}).get("fusion", {}).get("optimization", {})
     fusion_cfg = (config or {}).get("fusion", {})
-    master_prot_enabled = bool(fusion_cfg.get("master_protection", {}).get("enabled", False))
-    angle_limits_enabled = bool(fusion_cfg.get("angle_limits", {}).get("enabled", True))
     regularization_enabled = bool(opt_cfg.get("regularization", True))
     reg_lambda = float(opt_cfg.get("regularization_lambda", 1.0))
-    temp_lambda = float(opt_cfg.get("temporal_lambda", 2.0))
+    temp_lambda = float(opt_cfg.get("temporal_lambda", 0.03))
     n_iters = min(int(opt_cfg.get("max_iter", 35)), 50)
 
-    # ponytail: asymmetric anchor mask — anchor camera resists movement to prevent drift, while the other camera adjusts
-    if master_prot_enabled:
-        if anchor_cam == "camera2":
-            mask1 = torch.ones_like(delta1)
-            mask2 = torch.zeros_like(delta2) if master_only else torch.where(c2_t >= 0.5, torch.zeros_like(c2_t), 1.0 - c2_t).unsqueeze(-1)
-        else:
-            mask1 = torch.where(c1_t >= 0.5, torch.zeros_like(c1_t), 1.0 - c1_t).unsqueeze(-1)
-            mask2 = torch.zeros_like(delta2) if master_only else torch.ones_like(delta2)
-    else:
-        mask1 = torch.ones_like(delta1)
-        mask2 = torch.zeros_like(delta2) if master_only else torch.ones_like(delta2)
     if selection_only:
         mask1 = torch.tensor(selection_np, device=device).unsqueeze(-1)
-        mask2 = torch.zeros_like(delta2)
+        mask2 = torch.zeros_like(p2_init)
+    else:
+        mask1 = torch.ones_like(p1_init)
+        mask2 = torch.zeros_like(p2_init) if master_only else torch.ones_like(p2_init)
+
+    delta1 = torch.zeros_like(p1_init, requires_grad=True)
+    delta2 = torch.zeros_like(p2_init, requires_grad=(not master_only and not selection_only))
+    params = [delta1] if (master_only or selection_only) else [delta1, delta2]
+    optimizer = torch.optim.Adam(params, lr=0.01)
 
     for _ in range(n_iters):
         optimizer.zero_grad()
         p1 = p1_init + delta1 * mask1
         p2 = p2_init + delta2 * mask2
 
-        # ponytail: anchor observations strongly to prevent drift
-        loss_prox = ((delta1 * mask1) ** 2).sum() + ((delta2 * mask2) ** 2).sum()
-        loss_prox = loss_prox / max((mask1.sum() + mask2.sum()), 1.0)
+        # 1. Belief-weighted data likelihood anchor
+        loss_prox = (c1_t.unsqueeze(-1) * ((delta1 * mask1) ** 2)).mean()
+        if not master_only and not selection_only:
+            loss_prox = loss_prox + (c2_t.unsqueeze(-1) * ((delta2 * mask2) ** 2)).mean()
 
-        loss_bone = 0.0
-        for b_idx, (c_i, p_i) in enumerate(bone_pairs):
-            d1_sq = ((p1[:, c_i] - p1[:, p_i]) ** 2).sum(dim=-1)
-            d2_sq = ((p2[:, c_i] - p2[:, p_i]) ** 2).sum(dim=-1)
-            loss_bone = loss_bone + (torch.relu(low1[b_idx] - d1_sq) ** 2 + torch.relu(d1_sq - up1[b_idx]) ** 2).mean()
-            if not master_only:
-                loss_bone = loss_bone + (torch.relu(low2[b_idx] - d2_sq) ** 2 + torch.relu(d2_sq - up2[b_idx]) ** 2).mean()
-
-        # ponytail: anatomical hinge angle loss (elbows and knees)
-        loss_angle = 0.0
-        if angle_limits_enabled and hinge_pairs:
-            for a_i, b_i, c_i in hinge_pairs:
-                for p_k in ((p1,) if master_only else (p1, p2)):
-                    u = p_k[:, a_i] - p_k[:, b_i]
-                    v = p_k[:, c_i] - p_k[:, b_i]
-                    cos_th = (u * v).sum(dim=-1) / (torch.norm(u, dim=-1) * torch.norm(v, dim=-1) + 1e-6)
-                    loss_angle = loss_angle + (torch.relu(DEFAULT_MIN_COS - cos_th) ** 2 + torch.relu(cos_th - DEFAULT_MAX_COS) ** 2).mean()
-
-        # ponytail: confidence-weighted mv loss — per-joint, the more confident cam is reference
-        # prevents cam1 from being hardcoded reference when it's occluded/wrong
-        loss_mv = torch.zeros((), device=device)
-        if not master_only:
-            d1 = torch.cdist(p1, p1[:, anchor_idx_t])
-            d2 = torch.cdist(p2, p2[:, anchor_idx_t])
-            w1 = torch.clamp(c1_t, min=0.0).unsqueeze(-1)
-            w2 = torch.clamp(c2_t, min=0.0).unsqueeze(-1)
-            diff_mv = torch.abs(d1 - d2)
-            huber_mv = torch.where(diff_mv <= 0.05, 0.5 * (diff_mv ** 2), 0.05 * (diff_mv - 0.025))
-            # ponytail: min-confidence weight prevents pulling high-confidence cam toward hallucinated/noisy cam
-            w_mv = torch.min(w1, w2)
-            loss_mv = (w_mv * huber_mv).mean()
-
+        # 2. 2nd-order acceleration smoothness
         accel1 = p1[2:] - 2.0 * p1[1:-1] + p1[:-2]
-        accel2 = p2[2:] - 2.0 * p2[1:-1] + p2[:-2]
         loss_accel = (accel1 ** 2).mean()
-        if not master_only:
+        if not master_only and not selection_only:
+            accel2 = p2[2:] - 2.0 * p2[1:-1] + p2[:-2]
             loss_accel = loss_accel + (accel2 ** 2).mean()
 
-        total_loss = (reg_lambda * loss_prox if regularization_enabled else 0.0) + 50.0 * loss_bone + 5.0 * loss_mv + temp_lambda * 2.5 * loss_accel + 20.0 * loss_angle
+        # 3. Kinematic bone length constraint
+        loss_bone = torch.zeros((), device=device)
+        if bone_pairs:
+            for b_idx, (c_i, p_i) in enumerate(bone_pairs):
+                d1 = torch.norm(p1[:, c_i] - p1[:, p_i], dim=-1)
+                loss_bone = loss_bone + ((d1 - ref_bones1_t[b_idx]) ** 2).mean()
+                if not master_only and not selection_only:
+                    d2 = torch.norm(p2[:, c_i] - p2[:, p_i], dim=-1)
+                    loss_bone = loss_bone + ((d2 - ref_bones2_t[b_idx]) ** 2).mean()
+
+        # 4. Multi-view torso-anchor distance consistency
+        loss_mv = torch.zeros((), device=device)
+        if not master_only and not selection_only and anchor_idx_t.numel() > 0:
+            cd1 = torch.cdist(p1, p1[:, anchor_idx_t])
+            cd2 = torch.cdist(p2, p2[:, anchor_idx_t])
+            diff_mv = torch.abs(cd1 - cd2)
+            w_mv = torch.min(c1_t.unsqueeze(-1), c2_t.unsqueeze(-1))
+            loss_mv = (w_mv * diff_mv).mean()
+
+        total_loss = (reg_lambda * loss_prox if regularization_enabled else 0.0) + temp_lambda * loss_accel + 5.0 * loss_bone + 0.5 * loss_mv
         total_loss.backward()
         optimizer.step()
 
@@ -402,8 +377,9 @@ def optimize_sequence_gpu(
         d = all_fused[t]
         for j_idx, j_name in enumerate(joint_names):
             d["camera1"][j_name] = [round(float(x), 6) for x in p1_opt[t, j_idx]]
-            d["camera2"][j_name] = [round(float(x), 6) for x in p2_opt[t, j_idx]]
-        if all_pose is not None and not selection_only:
+            if not master_only and not selection_only:
+                d["camera2"][j_name] = [round(float(x), 6) for x in p2_opt[t, j_idx]]
+        if all_pose is not None and not selection_only and bool(fusion_cfg.get("enforce_bone_lengths", True)):
             from fusion_pipeline.executor import _enforce_bone_lengths
             for cam in (("camera1",) if master_only else ("camera1", "camera2")):
                 if cam in d and cam in all_pose[t]:

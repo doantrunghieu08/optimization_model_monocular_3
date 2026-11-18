@@ -1,103 +1,193 @@
-# Robust Multi-View 3D Human Pose Fusion via Ray-Casting Occlusion Awareness and Zero-GT Kinematic Quality Gating
+# Calibration-Free Two-View 3D Human Pose Fusion
 
-Official implementation of the paper:
-**"Robust Multi-View 3D Human Pose Fusion via 3D Ray-Casting Occlusion Detection and Zero-GT Kinematic Anti-Negative Transfer"**
+Learning-free, **zero-ground-truth** refinement of two monocular 3D human pose reconstructions into canonical 21-joint `SMPL` trajectories, one per camera. Inputs are `WHAM` (`.pkl`) or `GVHMR` (`.pt`) outputs for two cameras that watch the same person.
 
----
-
-## 📌 Abstract
-
-Monocular 3D Human Pose Estimation (HPE) in unsynchronized, uncalibrated, or in-the-wild multi-camera environments frequently suffers from scale drift, depth ambiguity, and severe self-occlusions. Existing multi-view fusion approaches rely heavily on 2D reprojection loss or unconstrained global rigid transforms, often leading to depth collapse and negative transfer when fusing weak auxiliary viewpoints.
-
-This repository introduces a robust, learning-isolated 3D pose fusion framework:
-
-1. **3D Ray-Casting Occlusion Detection**: Casts physical optical rays from the camera center to torso mesh vertices to detect true 3D volumetric self-occlusion without 2D projective distortion.
-2. **Direct 3D Kinematic Pose Fusion**: Discards fragile 2D reprojection constraints in favor of 3D skeletal space optimization with hierarchical kinematic bone rotations.
-3. **Zero-GT Biomechanical Quality Gating**: Dynamically identifies master vs. slave reliability without ground-truth labels using high-frequency temporal acceleration (jitter), tracking continuity, and 2D companion detection metrics.
-4. **Anatomical Bone Length Locking & Temporal Smoothing**: Enforces anatomical bone length constraints via forward kinematic projection and applies Savitzky-Golay polynomial filtering along trajectory timelines.
-5. **Strict Zero-Ground-Truth Protocol**: Guarantees complete isolation of test annotations during all preprocessing, alignment, and fusion stages. Ground truth is solely ingested in the evaluation pipeline.
+The default fusion (`fusion.method: aniso`) is a closed-form maximum-likelihood estimator. It needs **no camera intrinsics, no extrinsics and no training**. The older two-stage pipeline (ray-cast replacement + GPU Adam) is still available as `fusion.method: legacy`.
 
 ---
 
-## 🚀 Key Methodological Contributions
+## Design Principles
 
-### 1. Volumetric 3D Occlusion Awareness
-Joint visibility is evaluated via physical ray-surface intersection:
-$$\mathbf{r}(t) = t \cdot \frac{P_k}{\|P_k\|_2}, \quad t_{\text{hit}} = \min \{ t > 0 \mid \mathbf{r}(t) \cap \mathcal{M}_{\text{torso}} \ne \emptyset \}$$
-$$\text{Occluded}(P_k) \iff t_{\text{hit}} < \|P_k\|_2 - \tau \quad (\tau = 0.05\,\text{m})$$
-
-### 2. Hierarchical Kinematic Bone Rotation
-Prevents the lever-arm effect by rotating relative bone orientation vectors along kinematic sub-trees rather than forcing global rigid transforms:
-$$\hat{P}_{\text{slave}\to\text{master}}(c) = P_{\text{master}}(p) + \mathbf{R}_{21} \cdot \left(P_{\text{slave}}(c) - P_{\text{slave}}(p)\right)$$
-
-### 3. Zero-GT Temporal Jitter & Camera Quality Tiering
-Overcomes the "Ray-Casting Visibility Trap" (where unoccluded distant cameras exhibit deceptively high visibility despite large 3D depth error) through intrinsic kinematic signals:
-* **Temporal Jitter**: Measures non-biological high-frequency tracking acceleration:
-  $$a = \frac{1}{T-2} \sum_{t=1}^{T-2} \| P_{t+1} - 2P_t + P_{t-1} \|_2$$
-* **Camera Quality Hierarchy**:
-  * **Tier 1 (Pristine)**: `cam04`, `cam05`, `cam13`, `cam19` (301 complete frames, jitter 16.9 - 22.0 mm/f, verified 2D keypoint profiles).
-  * **Tier 2 (Noisy)**: `cam02`, `cam17` (301 frames, jitter 30.0 - 32.0 mm/f).
-  * **Tier 3 (Degraded/Broken)**: `cam03` (127 frames, dropped 58%), `cam20` (95 frames, dropped 68%, jitter 64.8 mm/f).
-
-### 4. Asymmetric Fusion Protocol (Zero-Choking Guarantee)
-* **Tier 1 + Tier 1 (`cam13 + cam19`, `cam04 + cam19`, `cam05 + cam19`)**: Full multi-view geometric consensus without artificial margins (`should_protect_master = False`). Massive positive improvements (**+10% to +19%**) are fully preserved.
-* **Tier 2/3 Master + Tier 1 Slave (`cam03 -> cam19`, `cam17 -> cam05`)**: Clean slave acts as anchor, fully reconstructing distorted master (**+12% to +19.4%** gain).
-* **Tier 1 Master + Tier 2/3 Slave (`cam19 -> cam17`, `cam19 -> cam02`, `cam04 -> cam20`)**: Master protection is dynamically engaged (`margin = 0.15`), locking master anchor joints in GPU optimization and preventing noisy slave contamination.
+1. **No camera parameters.** The camera2→camera1 rotation is estimated from the body itself, frame by frame. Each joint's viewing ray comes straight from its camera-frame position.
+2. **Zero ground truth at runtime.** Only [evaluation_pipeline/executor.py](evaluation_pipeline/executor.py) reads `ground_truth_dir`. [tests/test_regressions.py](tests/test_regressions.py#L184) checks that `fusion_pipeline` and `pose_pipeline` never touch it.
+3. **Generalization over tuning.** Design decisions are made on a fixed design split. Results are then reported on held-out cameras and datasets with a **frozen** config (see [Results](#results)).
+4. **Self-calibration instead of hand-tuned weights.** The noise levels of the two cameras are estimated by maximum likelihood from their cross-view disagreement.
 
 ---
 
-## 📊 Benchmark Results
+## Pipeline
 
-Evaluated on the **Harmony4D / Multi-view In-the-Wild Benchmark (56 Pair Combinations)**:
-
-| Method / View Pair | Base MPJPE (mm) | Fused MPJPE (mm) | Base PA-MPJPE (mm) | Fused PA-MPJPE (mm) | $\Delta$ PA-MPJPE (%) | Accel Delta (%) | MBLE Delta (%) | Status |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Ours (`cam03 -> cam19`)** | 623.54 | **625.49** | 90.27 | **72.72** | **+19.44%** | **+50.01%** | **+21.65%** | Top Rescue |
-| **Ours (`cam13 -> cam19`)** | 554.63 | **560.87** | 45.89 | **40.99** | **+10.68%** | **+42.15%** | **+8.10%** | High Gain (Unchoked) |
-| **Ours (`cam04 -> cam19`)** | 560.12 | **558.40** | 41.14 | **36.41** | **+11.50%** | **+48.30%** | **+6.20%** | High Gain (Unchoked) |
-| **Ours (`cam17 -> cam05`)** | 632.10 | **615.40** | 58.16 | **51.31** | **+11.78%** | **+36.50%** | **+7.40%** | High Gain (Unchoked) |
-| **Ours (`cam19 -> cam17`)** | 616.78 | **616.78** | 33.60 | **33.65** | **-0.15%** | **+58.20%** | **+6.40%** | Rescued (-5.30% $\to$ -0.15%) |
-| **Ours (`cam19 -> cam02`)** | 616.78 | **616.78** | 33.60 | **33.68** | **-0.24%** | **+56.80%** | **+5.90%** | Rescued (-3.57% $\to$ -0.24%) |
-| **Ours (`cam19 -> cam20`)** | 520.10 | **519.80** | 27.85 | **27.50** | **+1.26%** | **+64.07%** | **+4.44%** | Fully Positive |
-| **Ours (`cam04 -> cam17`)** | 545.20 | **543.10** | 40.44 | **39.75** | **+1.71%** | **+54.66%** | **+5.67%** | Fully Positive |
-| **Ours (`cam05 -> cam17`)** | 540.30 | **538.90** | 38.87 | **38.73** | **+0.36%** | **+60.03%** | **+6.13%** | Fully Positive |
-
-* **Zero-GT Protocol Guarantee**: 100% strict isolation of Ground Truth from all inference stages.
-* **Regression Test Suite**: **36 / 36 unit tests passing (100%)** in [`tests/test_regressions.py`](file:///d:/optimization_model_monocular_3/tests/test_regressions.py).
-
----
-
-## 🛠️ Project Structure
-
+```mermaid
+flowchart LR
+    CLI["main.py"] --> Pipe["pipeline.py :: run_pipeline()"]
+    Pipe --> Pre["preprocess_pipeline<br/>sync offset, 2D confidences"]
+    Pre --> Pose["pose_pipeline<br/>WHAM/GVHMR -> 21 SMPL joints (camera coords)"]
+    Pose --> S1["fusion Stage 1<br/>ray-cast occlusion + belief"]
+    S1 --> Aniso["fusion: aniso (default)<br/>per-frame Kabsch + MLE fusion + smoothing + bone lock"]
+    S1 -. "method: legacy" .-> Legacy["fusion: legacy<br/>replacement/blend + GPU Adam"]
+    Aniso --> Eval["evaluation_pipeline<br/>PA-MPJPE, MPJPE, MBLE, Accel"]
+    Legacy --> Eval
+    Aniso --> Vis["visualization_pipeline (optional)"]
 ```
+
+| Stage | Entry point | Role |
+| :--- | :--- | :--- |
+| Config & compat | [config_loader.py](config_loader.py), [compat.py](compat.py#L139) | Loads YAML with `${ENV:-default}` support. Normalizes WHAM `.pkl` / GVHMR `.pt` (`smpl_params_incam`) into one SMPL payload. Resolves `inputs.target_person` to the matching `.pt` file (e.g. `..._aria01.pt` → `..._aria02.pt`). |
+| Preprocess | [run_preprocess()](preprocess_pipeline/executor.py#L144) | Estimates the cross-camera temporal offset and extracts per-joint 2D confidence profiles. |
+| Pose export | [run_pose_export()](pose_pipeline/executor.py#L100) | SMPL forward kinematics in camera coordinates (`use_world_coords: false`), writing synchronized 21-joint `pose_data_*.json`. |
+| Fusion Stage 1 | [run_phase3_pipeline()](fusion_pipeline/executor.py#L352) | Per-joint occlusion by ray-casting against the SMPL torso hull ([detector.py](fusion_pipeline/detector.py#L121)), plus a belief that combines distance-aware harmonic precision with 2D confidence ([detector.py](fusion_pipeline/detector.py#L183)). |
+| Fusion (aniso) | [run_aniso_fusion()](fusion_pipeline/aniso.py#L266) | Recomputes all keypoints from the raw monocular poses, using Stage-1 beliefs as weights. Writes `fused_results/aniso_fusion_info.json` (estimated noise, view angle, λ). |
+| Evaluation | [run_evaluation()](evaluation_pipeline/executor.py#L418) | The only GT consumer. Reports overall / visible / occluded PA-MPJPE, MPJPE, MBLE and Accel for `monocular` vs `fused`. |
+
+`learnable` (NetBody25) and `selective_joint_fusion` (V3) are experimental and **disabled**. Turning on `selective_joint_fusion` makes the code fall back to the legacy path.
+
+---
+
+## Default Fusion: Anisotropic MLE (`fusion.method: aniso`)
+
+Source: [fusion_pipeline/aniso.py](fusion_pipeline/aniso.py). Each camera's monocular skeleton is treated as a Gaussian measurement of one shared root-relative skeleton.
+
+1. **Root-relative coordinates.** Subtract the hip midpoint from each camera's joints: $X_i = P_i - r_i$.
+2. **Per-frame robust alignment.** For every frame, estimate $R_t$ (camera2→camera1) with weighted Kabsch over all joints and 5 Cauchy IRLS iterations. Weights are $\min(w_1, w_2)$. One sequence-level rotation is not enough, because the monocular global orientation drifts 7–11° (median) between frames.
+3. **Ray-aligned covariance.** With $d = P/\|P\|$ and belief $w$ (Stage-1 confidence × occlusion factor, clipped to $[0.05, 1]$):
+   $$\Sigma_i = \frac{a_i^2 (I - dd^\top) + b_i^2\, dd^\top}{w_i}$$
+   Here $a_i$ is the lateral noise and $b_i$ the depth noise.
+4. **Self-calibration.** Estimate $a_1, b_1, a_2, b_2$ by maximum likelihood on the cross-view residuals $X_1 - R_t X_2$. Residuals above `max_residual_m` (0.5 m) are ignored.
+5. **Fusion.** $X^* = (\Lambda_1 + \Lambda_2')^{-1}(\Lambda_1 X_1 + \Lambda_2' R_t X_2)$, with $\Lambda = \Sigma^{-1}$. The result is mapped back into each camera frame and the camera's own root is added back.
+6. **Smoothing and bone lock.** A closed-form 2nd-order (acceleration) smoother runs on the absolute trajectories (banded solve, $\lambda = 0.5$). Bone lengths are then projected onto the monocular SMPL lengths (`enforce_bone_lengths: true`).
+
+Stage 2 (Adam) and Savitzky-Golay are skipped in this mode.
+
+### Config (`fusion.aniso` in [configs/pipeline.yml](configs/pipeline.yml))
+
+| Key | Default | Meaning |
+| :--- | :--- | :--- |
+| `rotation_window` | `0` | `0` = one rotation per frame; `N > 0` pools ±N frames. |
+| `irls_iters` | `5` | Cauchy IRLS iterations for the rotation. |
+| `max_residual_m` | `0.5` | Residuals larger than this are excluded from noise self-calibration. |
+| `smoothing_lambda` | `0.5` | Acceleration smoothing; `0` disables it, `"gcv"` picks λ by GCV. |
+| `noise_model` | `global` | `per_joint` scales each joint's covariance separately (not adopted, see below). |
+| `bone_lengths` | `mono` | `shared` uses one time-constant length per bone (not adopted). |
+
+---
+
+## Results
+
+All numbers come from the official `run_evaluation`. Each row averages over cases, where a case is one scenario × one camera.
+
+### Design split: MMA `cam01+02`, `cam19+20` × `aria01`, `aria02` (GVHMR, 741 frames, 8 cases)
+
+| Method | PA-MPJPE | PA occl. | MPJPE | MPJPE occl. | MBLE | Accel |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Monocular | 77.93 | 98.31 | 103.52 | 131.78 | 37.08 | 97.64 |
+| `legacy` | 73.71 | 90.73 | 99.89 | 120.39 | 37.08 | 92.87 |
+| **`aniso`** | **68.27** | **73.20** | **94.71** | **103.08** | 37.08 | **45.13** |
+
+Units are mm and mm/frame². These numbers are optimistic, because the design choices were made on this split.
+
+### Held-out (frozen config, never used during design)
+
+| Held-out set | Cases | PA-MPJPE legacy → aniso | MPJPE legacy → aniso | Accel legacy → aniso | aniso wins (PA) |
+| :--- | ---: | :---: | :---: | :---: | :---: |
+| MMA, 8 unseen camera pairs (`cam03`–`cam18`) × 2 subjects, GVHMR | 32 | 71.90 → **68.53** | 98.94 → **95.63** | 97.45 → **46.97** | **32/32** |
+| Harmony4D Hugging, 3 pairs × 2 subjects, WHAM | 12 | 49.60 → **47.72** | 64.45 → **59.51** | 24.97 → **11.59** | 5/12 |
+| MPI-INF-3DHP, GT re-synced by DTW (seg 1/6/11), WHAM | 36 | 83.23 → **82.46** | 129.09 → 129.67 | 50.15 → **35.23** | 27/36 |
+
+* **Sensitivity.** On MMA held-out, every variant tried gives PA 67.6–69.7 mm, and all of them beat legacy (71.9). The variants cover λ ∈ [0, 2], 1–10 IRLS iterations, residual threshold 0.3–1.0 m, rotation window ±2, and an isotropic covariance. λ trades PA against Accel monotonically.
+* **Ablation.** Most of the gain comes from per-frame robust alignment combined with inverse-variance weighting. Separating out the depth direction adds about 1.5 mm PA. Beliefs add about 1.4 mm PA overall and about 3.4 mm on occluded joints.
+
+### Known Limitations
+
+* **One consensus skeleton for both cameras.** When one view is clearly better than the other, aniso drags the better view down. This is why Hugging wins only 5/12 cases. With two views, the cross-view residual measures the *total* error but cannot say which camera is wrong. The anisotropic split did not generalize reliably either: on Hugging, the isotropic variant scored 46.83 vs 47.72.
+* **MPI has a low ceiling.** The two WHAM views agree within about 28 mm PA, so even an oracle average of the two views gains only about 2 mm. Most of the remaining error is shared by both views: hip-convention bias, residual GT sync error, and the WHAM prior. Also, the WHAM segments in `input/MPI` are not frame-aligned with their same-named GT files, so naive evaluation gives about 189 mm PA. See `scratch/mpi_sync_build.py` and `scratch/mpi_sync_gt.py`.
+* **Fusion does not change MBLE.** Bone lengths are locked to the monocular SMPL lengths. The main MBLE error is a joint-convention mismatch with GT (thigh and upper arm too short, shank and forearm too long). Feeding in the subject's height fixes almost nothing: PA is unchanged and MPJPE moves by less than 1 mm (`scratch/height_oracle.py`).
+* λ = 0.5 is a hand-chosen value.
+
+### Evaluation Notes
+
+* **Accel.** Predictions are in camera coordinates and GT is in world coordinates. Before acceleration is compared, one rotation per (camera, module) sequence is fitted ([_estimate_sequence_rotation()](evaluation_pipeline/executor.py#L158)). Accel values from before this fix are not comparable with the tables above.
+* **brute_force_runner.py** ranks camera pairs by GT. That is oracle selection, so do not report it as a model result.
+
+---
+
+## Legacy Fusion (`fusion.method: legacy`)
+
+This is the previous default, kept for comparison:
+
+1. **Stage 1, per frame.** RANSAC-Umeyama isometric alignment on torso landmarks. Kinematic bone-vector transfer around the parent joint, $\hat P(c) = P_{tgt}(p) + R\,(P_{src}(c) - P_{src}(p))$. Symmetric *occluded rescue* plus belief-weighted *visible consensus* ([_fuse_single_view()](fusion_pipeline/correction.py#L384)), gated by hinge angles (30°–175°) and a ±20% bone-length check.
+2. **Stage 2, per sequence.** GPU Adam ([optimize_sequence_gpu()](fusion_pipeline/optimization.py#L205); `lr = 0.01`, 35 iterations) minimizing belief-weighted proximity + 2nd-order acceleration ($\lambda = 0.03$) + bone length + multi-view torso distance. This is followed by the hard bone-length projection [_enforce_bone_lengths()](fusion_pipeline/executor.py#L624).
+
+The full history and rationale are in [MODEL_CHANGES.md](MODEL_CHANGES.md).
+
+---
+
+## Project Structure
+
+```text
 optimization_model_monocular_3/
+├── main.py                      # CLI entry point (--config configs/pipeline.yml)
+├── pipeline.py                  # preprocess -> pose -> fusion -> evaluation / visualization
+├── config_loader.py             # YAML loader, ${ENV:-default}, target_person path resolution
+├── compat.py                    # WHAM .pkl / GVHMR .pt adapter, NumPy/inspect shims
 ├── configs/
-│   ├── pipeline.yml            # Main pipeline configuration (Zero-GT parameters)
-│   ├── keypoints3D_map.yml     # SMPL/Body25 joint topology mapping
-│   └── keypoints2D_map.yml     # 2D detector keypoint correspondence mapping
+│   ├── pipeline.yml             # Active config (fusion.method: aniso)
+│   ├── keypoints3D_map.yml      # 21 SMPL joints + evaluation skeleton
+│   ├── keypoints2D_map.yml      # 2D detector keypoint mapping
+│   └── brute_force*.yml         # Multi-pair sweep configs (Harmony4D, MMA)
+├── preprocess_pipeline/         # Temporal sync, 2D confidence profiles
+├── pose_pipeline/               # SMPL forward kinematics -> pose_data_*.json
 ├── fusion_pipeline/
-│   ├── detector.py             # 3D Ray-Casting & Zero-GT Harmonic Precision
-│   ├── correction.py           # Kinematic bone rotation & asymmetric gating
-│   ├── executor.py             # Pipeline executor, temporal smoothing & quality tiering
-│   └── optimization.py         # GPU Sequence optimization with soft anchor masks
-├── evaluation_pipeline/
-│   └── executor.py             # MPJPE, PA-MPJPE, MBLE, Accel metrics (GT only here)
-├── tests/
-│   └── test_regressions.py     # 36 rigorous unit & regression tests
-├── MODEL_CHANGES.md            # Deep mathematical and architectural breakdown
-└── README.md                   # Repository overview & benchmark report
+│   ├── aniso.py                 # Default: calibration-free anisotropic MLE fusion
+│   ├── detector.py              # Ray-cast occlusion, harmonic precision belief
+│   ├── correction.py            # Legacy: RANSAC-Umeyama, bone transfer, _fuse_single_view
+│   ├── optimization.py          # Legacy: GPU Adam sequence optimizer
+│   ├── executor.py              # run_fusion(): Stage 1 + method dispatch + bone lock
+│   ├── selective.py, diagnostics.py  # Experimental V3 selective fusion (disabled)
+│   └── config.py                # Thresholds and constants
+├── learnable_pipeline/          # NetBody25 refiner (disabled)
+├── evaluation_pipeline/         # GT evaluation -> evaluation_results/*.csv
+├── visualization_pipeline/      # Optional 2D/3D rendering
+├── tests/                       # 67 tests (aniso, regressions, selective)
+├── scratch/                     # Experiment scripts: held-out runner, ablations, MPI sync, height oracle
+└── MODEL_CHANGES.md             # Change log and analysis (Vietnamese)
 ```
 
 ---
 
-## 🧪 Quickstart & Evaluation
+## Quickstart
 
-### Run Fusion on a Specific Camera Pair
+### 1. Setup
+
 ```bash
-python run.py --config configs/pipeline.yml
+pip install -r requirements.txt
 ```
 
-### Run Regression Test Suite
+Put `SMPL_NEUTRAL.pkl`, `smpl_partSegmentation_mapping.pkl` and `J_regressor_smpl_45.npy` under `models/`.
+
+### 2. Run
+
 ```bash
-python -m pytest tests/
+python main.py --config configs/pipeline.yml
 ```
+
+* Pick the two inputs with `inputs.cam1_pkl` / `inputs.cam2_pkl` and the subject with `inputs.target_person` (`aria01` / `aria02`). The matching sibling `.pt` file is found automatically.
+* Outputs go to `output/` (`preprocess_results/`, `pose_results/`, `fused_results/`, `evaluation_results/*.csv`).
+* `runtime.stage: evaluation` re-scores existing outputs without recomputing them.
+* `fusion.method: legacy` switches back to the two-stage pipeline.
+
+### 3. Tests
+
+```bash
+python -m pytest tests -q
+```
+
+Expected: **67 passed** (12 in `test_aniso_fusion.py`, 44 in `test_regressions.py`, 8 in `test_selective_fusion.py`, 3 in `test_selective_regression_guard.py`).
+
+### 4. Reproduce the held-out benchmark
+
+```bash
+python scratch/generalization_runner.py mma_unseen   # or: hugging | mpi_design | mpi_valid | all
+python scratch/generalization_summary.py
+```
+
+Results are written to `scratch/gen_runs/<suite>/<scenario>/{legacy,aniso}/evaluation_results/`.

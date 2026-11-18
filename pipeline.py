@@ -1,5 +1,6 @@
 from pathlib import Path
 import json
+from compat import resolve_target_pt_path
 from preprocess_pipeline.executor import run_preprocess
 from pose_pipeline.executor import run_pose_export
 from fusion_pipeline.executor import run_fusion
@@ -41,9 +42,10 @@ def _require_evaluation_inputs(config):
     recorded = metadata.get("metadata", {}).get("camera_sync", {}).get("source_pkls")
     if not isinstance(recorded, dict):
         raise ValueError("Pose output has no source provenance; rerun the full pipeline before evaluation")
+    target_person = config["inputs"].get("target_person")
     expected = {
-        "camera1": str(Path(config["inputs"]["cam1_pkl"]).resolve()),
-        "camera2": str(Path(config["inputs"]["cam2_pkl"]).resolve()),
+        "camera1": str(resolve_target_pt_path(config["inputs"]["cam1_pkl"], target_person).resolve()),
+        "camera2": str(resolve_target_pt_path(config["inputs"]["cam2_pkl"], target_person).resolve()),
     }
     actual = {key: str(Path(recorded.get(key, "")).resolve()) for key in expected}
     if actual != expected:

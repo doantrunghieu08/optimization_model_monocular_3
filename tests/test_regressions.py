@@ -164,8 +164,12 @@ class FusionOptimizationTests(unittest.TestCase):
             config = {"fusion": {
                 "optimization": {"regularization": False, "temporal_lambda": 2.0, "max_iter": 10},
                 "angle_limits": {"enabled": False},
+                "master_protection": {"enabled": True},
             }}
-            optimize_sequence_gpu(keypoints, metadata, config=config, device="cpu", master_only=True)
+            optimize_sequence_gpu(
+                keypoints, metadata, config=config, device="cpu",
+                master_only=True, protect_master=False,
+            )
 
             middle = json.loads((keypoints / "fused_data_2.json").read_text(encoding="utf-8"))
             self.assertLess(middle["camera1"]["pelvis"][0], 1.0)
@@ -197,7 +201,7 @@ class FusionOptimizationTests(unittest.TestCase):
         header = ["Set", "Segment", "Protocol", "Cam Master", "Cam Slave"]
         stale = ["S1", "seg1", "no_gt_v6_visible_confidence_transfer", "cam1", "cam2"]
         self.assertEqual(_parse_history_row(stale, _get_header_indices(header)), (None, None))
-        self.assertEqual(EVALUATION_PROTOCOL, "no_gt_v10_master_only_postopt")
+        self.assertEqual(EVALUATION_PROTOCOL, "")
 
     def test_adaptive_detector_uses_aggressive_mode_only_for_reliable_slave(self):
         names = [f"joint_{idx}" for idx in range(8)]
@@ -438,6 +442,29 @@ class LearnablePostOptimizationTests(unittest.TestCase):
 
 
 class EvaluationStageTests(unittest.TestCase):
+    def test_accel_error_is_invariant_to_static_camera_rotation(self):
+        from evaluation_pipeline.executor import _compute_acceleration_error, _estimate_sequence_rotation
+
+        rng = np.random.default_rng(0)
+        names = ["left_hip", "right_hip", "left_knee", "right_knee", "left_wrist", "right_wrist"]
+        base = rng.normal(size=(len(names), 3))
+        # world-frame truth with non-trivial motion (translation + articulation)
+        truth = [
+            {n: base[i] + np.array([0.05 * t ** 1.5, 0.0, 0.02 * t]) + 0.03 * np.sin(t + i) for i, n in enumerate(names)}
+            for t in range(8)
+        ]
+        angle = np.deg2rad(70.0)
+        R_wc = np.array([[np.cos(angle), 0, np.sin(angle)], [0, 1, 0], [-np.sin(angle), 0, np.cos(angle)]])
+        offset = np.array([1.0, -2.0, 4.0])
+        # identical motion seen from a static camera: rotated + translated
+        pred = [{n: R_wc @ p + offset for n, p in frame.items()} for frame in truth]
+
+        R = _estimate_sequence_rotation(pred, truth, names)
+        err_fixed, _ = _compute_acceleration_error(tuple(pred[2:5]), tuple(truth[2:5]), names, rotation=R)
+        err_raw, _ = _compute_acceleration_error(tuple(pred[2:5]), tuple(truth[2:5]), names)
+        self.assertLess(err_fixed, 1e-6)
+        self.assertGreater(err_raw, 1.0)
+
     def test_disabled_learnable_is_not_required_and_sources_are_checked(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -840,6 +867,53 @@ class MasterProtectionAndAngleLimitTests(unittest.TestCase):
         self.assertEqual(payload["pose_world"].shape, (2, 72))
 
 
+
+    def test_resolve_inputs_switches_target_person_sibling_pt(self):
+        from config_loader import resolve_inputs, absolutize_config_paths
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cam1_dir = root / "cam01"
+            cam2_dir = root / "cam02"
+            pose = root / "pose"
+            fused = root / "fused"
+            for d in (cam1_dir, cam2_dir, pose / "keypoints3d", pose / "metadata", fused / "keypoints3d"):
+                d.mkdir(parents=True)
+            a1_1 = cam1_dir / "hmr4d_results_aria01.pt"
+            a1_2 = cam1_dir / "hmr4d_results_aria02.pt"
+            a2_1 = cam2_dir / "hmr4d_results_aria01.pt"
+            a2_2 = cam2_dir / "hmr4d_results_aria02.pt"
+            for f in (a1_1, a1_2, a2_1, a2_2):
+                f.write_bytes(b"")
+            cfg = {
+                "inputs": {
+                    "cam1_pkl": "cam01/hmr4d_results_aria01.pt",
+                    "cam2_pkl": "cam02/hmr4d_results_aria01.pt",
+                    "camera1_video": "v1.mp4",
+                    "camera2_video": "v2.mp4",
+                    "ground_truth_dir": "gt",
+                    "target_person": "aria02",
+                },
+                "paths": {},
+            }
+            resolved_cfg = absolutize_config_paths(cfg, root)
+            inputs = resolve_inputs(resolved_cfg)
+            self.assertEqual(Path(inputs["cam1_pkl"]), a1_2)
+            self.assertEqual(Path(inputs["cam2_pkl"]), a2_2)
+
+            (pose / "keypoints3d" / "pose_data_1.json").write_text("{}", encoding="utf-8")
+            (fused / "keypoints3d" / "fused_data_1.json").write_text("{}", encoding="utf-8")
+            (pose / "metadata" / "pose_data_1.json").write_text(
+                json.dumps({"metadata": {"camera_sync": {"source_pkls": {"camera1": str(a1_1.resolve()), "camera2": str(a2_1.resolve())}}}}),
+                encoding="utf-8",
+            )
+            eval_cfg = {
+                "inputs": {"cam1_pkl": str(a1_1), "cam2_pkl": str(a2_1), "target_person": "aria02"},
+                "paths": {"pose_output_dir": str(pose), "fused_output_dir": str(fused)},
+                "learnable": {"enabled": False},
+                "learnable_extra": {"enabled": False},
+            }
+            with self.assertRaisesRegex(ValueError, "different inputs"):
+                _require_evaluation_inputs(eval_cfg)
 
     def test_smpl_keypoints_mapping_matches_ground_truth(self):
         # ponytail: verify 21 keypoint indices match canonical SMPL definition and GT mapping

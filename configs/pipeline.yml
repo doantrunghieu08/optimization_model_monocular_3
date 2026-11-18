@@ -38,6 +38,21 @@ paths:
 
 fusion:
   enabled: true
+  # Phương pháp dung hợp:
+  # - aniso : dung hợp MLE nghịch đảo hiệp phương sai theo hướng tia nhìn, căn chỉnh robust
+  #           từng frame, tự hiệu chỉnh nhiễu (không cần thông số camera). Stage 1 chỉ cung
+  #           cấp belief + che khuất; bỏ qua Stage 2 (Adam) và Savitzky-Golay.
+  # - legacy: pipeline cũ (Stage 1 thay thế/blend + Stage 2 GPU Adam).
+  method: aniso
+  aniso:
+    rotation_window: 0     # 0 = ước lượng R riêng từng frame; >0 gộp +-N frame
+    irls_iters: 5          # số vòng IRLS (Cauchy) khi ước lượng R
+    max_residual_m: 0.5    # bỏ residual lớn hơn ngưỡng (m) khi tự hiệu chỉnh nhiễu
+    smoothing_lambda: 0.5  # làm mượt gia tốc trên quỹ đạo tuyệt đối; 0 = tắt; "gcv" = tự chọn theo GCV
+                           # (tập thiết kế MMA: gcv cho PA -0.8 mm nhưng Accel +25 mm/f2 -> giữ 0.5)
+    noise_model: global    # global | per_joint (per_joint không cải thiện trên tập thiết kế MMA)
+    bone_lengths: mono     # mono | shared (shared làm MBLE kém đi trên tập thiết kế MMA)
+  enforce_bone_lengths: true # ponytail: khoa chieu dai xuong de giu MBLE on dinh theo ti le SMPL aria01
   # V3 remains experimental: DISABLED by default following observed
   # performance regression. Default restores the pre-V3 pipeline.
   # Zero-GT heuristic is NOT a calibrated estimator of MPJPE improvement.
@@ -68,19 +83,17 @@ fusion:
 
   # Cơ chế Uncertainty-Gating: ngăn chặn việc thay thế khớp nếu camera phụ không đáng tin cậy
   uncertainty_gating:
-    consensus_blend_strength: 0.50
+    consensus_blend_strength: 0.80 # Tang manh ty le nhan tu camera tot hon (giam do muot trung binh)
     enabled: true
     max_displacement: 0.35 # Khoảng cách tối đa (m) giữa tọa độ ánh xạ và mục tiêu
     min_confidence: 0.1    # Ngưỡng tin cậy tối thiểu của camera phụ
-    consensus_threshold: 0.08 # Ngưỡng (m) đồng thuận đa góc nhìn để blend các khớp cùng nhìn thấy rõ
+    consensus_threshold: 0.10 # Nguong dong thuan vat ly tieu chuan (10cm ~ ban kinh khop nguoi)
 
   # Chỉ cho camera phụ sửa joint đang nhìn rõ khi belief cao hơn đủ lớn.
   master_protection:
     enabled: true
-    confidence_margin: 0.15
+    confidence_margin: 0.0 # Aggressive: cho phep camera tot hon thay the ngay khi belief cao hon (giam do muot de toi uu PA)
     default_mode: aggressive
-    pair_modes:
-      "cam13->cam21": posed_fallback
 
   # Cơ chế giới hạn góc giải phẫu: kiểm soát góc uốn khớp bản lề (khuỷu tay, đầu gối)
   angle_limits:
@@ -89,8 +102,9 @@ fusion:
     max_angle_deg: 175.0  # Tránh gập ngược / hyperextension
 
   # Bộ lọc làm mượt quỹ đạo thời gian (giảm rung giật / giảm Accel Error)
+  # ponytail: DISABLED by default to unchoke MPJPE/PA-MPJPE gains
   smoothing:
-    enabled: true
+    enabled: false
     window_length: 5
     polyorder: 2
 
@@ -99,12 +113,12 @@ fusion:
     threshold: 0.05 # Ngưỡng sai khác để coi một joint là inlier.
     max_combos: 500 # Số tổ hợp mẫu tối đa khi không thể liệt kê toàn bộ triplet.
 
-  # Cấu hình tối ưu hóa nhóm điểm F bằng PyTorch GPU Autograd + Adam (thay thế SLSQP CPU)
+  # Cấu hình tối ưu hóa bằng PyTorch GPU Autograd + Adam (First-Principles Multi-View + Belief + Accel Smoothness)
   optimization:
     enabled: true
     regularization: true
-    regularization_lambda: 1.0 # Hệ số phạt của proximity regularization.
-    temporal_lambda: 2.0 # Hệ số phạt theo thời gian so với frame trước.
+    regularization_lambda: 1.0 # Hệ số phạt của proximity regularization theo belief.
+    temporal_lambda: 0.03 # Hệ số phạt 2nd-order acceleration smoothness
     max_iter: 35 # Số vòng lặp tối đa cho PyTorch GPU Adam.
 
 learnable:

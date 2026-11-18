@@ -381,6 +381,51 @@ def apply_rotation_mismatch_corrections(
     return cam1_fixed, cam2_fixed
 
 
+def _fuse_single_view(
+    tgt_fused: dict,
+    src_cam: dict,
+    tgt_cam: dict,
+    name: str,
+    t_src_to_tgt: tuple,
+    v_tgt: bool,
+    v_src: bool,
+    w_tgt: float,
+    w_src: float,
+    margin: float,
+    cons_thresh: float,
+    blend_strength: float,
+) -> None:
+    """Symmetric, principle-based joint fusion for any camera pair.
+    
+    1. Occluded rescue: If target is occluded and source is visible -> full rescue.
+    2. Visible consensus: If both visible and within spatial consensus -> Bayesian blend.
+    Both paths strictly enforced by anatomical angle and bone length validity.
+    """
+    p_tgt = as_xyz(tgt_cam[name])
+    p_src_trans = transform_joint_kinematic(name, src_cam, tgt_fused, t_src_to_tgt)
+    disp = float(np.linalg.norm(p_tgt - p_src_trans))
+
+    # Case 1: Occluded rescue (0.75m maximum plausible search radius)
+    if not v_tgt and v_src and disp <= 0.75:
+        cand = p_src_trans
+        test_pose = dict(tgt_fused)
+        test_pose[name] = cand
+        if check_joint_angles_valid(test_pose) and check_bone_lengths_valid(test_pose, tgt_cam):
+            tgt_fused[name] = cand
+        return
+
+    # Case 2: Jointly visible consensus blend
+    protect = margin > 0.0
+    if v_tgt and v_src and (not protect or w_src > w_tgt + margin) and disp <= cons_thresh:
+        tot = max(w_tgt + w_src, 1e-6)
+        transfer = blend_strength * (w_src / tot)
+        cand = (1.0 - transfer) * p_tgt + transfer * p_src_trans
+        test_pose = dict(tgt_fused)
+        test_pose[name] = cand
+        if check_joint_angles_valid(test_pose) and check_bone_lengths_valid(test_pose, tgt_cam):
+            tgt_fused[name] = cand
+
+
 def apply_multiview_geometric_fusion(
     cam1,
     cam2,
@@ -413,7 +458,6 @@ def apply_multiview_geometric_fusion(
             return cam1_fused, cam2_fused
 
     core_anchors = NON_REPLACEABLE_ANCHORS | {"pelvis", "neck"}
-    max_disp = 0.35 if max_displacement is None else float(max_displacement)
     cons_thresh = 0.08 if consensus_threshold is None else float(consensus_threshold)
     blend_strength = float(np.clip(consensus_blend_strength, 0.0, 1.0))
 
@@ -425,54 +469,16 @@ def apply_multiview_geometric_fusion(
         v2 = vis2.get(name, True) if vis2 else True
         if not (v1 or v2):
             continue
-        p1 = as_xyz(cam1[name])
-        p2 = as_xyz(cam2[name])
-        p2_to_1 = transform_joint_kinematic(name, cam2, cam1_fused, t21)
-        p1_to_2 = transform_joint_kinematic(name, cam1, cam2_fused, t12)
-
-        disp1 = float(np.linalg.norm(p1 - p2_to_1))
-        disp2 = float(np.linalg.norm(p2 - p1_to_2))
 
         w1 = float(h1.get(name, 0.5)) if (h1 and v1) else 0.0
         w2 = float(h2.get(name, 0.5)) if (h2 and v2) else 0.0
-        tot = max(w1 + w2, 1e-6)
 
         is_extremity = name in EXTREMITIES
-        effective_cons1 = min(cons_thresh, 0.08) if is_extremity else cons_thresh
-        effective_cons2 = min(cons_thresh, 0.08) if is_extremity else cons_thresh
+        effective_cons = min(cons_thresh, 0.08) if is_extremity else cons_thresh
 
-        limit1 = min(max_disp, DEFAULT_MASTER_MAX_DISPLACEMENT)
-        limit2 = 0.75 if not v2 else max_disp
-
-        protect_visible = master_margin > 0.0
-        jointly_visible_consensus = (
-            v1 and v2 and (not protect_visible or w2 > w1 + master_margin)
-            and disp1 <= effective_cons1
-        )
-        # ponytail: occluded joints don't need the full margin fence; 5% slave lead is enough
-        occluded_rescue = not v1 and v2 and w2 > w1 + 0.05 and disp1 <= limit1
-        if jointly_visible_consensus or occluded_rescue:
-            transfer = min(blend_strength * w2 / tot, DEFAULT_MASTER_BLEND)
-            cand = (1.0 - transfer) * p1 + transfer * p2_to_1
-            test_pose = dict(cam1_fused)
-            test_pose[name] = cand
-            if check_joint_angles_valid(test_pose) and check_bone_lengths_valid(test_pose, cam1):
-                cam1_fused[name] = cand
-
-        # prevent negative transfer on camera 2
-        if not v2 and v1 and disp2 <= limit2:
-            cand = p1_to_2
-            test_pose = dict(cam2_fused)
-            test_pose[name] = cand
-            if check_joint_angles_valid(test_pose) and check_bone_lengths_valid(test_pose, cam2):
-                cam2_fused[name] = cand
-        elif v1 and v2 and (not protect_visible or w1 > w2 + master_margin) and disp2 <= effective_cons2:
-            transfer = blend_strength * w1 / tot
-            cand = (1.0 - transfer) * p2 + transfer * p1_to_2
-            test_pose = dict(cam2_fused)
-            test_pose[name] = cand
-            if check_joint_angles_valid(test_pose) and check_bone_lengths_valid(test_pose, cam2):
-                cam2_fused[name] = cand
+        # Symmetric fusion: identical physical principle for both viewpoints
+        _fuse_single_view(cam1_fused, cam2, cam1, name, t21, v1, v2, w1, w2, master_margin, effective_cons, blend_strength)
+        _fuse_single_view(cam2_fused, cam1, cam2, name, t12, v2, v1, w2, w1, master_margin, effective_cons, blend_strength)
     return cam1_fused, cam2_fused
 
 

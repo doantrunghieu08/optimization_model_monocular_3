@@ -155,16 +155,47 @@ def _compute_mble(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], bon
     return (float(np.mean(errors)) if errors else float("nan")), details
 
 
+def _estimate_sequence_rotation(
+    pred_frames: list[dict],
+    truth_frames: list[dict],
+    keys: list[str],
+) -> np.ndarray:
+    """Single camera->world rotation for a static camera, fitted over the whole sequence.
+
+    Kabsch on root-centred joints pooled across all frames. Acceleration is invariant to a
+    constant translation, so only this rotation is needed to compare camera-frame predictions
+    with world-frame ground truth.
+    """
+    P, T = [], []
+    for pred, truth in zip(pred_frames, truth_frames):
+        pred_root = _resolve_root_joint(pred)
+        truth_root = _resolve_root_joint(truth)
+        for k in keys:
+            P.append(np.asarray(pred[k], dtype=float) - pred_root)
+            T.append(np.asarray(truth[k], dtype=float) - truth_root)
+    if len(P) < 3:
+        return np.eye(3)
+    P, T = np.asarray(P), np.asarray(T)
+    U, _, Vt = np.linalg.svd(T.T @ P)
+    corr = np.eye(3)
+    corr[-1, -1] = np.sign(np.linalg.det(U @ Vt))
+    return U @ corr @ Vt
+
+
 def _compute_acceleration_error(
     pred_triplet: tuple[dict, dict, dict],
     truth_triplet: tuple[dict, dict, dict],
     keys: list[str],
+    rotation: Optional[np.ndarray] = None,
 ) -> tuple[float, dict]:
+    """Per-joint acceleration error; `rotation` maps prediction frame into the truth frame."""
     pred_prev, pred_current, pred_next = pred_triplet
     truth_prev, truth_current, truth_next = truth_triplet
     details = {}
     for key in keys:
         pred_accel = pred_next[key] - 2.0 * pred_current[key] + pred_prev[key]
+        if rotation is not None:
+            pred_accel = rotation @ pred_accel
         truth_accel = truth_next[key] - 2.0 * truth_current[key] + truth_prev[key]
         details[key] = {
             "pred_accel_mm_frame2": float(np.linalg.norm(pred_accel) * 1000.0),
@@ -638,6 +669,17 @@ def run_evaluation(config: dict) -> None:
     accel_results = {cam: {} for cam in CAMERAS}
     if accel_enabled:
         for cam in CAMERAS:
+            # Predictions are in camera coords, GT in world coords: fit one rotation per
+            # (camera, module) sequence so accelerations are compared in the same frame.
+            seq_rotation = {}
+            truth_seq = [sequences[cam][f]["truth"] for f in evaluated_frames]
+            for mod in module_names:
+                pred_seq = [sequences[cam][f][mod] for f in evaluated_frames]
+                common = [
+                    key for key in joint_names
+                    if all(key in j for j in pred_seq) and all(key in j for j in truth_seq)
+                ]
+                seq_rotation[mod] = _estimate_sequence_rotation(pred_seq, truth_seq, common)
             for previous_frame, frame, next_frame in zip(evaluated_frames, evaluated_frames[1:], evaluated_frames[2:]):
                 if source_frame_ids[cam][frame] - source_frame_ids[cam][previous_frame] != 1:
                     continue
@@ -651,7 +693,9 @@ def run_evaluation(config: dict) -> None:
                         key for key in joint_names
                         if all(key in joints for joints in (*pred_triplet, *truth_triplet))
                     ]
-                    mean_accel, joint_details = _compute_acceleration_error(pred_triplet, truth_triplet, keys)
+                    mean_accel, joint_details = _compute_acceleration_error(
+                        pred_triplet, truth_triplet, keys, rotation=seq_rotation[mod]
+                    )
                     accel_results[cam].setdefault(frame, {})[mod] = {
                         "mean_mm_frame2": mean_accel,
                         "details": joint_details,

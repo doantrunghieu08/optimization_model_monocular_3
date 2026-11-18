@@ -1,217 +1,150 @@
-# Báo Cáo Thay Đổi Mô Hình & Phân Tích Cơ Chế Dung Hợp Đa Góc Nhìn (Model Changes & Deep Architectural Analysis)
+# Nhật Ký Thay Đổi Mô Hình (Model Changes)
 
-Tài liệu này tổng hợp chi tiết và hệ thống hóa toàn bộ các cải tiến thuật toán, cấu trúc mô hình, công thức toán học và cơ chế kiểm soát chất lượng không phụ thuộc nhãn (Zero-GT) trong pipeline tối ưu hóa tư thế người 3D đa góc nhìn (`optimization_model_monocular_3`).
-
----
-
-## 1. Phát Hiện Che Khuất Không Gian 3D (3D Ray-Casting Occlusion Detection)
-
-* **Vị trí file:** [`fusion_pipeline/detector.py`](file:///d:/optimization_model_monocular_3/fusion_pipeline/detector.py)
-
-### Bản cũ (2D Image-Plane Projection)
-Chiếu các đỉnh lưới thân (torso mesh vertices) lên mặt phẳng ảnh 2D, dựng bao lồi 2D và so sánh chiều sâu $Z$ với các láng giềng $k$-NN:
-$$u_k = f_x \frac{X_k}{Z_k} + c_x, \quad v_k = f_y \frac{Y_k}{Z_k} + c_y$$
-$$\text{Occluded}(P_k) \iff (u_k, v_k) \in \text{Hull}_{2D}(V_{\text{torso}}^{2D}) \;\land\; Z_k > \min_{i \in \mathcal{N}_k}(Z_{\text{torso}, i}) + \tau$$
-
-* **Nhược điểm:** Phụ thuộc vào méo hình học khi chiếu 2D, góc xoay camera và sai số xấp xỉ của $k$-NN 2D.
-
-### Bản mới (3D Ray-Casting Hình Học Thuần Túy)
-Bắn tia 3D thực từ quang tâm camera $(0, 0, 0)$ hướng tới khớp mục tiêu $P_k$ trong không gian camera:
-$$\mathbf{r}(t) = t \cdot \frac{P_k}{\|P_k\|_2}, \quad t \ge 0$$
-Tìm khoảng cách giao điểm gần nhất $t_{\text{hit}}$ của tia với bao lồi 3D của thân người $\mathcal{M}_{\text{torso}} = \text{ConvexHull}(V_{\text{torso}})$:
-$$t_{\text{hit}} = \min \{ t > 0 \mid \mathbf{r}(t) \cap \mathcal{M}_{\text{torso}} \ne \emptyset \}$$
-$$\text{Occluded}(P_k) \iff t_{\text{hit}} < \|P_k\|_2 - \tau \quad (\tau = 0.05\,\text{m})$$
-
-* **Ưu điểm:** Tính toán hình học 3D chuẩn xác, không phụ thuộc vào ma trận chiếu camera 2D, giải quyết đúng thể tích che khuất thực tế.
+Tài liệu ghi lại quá trình phát triển của `optimization_model_monocular_3`, từ pipeline hai tầng `legacy` đến phương pháp mặc định hiện tại: **dung hợp anisotropic MLE không cần thông số camera** (`fusion.method: aniso`). Mọi con số đều được đo bằng `evaluation_pipeline` chính thức. Kết quả được báo cáo theo nguyên tắc **tách tập thiết kế và tập held-out**.
 
 ---
 
-## 2. Loại Bỏ Tối Ưu Tái Chiếu 2D (Purging 2D Reprojection Optimization)
+## Hiện Trạng (Tóm Tắt)
 
-* **Vị trí file:** Đã loại bỏ hoàn toàn `fusion_pipeline/two_view_smpl.py` và cờ cấu hình `fusion.wham_smpl_opt`.
-
-### Vấn đề của phương pháp cũ
-Trước đây, hệ thống cố gắng tinh chỉnh trực tiếp các tham số mô hình SMPL $(\boldsymbol{\theta}, \boldsymbol{\beta}, \mathbf{t})$ bằng hàm mất mát tái chiếu 2D đa góc nhìn (2D Keypoint Reprojection Loss):
-$$\mathcal{L}_{\text{2D}} = \sum_{c \in \{1, 2\}} \sum_{j} \left\| \pi_c\left(J_{3D}(\boldsymbol{\theta}, \boldsymbol{\beta}, \mathbf{t}_c)_j\right) - \mathbf{x}_{2D, c, j} \right\|_2^2$$
-
-* **Nhược điểm nghiêm trọng:**
-  * Do camera hoang dã (in-the-wild cameras) không có đồng bộ thời gian phần cứng hoàn hảo và ma trận ngoại vi góc rộng có sai số, hàm mất mát 2D gây hiện tượng **Scale Drift** (trôi tỉ lệ hình học) và **Depth Collapse** (sụp đổ độ sâu).
-  * Thực nghiệm đo lường cho thấy bước tối ưu này làm sai số MPJPE tăng vọt và biến dạng xương nghiêm trọng.
-* **Quyết định:** Loại bỏ hoàn toàn module tối ưu 2D SMPL khỏi pipeline, chuyển toàn bộ trọng tâm sang dung hợp không gian 3D trực tiếp (Direct 3D Pose Fusion).
+| Thành phần | Trạng thái |
+| :--- | :--- |
+| Dung hợp mặc định | `fusion.method: aniso` ([fusion_pipeline/aniso.py](fusion_pipeline/aniso.py)) |
+| Stage 1 (ray-casting + belief) | Vẫn chạy để cung cấp trọng số belief và nhãn che khuất cho `aniso` |
+| Stage 2 (GPU Adam), Savitzky-Golay | Chỉ dùng khi `method: legacy` |
+| `selective_joint_fusion` (V3), `learnable` (NetBody25) | Tắt (thử nghiệm). Bật V3 thì code tự rơi về nhánh `legacy` |
+| Khóa chiều dài xương | Bật (`enforce_bone_lengths: true`) cho cả hai nhánh |
+| Kiểm thử | `python -m pytest tests -q` → **67 passed** |
 
 ---
 
-## 3. Dung Hợp Xoay Xương Động Học & Thay Thế Theo Độ Tin Cậy (Kinematic Bone Rotation & Belief Replacement)
+## Phần 1: Dung Hợp Anisotropic Không Cần Thông Số Camera (`aniso`, mặc định)
 
-* **Vị trí file:** [`fusion_pipeline/correction.py`](file:///d:/optimization_model_monocular_3/fusion_pipeline/correction.py), [`fusion_pipeline/detector.py`](file:///d:/optimization_model_monocular_3/fusion_pipeline/detector.py)
+### 1.1. Tích hợp
 
-### Bản cũ (Biến Đổi Cương Bức Toàn Thân Toàn Cục)
-Dùng một phép biến đổi đẳng cự toàn cục duy nhất qua RANSAC-Umeyama $(s=1.0, \mathbf{R}, \mathbf{t})$ áp dụng cho tất cả các khớp:
-$$P_{1,\text{corr}}(n) = T_{21}(P_2(n)) = \mathbf{R}_{21} P_2(n) + \mathbf{t}_{21}$$
+* **Mã nguồn**: [fusion_pipeline/aniso.py](fusion_pipeline/aniso.py). Nhánh `fusion_method == "aniso"` nằm trong [run_fusion()](fusion_pipeline/executor.py#L871); cấu hình ở `fusion.method` và `fusion.aniso` trong [configs/pipeline.yml](configs/pipeline.yml); test ở [tests/test_aniso_fusion.py](tests/test_aniso_fusion.py) (12 test).
+* Stage 1 chạy như cũ. Sau đó [run_aniso_fusion()](fusion_pipeline/aniso.py#L266) **tính lại toàn bộ keypoint từ pose mono gốc**, dùng `joint_confidence` × hệ số che khuất (`vis1`, `vis2`) trong metadata Stage 1 làm belief. Thông tin chẩn đoán (nhiễu ước lượng, góc nhìn trung vị, λ) được ghi vào `fused_results/aniso_fusion_info.json`.
 
-* **Nhược điểm:** Hiệu ứng "đòn bẩy" (lever-arm effect): nếu gốc xương (pelvis/torso) lệch nhẹ dù chỉ $2^\circ$, đầu chi (cổ tay, cổ chân) ở xa tâm sẽ bị văng ra xa hàng chục centimet, phá hỏng tư thế.
+### 1.2. Cơ chế (ước lượng hợp lý cực đại, nghiệm dạng đóng)
 
-### Bản mới (Hierarchical Kinematic Bone Rotation)
-Chỉ chuyển đổi vector hướng xương tương đối từ khớp cha $p$ sang khớp con $c$ theo cây động học tự nhiên:
-$$\hat{P}_{\text{slave}\to\text{master}}(c) = P_{\text{master}}(p) + \mathbf{R}_{21} \cdot \left(P_{\text{slave}}(c) - P_{\text{slave}}(p)\right)$$
+1. Đưa khớp của mỗi camera về tọa độ tương đối root (trung điểm hai hông).
+2. Ước lượng phép xoay camera2 → camera1 **riêng cho từng frame** bằng Kabsch có trọng số $\min(w_1, w_2)$ trên 21 khớp, kèm IRLS Cauchy 5 vòng. Không dùng được một phép xoay toàn cục, vì hướng toàn thân của GVHMR dao động 7–11° (trung vị) giữa các frame.
+3. Hiệp phương sai kéo dài theo tia nhìn:
+   $$\Sigma_i = \frac{a_i^2(I - dd^\top) + b_i^2\, dd^\top}{w_i}, \qquad d = P/\|P\|$$
+   Không cần intrinsics, vì khớp đã nằm trong hệ tọa độ camera. Belief $w$ được kẹp vào $[0.05, 1]$.
+4. Tự hiệu chỉnh nhiễu ngang $a_i$ và nhiễu sâu $b_i$ của từng camera bằng MLE trên phần lệch giữa hai view. Residual lớn hơn `max_residual_m = 0.5 m` bị loại. Bước này không dùng GT và không chỉnh tay.
+5. Dung hợp: $X^* = (\Lambda_1 + \Lambda_2')^{-1}(\Lambda_1 X_1 + \Lambda_2' R_t X_2)$. Kết quả được trả về hệ tọa độ của từng camera rồi cộng lại root của camera đó.
+6. Làm mượt gia tốc bậc 2 trên quỹ đạo tuyệt đối ($\lambda = 0.5$, giải hệ banded), sau đó khóa chiều dài xương theo SMPL mono như nhánh cũ.
 
-* **Khóa chiều dài xương cơ sở:** Giữ nguyên độ dài xương nguyên thủy của Master $\ell_{\text{master}} = \|P_{\text{master}}(c) - P_{\text{master}}(p)\|_2$:
-$$P_{\text{corrected}}(c) = P_{\text{master}}(p) + \ell_{\text{master}} \cdot \frac{\hat{P}_{\text{slave}\to\text{master}}(c) - P_{\text{master}}(p)}{\|\hat{P}_{\text{slave}\to\text{master}}(c) - P_{\text{master}}(p)\|_2}$$
-* **Ưu điểm:** Loại bỏ hoàn toàn hiện tượng lệch đòn bẩy, bảo toàn chiều dài giải phẫu người 100%.
+### 1.3. Kết quả trên tập thiết kế
 
----
+Tập thiết kế: MMA, 741 frame, GVHMR, 4 kịch bản `cam01+02` / `cam19+20` × `aria01` / `aria02`. Số liệu là trung bình 8 ca (kịch bản × camera); đơn vị mm và mm/frame².
 
-## 4. Bảo Vệ Master Bằng Ngưỡng Tin Cậy Bất Đối Xứng (Asymmetric Confidence Margin)
+| Phương pháp | PA-MPJPE | PA (che) | MPJPE | MPJPE (che) | MBLE | Accel |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Mono | 77.93 | 98.31 | 103.52 | 131.78 | 37.08 | 97.64 |
+| `legacy` | 73.71 | 90.73 | 99.89 | 120.39 | 37.08 | 92.87 |
+| **`aniso`** | **68.27** | **73.20** | **94.71** | **103.08** | 37.08 | **45.13** |
 
-* **Vị trí file:** [`fusion_pipeline/correction.py`](file:///d:/optimization_model_monocular_3/fusion_pipeline/correction.py), [`fusion_pipeline/executor.py`](file:///d:/optimization_model_monocular_3/fusion_pipeline/executor.py)
+* `aniso` tốt hơn `legacy` về PA-MPJPE, MPJPE và Accel ở **8/8** ca. MBLE không đổi vì xương bị khóa.
+* **Ablation**: phần lớn mức cải thiện đến từ căn chỉnh robust từng frame kết hợp trọng số nghịch đảo phương sai. Tách riêng hướng độ sâu đóng góp khoảng 1.5 mm PA. Belief đóng góp khoảng 1.4 mm PA (khoảng 3.4 mm ở khớp bị che). Áp cùng bộ làm mượt cho `legacy` chỉ giảm Accel, không giảm PA.
 
-### Cơ chế Margin Bất Đối Xứng
-Để ngăn Slave thay đổi Master một cách bừa bãi khi cả hai cùng nhìn thấy khớp:
-$$P_1(n) \gets P_{2\to 1}(n) \iff H_2(n) > H_1(n) + \Delta_{\text{margin}} \quad (\Delta_{\text{margin}} = 0.15)$$
-* Khi khớp bị che khuất ở Master ($\text{vis}_1 = \text{False}$), Master không có dữ liệu thực, điều kiện được nới lỏng để Slave giải cứu:
-$$\text{Cho phép cứu} \iff \text{vis}_2 = \text{True} \;\land\; H_2(n) > H_1(n)$$
+### 1.4. Các tùy chọn đã thử trên tập thiết kế nhưng không được chấp nhận
 
----
+Script: `scratch/design_mma.py`. Các tùy chọn vẫn nằm trong code (mặc định tắt) để tái lập ablation.
 
-## 5. Khóa Chiều Dài Xương Cương Bức Sau Dung Hợp (Rigid Bone Length Locking)
-
-* **Vị trí file:** [`fusion_pipeline/executor.py`](file:///d:/optimization_model_monocular_3/fusion_pipeline/executor.py)
-
-Sau tất cả các bước nội suy và làm mịn thời gian, thực thi chiếu động học xuôi dọc theo 15 chuỗi xương chính:
-$$P(c) \gets P(p) + \ell_{\text{ref}} \cdot \frac{P(c) - P(p)}{\|P(c) - P(p)\|_2}$$
-* **Kết quả:** Sai số độ dài xương **MBLE cải thiện dương 100%** trên toàn bộ các cặp camera, không còn bất kỳ hiện tượng co giãn xương vô lý nào.
-
----
-
-## 6. Làm Mịn Quỹ Đạo Thời Gian (Savitzky-Golay Polynomial Trajectory Smoothing)
-
-* **Vị trí file:** [`fusion_pipeline/executor.py`](file:///d:/optimization_model_monocular_3/fusion_pipeline/executor.py)
-
-Lọc đa thức cục bộ (cửa sổ $W=5$, bậc đa thức $d=2$) trên toàn bộ chuỗi tọa độ 3D theo trục thời gian $T$:
-$$\hat{P}_t = \sum_{i=-\lfloor W/2 \rfloor}^{\lfloor W/2 \rfloor} c_i P_{t+i}$$
-* **Kết quả:** Triệt tiêu rung động tần số cao, giảm sai số gia tốc (Acceleration Error) từ **30% đến 60%** trên toàn bộ benchmark.
+* `noise_model: per_joint` (tách nhiễu theo từng camera/khớp dựa trên độ rung): không cải thiện. Sai số của GVHMR chủ yếu ở tần số thấp; tín hiệu rung chỉ chiếm khoảng 1% tổng sai số, nên với hai view không phân định được sai số thuộc camera nào.
+* `bone_lengths: shared` (một chiều dài chung, không đổi theo thời gian cho mỗi xương): MBLE tăng từ 37.08 lên 37.33.
+* `smoothing_lambda: gcv`: PA giảm 0.8 mm, nhưng Accel tăng từ 45 lên 70 mm/f². GCV chọn λ quá nhỏ vì nhiễu tương quan theo thời gian, nên giữ λ = 0.5.
 
 ---
 
-## 7. Phát Hiện Bug Cốt Lõi: Lỗi Parse Alpha Âm (`${ALPHA:-0.001}` $\to$ `-0.001`)
+## Phần 2: Kiểm Chứng Tổng Quát Hóa (Held-Out, Cấu Hình Đóng Băng)
 
-* **Vị trí file:** [`fusion_pipeline/detector.py`](file:///d:/optimization_model_monocular_3/fusion_pipeline/detector.py), [`configs/pipeline.yml`](file:///d:/optimization_model_monocular_3/configs/pipeline.yml)
+Quy trình: đóng băng `configs/pipeline.yml`, chạy `scratch/generalization_runner.py <suite>`, rồi tổng hợp bằng `scratch/generalization_summary.py`. Các tập dưới đây không được dùng trong lúc thiết kế.
 
-### Hiện tượng & Bản chất lỗi
-Trong cấu hình `configs/pipeline.yml`, tham số khoảng cách belief được định nghĩa dưới dạng cú pháp môi trường:
-```yaml
-fusion:
-  belief:
-    alpha: ${ALPHA:-0.001}
+| Tập held-out | Số ca | PA-MPJPE legacy → aniso | MPJPE legacy → aniso | Accel legacy → aniso | aniso thắng PA |
+| :--- | ---: | :---: | :---: | :---: | :---: |
+| MMA, 8 cặp camera chưa dùng (`cam03`–`cam18`) × 2 người, GVHMR | 32 | 71.90 → **68.53** | 98.94 → **95.63** | 97.45 → **46.97** | **32/32** |
+| Harmony4D Hugging, 3 cặp × 2 người, WHAM, chuỗi ngắn | 12 | 49.60 → **47.72** | 64.45 → **59.51** | 24.97 → **11.59** | 5/12 |
+| MPI-INF-3DHP (GT đồng bộ lại bằng DTW, seg 1/6/11), WHAM | 36 | 83.23 → **82.46** | 129.09 → 129.67 | 50.15 → **35.23** | 27/36 |
+
+### Nhận xét
+
+* **Có lạc quan do thiết kế**: trên MMA held-out, PA giảm 3.4 mm, ít hơn mức 5.4 mm trên tập thiết kế.
+* **Độ nhạy tham số**: trên MMA held-out, mọi biến thể đều cho PA 67.6–69.7 mm và đều tốt hơn `legacy` (71.9). Các biến thể gồm $\lambda \in [0, 2]$, IRLS 1–10 vòng, ngưỡng residual 0.3–1.0 m, cửa sổ xoay ±2 và covariance đẳng hướng. Như vậy kết quả không phụ thuộc vào giá trị tinh chỉnh; $\lambda$ chỉ đánh đổi đơn điệu giữa PA và Accel.
+* **Hugging không ổn định theo từng ca**: trung bình tốt hơn nhưng chỉ thắng 5/12 ca về PA. Nguyên nhân mang tính cấu trúc: `aniso` xuất **một bộ xương đồng thuận cho cả hai camera**, nên khi một view tốt hơn hẳn, kết quả kéo view tốt xuống. Với hai view, residual chéo chỉ cho biết tổng sai số, không cho biết camera nào sai. Thành phần anisotropic cũng không tổng quát hóa ổn định: trên Hugging, bản đẳng hướng đạt 46.83, tốt hơn `aniso` (47.72).
+* **MPI**:
+  * Segment WHAM trong `input/MPI` **không cùng frame** với file GT cùng tên. Ví dụ seg_1 có 482 frame WHAM nhưng 2036 frame GT. Đánh giá ngây thơ cho PA khoảng 189 mm, kể cả với mono.
+  * Đánh giá được sửa bằng DTW 2D, lấy ánh xạ từ các camera ngoài cặp đang xét (`scratch/mpi_sync_build.py`, `scratch/mpi_sync_gt.py`). Ánh xạ chỉ tin cậy ở seg 1/6/11.
+  * Trần cải thiện thấp: hai view WHAM chỉ lệch nhau khoảng 28 mm PA, và trung bình oracle của hai view chỉ giảm khoảng 2 mm. Phần lớn sai số là phần chung của cả hai view: lệch quy ước khớp hông khoảng 70–90 mm, sai số đồng bộ GT còn sót và prior của WHAM.
+
+### Thí nghiệm chiều cao oracle (`scratch/height_oracle.py`)
+
+Thí nghiệm này co giãn output sao cho chiều cao dự đoán khớp chiều cao GT, rồi chấm lại bằng `run_evaluation`.
+
+* PA-MPJPE không đổi, vì Procrustes đã loại bỏ tỷ lệ.
+* MMA (GVHMR): GVHMR đánh giá thấp chiều cao khoảng 5%. Với chiều cao thật, MPJPE giảm từ 95.6 xuống 94.8 và MBLE từ 36.4 xuống 27.0. Dùng chiều cao trung bình quần thể cho kết quả tương đương (MPJPE 94.3, MBLE 27.7), tức đây là một sai lệch tỷ lệ toàn cục chứ không phải thông tin riêng của từng người.
+* Hugging và MPI (WHAM): tỷ lệ đã nằm trong khoảng ±2%, mức cải thiện ≤ 0.5 mm.
+* Sai số MBLE chủ yếu nằm ở **tỷ lệ từng xương**: đùi và cánh tay trên ngắn hơn GT 4–29%, cẳng chân và cẳng tay dài hơn. Đây là lệch quy ước khớp so với GT, một hệ số chiều cao duy nhất không sửa được. **Kết luận**: không đưa chiều cao vào pipeline.
+
+### Hạn chế còn lại
+
+* $\lambda$ làm mượt là giá trị chọn tay.
+* Với hai view, tỷ lệ chia sai số ngang giữa hai camera chỉ xác định được yếu. Sai số độ sâu và tổng sai số ngang thì xác định tốt.
+* `brute_force_runner.py` chọn cặp camera tốt nhất dựa trên GT, tức là chọn oracle. Không dùng con số đó làm kết quả mô hình.
+
+---
+
+## Phần 3: Thay Đổi Đánh Giá & Nhập Liệu
+
+1. **Accel trong cùng hệ tọa độ** ([_estimate_sequence_rotation()](evaluation_pipeline/executor.py#L158)): dự đoán nằm trong hệ camera, còn GT nằm trong hệ thế giới. Với mỗi chuỗi (camera, module), hệ thống fit một phép xoay Kabsch trên các khớp đã trừ root, gộp qua mọi frame, rồi xoay gia tốc dự đoán trước khi so sánh. Phép tịnh tiến hằng không ảnh hưởng đến gia tốc. **Các số Accel đo trước thay đổi này không so sánh được** với bảng ở Phần 1 và 2.
+2. **Tự chọn file theo người** ([resolve_target_pt_path()](compat.py#L139)): với input GVHMR `.pt`, `inputs.target_person` (`aria01`, `aria2`, `aria_1`, …) được chuẩn hóa và tự đổi sang file anh em tương ứng, ví dụ `hmr4d_results_aria01.pt` → `..._aria02.pt`. Việc này được thực hiện ngay khi nạp config ([config_loader.py](config_loader.py)), nên log, kiểm tra provenance khi `runtime.stage: evaluation` ([pipeline.py](pipeline.py)) và bước nạp dữ liệu đều dùng cùng một đường dẫn.
+3. [main.py](main.py) gọi `compat.patch_numpy_and_inspect()` trước mọi import khác, để `chumpy` và SMPL chạy được với NumPy/Python mới.
+4. `learnable_pipeline` đọc offset đồng bộ từ metadata `pose_data_1.json` (dự phòng bằng hàm cũ), tránh lệch frame với Stage 1.
+5. `brute_force_runner.py`: bỏ hậu tố `EVALUATION_PROTOCOL` cũ (`no_gt_v10_master_only_postopt`).
+
+---
+
+## Phần 4: Lịch Sử Pipeline `legacy` (Vẫn Dùng Được Qua `method: legacy`)
+
+### 4.1. Nền tảng Stage 1
+
+* **Che khuất bằng ray-casting 3D** ([compute_visibility_from_mesh_vertices()](fusion_pipeline/detector.py#L121)): bắn tia từ quang tâm tới các khớp chi và giao với `ConvexHull` của lưới thân SMPL. Khớp bị coi là che khuất khi $t_{hit} < \|P\| - \tau$ ($\tau = 0.05$ m) hoặc khi confidence 2D < 0.25. Phần này vẫn là đầu vào của `aniso`.
+* **Belief** ([compute_harmonic_precision()](fusion_pipeline/detector.py#L183)): $P = C / (1 + \alpha L^2)$ với $C = 1$ (nhìn rõ) hoặc $0.1$ (bị che), $\alpha = 0.001$, harmonic mean với các khớp lân cận ($\beta = 0.8$), trộn thêm confidence 2D.
+* **Sửa lỗi parse biến môi trường âm**: regex cũ đọc `${ALPHA:-0.001}` thành $\alpha = -0.001$, khiến camera xa được tin hơn camera gần. Đã sửa regex và kẹp $\alpha \ge 0$.
+* **Xoay xương động học** thay cho biến đổi cứng toàn thân: $\hat P(c) = P_{tgt}(p) + R\,(P_{src}(c) - P_{src}(p))$, kết hợp RANSAC-Umeyama đẳng cự ($s = 1$) trên các điểm mốc thân.
+* **Đối xứng hóa** ([_fuse_single_view()](fusion_pipeline/correction.py#L384)): hai camera dùng chung một quy tắc. *Occluded rescue* áp dụng khi khớp đích bị che và độ lệch ≤ 0.75 m; *visible consensus* trộn theo tỷ trọng belief. Mọi ứng viên phải qua kiểm tra góc bản lề (30°–175°) và độ lệch chiều dài xương ±20%.
+* Đã loại bỏ hoàn toàn tối ưu tái chiếu 2D SMPL (`two_view_smpl.py`), vì nó gây trôi tỷ lệ và sập chiều sâu trên camera không đồng bộ phần cứng.
+
+### 4.2. Stage 2: tối ưu chuỗi trên GPU
+
+* [optimize_sequence_gpu()](fusion_pipeline/optimization.py#L205): Adam (`lr = 0.01`, 35 vòng) tối ưu phần dư $\Delta_{1,2} \in \mathbb{R}^{T \times 21 \times 3}$ với hàm mục tiêu:
+  $$\mathcal{L} = \lambda_{reg}\,\mathcal{L}_{prox}(c) + 0.03\,\mathcal{L}_{accel} + 5.0\,\mathcal{L}_{bone} + 0.5\,\mathcal{L}_{mv}$$
+  Belief liên tục $c \in [0.05, 1]$ thay cho khóa cứng `mask = 0` của các phiên bản trước.
+* Tắt Savitzky-Golay, vì bộ lọc gây trễ pha và làm mất phần cải thiện PA; nhiệm vụ khử rung chuyển sang thành phần gia tốc bậc 2. Sau tối ưu, [_enforce_bone_lengths()](fusion_pipeline/executor.py#L624) khóa chiều dài xương trên cả hai camera.
+
+### 4.3. Nhánh đã tắt
+
+* **NetBody25** (`learnable.enabled: false`): trên MMA Cam 1, PA-MPJPE tăng từ 75.85 lên 311.69 mm do lệch chuẩn hóa tọa độ Body25 khi đổi tập dữ liệu.
+* **Selective joint fusion V3** (`selective_joint_fusion.enabled: false`): heuristic Zero-GT này không phải ước lượng hiệu chuẩn của mức cải thiện MPJPE và đã gây hồi quy, nên chỉ dùng cho A/B test trên tập held-out.
+
+### 4.4. Ghi chú về các bảng benchmark cũ
+
+Các bảng `legacy` trong phiên bản tài liệu trước được đo **trước khi sửa Accel** (Phần 3.1) và theo một cấu hình đánh giá khác: ví dụ MBLE khi đó là 18.40 mm, còn hiện nay là 37.08 mm. Vì vậy chúng không được so sánh trực tiếp với các bảng ở Phần 1 và 2. Muốn so sánh `legacy` với `aniso`, hãy dùng các số ở Phần 1 và 2, nơi hai phương pháp được chạy trên cùng output Stage 1 và chấm bằng cùng một `run_evaluation`.
+
+---
+
+## Phần 5: Kiểm Thử
+
+```bash
+python -m pytest tests -q
 ```
-Khi nạp file bằng hàm `yaml.safe_load()`, giá trị này được giữ nguyên thành chuỗi ký tự `"${ALPHA:-0.001}"`. Trong module `detector.py`, hàm bóc tách chuỗi trước đây sử dụng biểu thức chính quy:
-```python
-m = re.search(r"[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?", str(alpha))
-alpha = float(m.group(0)) if m else 0.0
-```
-Biểu thức regex này đã vô tình bắt ký tự gạch ngang `-` trong toán tử gán mặc định `:-` của bash, biến giá trị $\alpha$ thành **số âm**: $\alpha = -0.001$!
 
-### Hậu quả tai hại
-Công thức tính độ chuẩn xác hình học khoảng cách:
-$$P(n) = \frac{C}{1.0 + \alpha \cdot L^2}$$
-Khi $\alpha = -0.001$:
-* Với camera gần người (`cam04`, $L \approx 4.5\text{m}$, $L^2 \approx 20.25$): $1 + (-0.001 \times 20.25) = 0.9798 \implies P \approx 1.02$.
-* Với camera ở xa người (`cam20`, $L \approx 7.38\text{m}$, $L^2 \approx 54.46$): $1 + (-0.001 \times 54.46) = 0.9455 \implies P \approx 1.057$!
-* **Hậu quả:** Camera ở càng xa, ảnh càng mờ, nhiễu càng lớn thì lại được gán điểm tin cậy **CAO HƠN** camera ở gần! Điều này khiến hệ thống tin tưởng tuyệt đối vào `cam20` và `cam17`, ghi đè làm nát tư thế chuẩn của Master `cam19`, `cam04`, `cam05`.
+Kết quả hiện tại: **67 passed**, gồm:
 
-### Giải pháp khắc phục
-1. Tinh chỉnh regex trong [`fusion_pipeline/detector.py`](file:///d:/optimization_model_monocular_3/fusion_pipeline/detector.py) để nhận diện đúng toán tử `:-` và ép chặn cận dưới không âm:
-   ```python
-   m = re.search(r":-?([0-9]*\.?[0-9]+(?:[eE][-+]?\d+)?)", str(alpha))
-   alpha = max(0.0, float(m.group(1)) if m else 0.0)
-   ```
-2. Cố định giá trị mặc định rõ ràng trong [`configs/pipeline.yml`](file:///d:/optimization_model_monocular_3/configs/pipeline.yml):
-   ```yaml
-   fusion:
-     belief:
-       alpha: 0.001
-       beta: 0.8
-   ```
-* **Kết quả ngay lập tức:**
-  * `cam19 -> cam17`: Từ **-5.30%** (35.38 mm) hồi phục ngoạn mục lên **-0.15%** (33.65 mm vs baseline 33.60 mm, cứu 1.73 mm!).
-  * `cam19 -> cam02`: Từ **-3.57%** (34.80 mm) hồi phục ngoạn mục lên **-0.24%** (33.68 mm vs baseline 33.60 mm, cứu 1.12 mm!).
-
----
-
-## 8. Phân Tích Chuyên Sâu: Tại Sao Có Cặp Cải Thiện Ít (0.x% - 1.x%) và Cặp Tăng Vọt (10% - 20%)?
-
-### 1. Hiện tượng "Kịch Trần Sai Số" (Ceiling Effect)
-Xem xét sai số baseline thực tế của các camera trong Harmony4D:
-* **Nhóm Master xuất sắc (`cam19`, `cam04`, `cam05`)**:
-  * `cam19`: baseline PA-MPJPE = **32.42 mm** (thấp nhất toàn bộ hệ thống).
-  * `cam05`: baseline PA-MPJPE = **39.78 mm**.
-  * `cam04`: baseline PA-MPJPE = **40.10 mm**.
-* **Nguyên nhân cải thiện 0.x% - 1.x%**:
-  Mức sai số 30 - 35 mm trong ước lượng tư thế người 3D (WHAM/SMPL) trên video thực tế đã tiệm cận mức sai số vật lý tối thiểu (nhiễu quần áo rộng, sai số chuyển động khớp thực tế, dung sai bề mặt lưới SMPL).
-  Ở `cam19 -> cam04` (33.73 mm $\to$ 33.53 mm, $\Delta = +0.59\%$), sai số giảm $0.20\text{ mm}$—đây là mức tối đa có thể tối ưu thêm vì Master đã nhìn thấy gần như hoàn hảo, không còn khớp nào bị lệch hay che khuất lớn.
-
-### 2. Nhóm Tăng Trưởng Vượt Bậc (10% - 20%)
-* **Nhóm Master lệch nặng (`cam03`, `cam17`, `cam13`)**:
-  * `cam03`: baseline PA-MPJPE = **89.10 mm** (rất tệ do rớt 58% frames).
-  * `cam17`: baseline PA-MPJPE = **53.70 mm**.
-  * `cam13`: baseline PA-MPJPE = **47.87 mm**.
-* **Nguyên nhân tăng vọt**:
-  Khi ghép `cam03 -> cam19`, `cam19` nhìn thấy toàn bộ các góc mà `cam03` bị mất và có độ sâu cực chuẩn, kéo sai số từ **90.27 mm xuống 72.72 mm** (cải thiện **17.55 mm**, tương đương **+19.44%**).
-  Khoảng cách cải thiện tỉ lệ thuận với độ lệch ban đầu của Master.
-
-### 3. Yếu tố Thị Sai Góc Nhìn (Parallax & Angle Redundancy)
-* `cam04` và `cam05` đứng cạnh nhau nhìn cùng hướng: thông tin hình học bổ sung cho nhau rất ít (redundant views) $\implies$ cải thiện $+1.43\%$.
-* `cam13` và `cam19` đứng đối diện tạo góc thị sai gần $90^\circ$: triệt tiêu hoàn toàn mập mờ độ sâu đơn mắt $\implies$ cải thiện **+16.84%**!
-
----
-
-## 9. Phân Tầng Camera Không Dùng Nhãn (Zero-GT Quality Tiering Hierarchy)
-
-Dựa trên các đặc trưng nội tại đo đạc trực tiếp từ chuỗi thời gian (không cần Ground Truth):
-
-| Tier | Camera | Số Frame Liên Tục | 3D Jitter ($a$) | 2D Companion Tracking | Trạng Thái Nhận Diện |
-| :---: | :---: | :---: | :---: | :---: | :---: |
-| **Tier 1 (Pristine)** | `cam04`, `cam05`, `cam13`, `cam19` | 301 / 301 (100%) | 16.9 - 22.0 mm/f | Có (`tracking_results.pth`) | Cực kỳ mượt mà, chuẩn xác |
-| **Tier 2 (Noisy)** | `cam02`, `cam17` | 301 / 301 (100%) | 30.0 - 32.0 mm/f | Không có | Rung lắc biên độ lớn |
-| **Tier 3 (Broken)** | `cam03` | 127 / 301 (42%) | 17.4 mm/f | Không có | Đứt đoạn, mất 58% chuỗi |
-| **Tier 3 (Degraded)** | `cam20` | 95 / 301 (31%) | 64.8 mm/f | Không có | Vỡ tracking, trôi dạt 7.4m |
-
-### Cơ Chế Xử Lý Bất Đối Xứng (Asymmetric Protocol) Tránh "Bóp Nghẹt"
-
-1. **Tier 1 Master + Tier 1 Slave (`cam13 + cam19`, `cam04 + cam05`, `cam04 + cam19`)**:
-   * `slave_is_noisy = False`, `should_protect_master = False`.
-   * **Dung hợp đa góc nhìn tự do hoàn toàn (Full Geometric Consensus & Ray Blending)**.
-   * Kết quả: Giữ trọn vẹn mức tăng trưởng khổng lồ (**+10% đến +17%**), hoàn toàn không bị bóp nghẹt.
-
-2. **Tier 2/3 Master + Tier 1 Slave (`cam03 -> cam19`, `cam17 -> cam05`, `cam20 -> cam19`)**:
-   * `master_is_distorted = True`, `should_protect_master = False`.
-   * Chuyển Anchor sang Slave, cho phép Slave tái cấu trúc toàn diện Master.
-   * Kết quả: Đạt mức cải thiện cực đại (**+12% đến +19.4%**).
-
-3. **Tier 1 Master + Tier 2/3 Slave (`cam19 -> cam17`, `cam19 -> cam02`, `cam04 -> cam20`)**:
-   * `master_is_distorted = False`, `slave_is_noisy = True`.
-   * Kích hoạt Master Protect: Anchor cố định tại Master, Margin = 0.15, khóa cứng các khớp tự tin của Master trong GPU sequence optimization (`mask1 = 0` với $c_1 \ge 0.5$).
-   * Kết quả: Khóa chặt Master khỏi bị Slave nhiễu kéo lệch, triệt tiêu hoàn toàn sự suy giảm âm.
-
----
-
-## 10. Tách Biệt Hoàn Toàn Ground Truth Khỏi Quá Trình Suy Luận (Strict Zero-GT Protocol)
-
-1. `fusion_pipeline` và `pose_pipeline` hoàn toàn không đọc thư mục `ground_truth_dir`, không sử dụng nhãn GT để căn chỉnh offset, không hiệu chỉnh tọa độ dựa trên GT.
-2. `ground_truth_dir` chỉ được nạp tại module `evaluation_pipeline` sau khi toàn bộ chuỗi suy luận đã kết thúc để tính toán MPJPE, PA-MPJPE, MBLE và Accel.
-3. Toàn bộ các quyết định về chất lượng camera, gating và protection đều dựa trên các tín hiệu nội tại (Jitter, Tracking frames, Ray-casting 3D, Consensus residual).
-
----
-
-## 11. Tổng Hợp Số Liệu Kiểm Chứng Thực Nghiệm
-
-| Cặp Camera | Bản Cũ Trước Sửa | Bản Mới (Zero-GT Adaptive) | Chuyển Biến Delta PA-MPJPE | Cải Thiện Accel | Cải Thiện MBLE | Trạng Thái Bảo Toàn Tăng Trưởng |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **`cam19 -> cam17`** (Âm nặng nhất) | 33.60 $\to$ 35.38 mm (**-5.30%**) | 33.60 $\to$ 33.65 mm (**-0.15%**) | **Cứu 1.73 mm (+5.15%)** | **+58.20%** | **+6.40%** | Khóa chặt sai số master |
-| **`cam19 -> cam02`** (Âm nhì) | 33.60 $\to$ 34.80 mm (**-3.57%**) | 33.60 $\to$ 33.68 mm (**-0.24%**) | **Cứu 1.12 mm (+3.33%)** | **+56.80%** | **+5.90%** | Khóa chặt sai số master |
-| **`cam19 -> cam20`** (Slave xa nhất) | 27.85 $\to$ 31.30 mm (**-12.39%**) | 27.85 $\to$ 27.50 mm (**+1.26%**) | **LẬT DƯƠNG (+13.65%)** | **+64.07%** | **+4.44%** | Triệt tiêu hoàn toàn nhiễu slave |
-| **`cam04 -> cam17`** (Slave rung lắc) | 40.44 $\to$ 43.28 mm (**-7.02%**) | 40.44 $\to$ 39.75 mm (**+1.71%**) | **LẬT DƯƠNG (+8.73%)** | **+54.66%** | **+5.67%** | Hồi phục dương sạch sẽ |
-| **`cam13 -> cam19`** (Top tăng trưởng) | 45.89 $\to$ 40.99 mm (**+10.68%**) | 45.89 $\to$ 40.99 mm (**+10.68%**) | **Giữ trọn đỉnh cao (+10.68%)** | **+42.15%** | **+8.10%** | **Không bị bóp nghẹt** |
-| **`cam03 -> cam19`** (Top cứu cánh) | 90.27 $\to$ 72.72 mm (**+19.44%**) | 90.27 $\to$ 72.72 mm (**+19.44%**) | **Giữ trọn đỉnh cao (+19.44%)** | **+50.01%** | **+21.65%** | **Không bị bóp nghẹt** |
-
-* Bộ kiểm thử hồi quy: **36/36 unit tests passed 100%** trong [`tests/test_regressions.py`](file:///d:/optimization_model_monocular_3/tests/test_regressions.py).
+| File | Số test | Nội dung chính |
+| :--- | ---: | :--- |
+| [tests/test_aniso_fusion.py](tests/test_aniso_fusion.py) | 12 | Kabsch/IRLS, tự hiệu chỉnh nhiễu, dung hợp, làm mượt banded, GCV, per-joint/shared, không dùng thông số camera/GT, config mặc định `aniso` |
+| [tests/test_regressions.py](tests/test_regressions.py) | 44 | Hồi quy pipeline, nạp GT, bảo vệ Zero-GT ([test L184](tests/test_regressions.py#L184)) |
+| [tests/test_selective_fusion.py](tests/test_selective_fusion.py) | 8 | Selective fusion V3 |
+| [tests/test_selective_regression_guard.py](tests/test_selective_regression_guard.py) | 3 | Chặn hồi quy khi bật V3 |

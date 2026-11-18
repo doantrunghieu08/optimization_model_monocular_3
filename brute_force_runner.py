@@ -15,7 +15,7 @@ import queue
 from config_loader import load_config
 
 VIDEO_FOLDER = "imageSequence"
-EVALUATION_PROTOCOL = "no_gt_v10_master_only_postopt"
+EVALUATION_PROTOCOL = ""
 
 HAS_GSPREAD = False
 try:

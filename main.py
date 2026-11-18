@@ -1,3 +1,6 @@
+import compat
+compat.patch_numpy_and_inspect()
+
 import argparse
 import sys
 from pathlib import Path

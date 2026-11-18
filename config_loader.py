@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import sys
 import numpy as np
+from compat import resolve_target_pt_path
 
 # --- LOGIC PHÂN GIẢI BIẾN MÔI TRƯỜNG Ở ĐÂY ---
 env_pattern = re.compile(r'^\${([a-zA-Z0-9_]+)(?::-([^}]+))?}$')
@@ -78,6 +79,10 @@ def resolve_inputs(config):
     for key in INPUT_KEYS:
         if key not in inputs or not inputs[key]:
             raise ValueError("Missing config input: inputs.{}".format(key))
+    target_person = inputs.get("target_person")
+    if target_person:
+        for key in ("cam1_pkl", "cam2_pkl"):
+            inputs[key] = str(resolve_target_pt_path(inputs[key], target_person))
     return inputs
 
 
@@ -273,6 +278,12 @@ def absolutize_config_paths(config: dict, workspace_dir: Path) -> dict:
             vis_cfg["video_search_dir"] = str(workspace_dir.parent / search_dir)
         else:
             vis_cfg["video_search_dir"] = str(workspace_dir / search_dir)
+    inputs_sec = config.get("inputs")
+    target_person = inputs_sec.get("target_person") if isinstance(inputs_sec, dict) else None
+    if target_person:
+        for key in ("cam1_pkl", "cam2_pkl"):
+            if inputs_sec.get(key):
+                inputs_sec[key] = str(resolve_target_pt_path(inputs_sec[key], target_person))
     return config
 
 

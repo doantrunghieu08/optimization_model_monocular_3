@@ -551,7 +551,16 @@ def _run_learnable_smplify_stage(
     frame_count = len(judgement_results)
     frame_ids = [int(frame.get("frame_id", idx + 1)) for idx, frame in enumerate(judgement_results)]
 
-    offset, _ = resolve_selected_offset_from_camera_profile(config)
+    pose_meta_file = Path(config["paths"]["pose_output_dir"]) / "metadata" / "pose_data_1.json"
+    if pose_meta_file.exists():
+        try:
+            with pose_meta_file.open("r", encoding="utf-8") as f:
+                pm = json.load(f)
+            offset = int(pm.get("metadata", {}).get("camera_sync", {}).get("offset", 0))
+        except Exception:
+            offset, _ = resolve_selected_offset_from_camera_profile(config)
+    else:
+        offset, _ = resolve_selected_offset_from_camera_profile(config)
     target_person = inputs.get("target_person")
     wham_data = load_wham_data(cam1_pkl, cam2_pkl, frame_count, offset, target_person=target_person)
     net, normalize_kp = load_netbody25(learnable_cfg, device)
