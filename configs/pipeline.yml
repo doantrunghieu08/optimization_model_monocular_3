@@ -1,5 +1,5 @@
 runtime:
-  stage: evaluation
+  stage: visualization
   clean_output: true
   skip_unsynchronized_cameras: true
 preprocess:
@@ -9,11 +9,11 @@ pose_export:
   enabled: true
   use_world_coords: false
 inputs:
-  cam1_pkl: input/Hugging/exo/cam04/harmony4D_002_hugging_cam04_wham/wham_harmony4D_002_hugging_cam04_ffmpeg.pkl
-  cam2_pkl: input/Hugging/exo/cam05/harmony4D_002_hugging_cam05_wham/wham_harmony4D_002_hugging_cam05_ffmpeg.pkl
-  camera1_video: input/Hugging/exo/cam04/images/harmony4D_002_hugging_cam04_ffmpeg.mp4
-  camera2_video: input/Hugging/exo/cam05/images/harmony4D_002_hugging_cam05_ffmpeg.mp4
-  ground_truth_dir: input/Hugging/processed_data/poses3d
+  cam1_pkl: /Users/thanhnt/Documents/research/optimization_model_monocular_3/inputs/drive/005_sword3/exo/cam03/output_wham/wham_output_cam03.pkl
+  cam2_pkl: /Users/thanhnt/Documents/research/optimization_model_monocular_3/inputs/drive/005_sword3/exo/cam04/output_wham/wham_output_cam04.pkl
+  camera1_video: /Users/thanhnt/Documents/research/optimization_model_monocular_3/inputs/drive/005_sword3/exo/cam03/images/harmony4D_005_sword3_cam03_ffmpeg.mp4
+  camera2_video: /Users/thanhnt/Documents/research/optimization_model_monocular_3/inputs/drive/005_sword3/exo/cam04/images/harmony4D_005_sword3_cam04_ffmpeg.mp4
+  ground_truth_dir: /Users/thanhnt/Documents/research/optimization_model_monocular_3/inputs/drive/005_sword3/processed_data/poses3d
   target_person: aria01
 paths:
   smpl_model: models/SMPL_NEUTRAL.pkl
@@ -152,7 +152,7 @@ learnable_extra:
   enabled: false
 visualization:
   enabled: false
-  target_fps: 10
+  target_fps: 20
   dpi: 100
   max_frames: null
   cameras:
@@ -173,6 +173,7 @@ evaluation:
     path:
       - configs/identity_mask_hugging_002.json
       - configs/identity_mask_grappling2_043.json
+      - configs/identity_mask_005_sword3.json
     margin_mm: 10.0
   metrics:
     pa_mpjpe: true
