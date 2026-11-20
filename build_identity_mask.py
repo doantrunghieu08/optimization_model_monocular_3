@@ -10,6 +10,10 @@ A large positive margin means the track follows the other person. The evaluator
 excludes frames with margin > evaluation.identity_mask.margin_mm. Uses GT, so it is
 an evaluation-set filter only; it never feeds the fusion.
 
+pkl / ground_truth_dir may be Google Drive File IDs: preprocessing_data.label_persons
+then downloads them and writes pkl_local / ground_truth_dir_local (absolute paths) into
+the same YAML, which are read here.
+
 Usage: python build_identity_mask.py configs/brute_force.yml configs/identity_mask_hugging_002.json
 """
 import json
@@ -26,6 +30,19 @@ from keypoints_map import load_keypoints3d_map
 ROOT = Path(__file__).resolve().parent
 
 
+def input_path(entry, key, brute_cfg_path):
+    """<key> when it is a path on this machine (relative to the repo root), otherwise
+    <key>_local, written by preprocessing_data.label_persons for a Drive File ID."""
+    value = entry.get(key)
+    if value and (ROOT / str(value)).exists():
+        return ROOT / str(value)
+    local = entry.get(f"{key}_local")
+    if local and Path(local).exists():
+        return Path(local)
+    raise FileNotFoundError(f"{key}: '{value}' is not a local path and has no existing {key}_local; "
+                            f"run: python -m preprocessing_data.label_persons {brute_cfg_path}")
+
+
 def build(brute_cfg_path, persons=("aria01", "aria02")):
     seg = yaml.safe_load(Path(brute_cfg_path).read_text(encoding="utf-8"))["segments"][0]
     kmap = load_keypoints3d_map(str(ROOT / "configs/keypoints3D_map.yml"))
@@ -33,18 +50,19 @@ def build(brute_cfg_path, persons=("aria01", "aria02")):
     reg_idx = {k["name"]: k["regressor_index"] for k in kmap["keypoints"]}
     keys = [k for k in kmap["priority1"] if k != "neck"]
     J = np.load(ROOT / "models/J_regressor_body25_extended.npy")
-    truth_dir = ROOT / seg["ground_truth_dir"]
+    truth_dir = input_path(seg, "ground_truth_dir", brute_cfg_path)
     gt = {p: {f: _parse_new_gt(it, names, kmap)
               for f, it in _load_ground_truth(truth_dir / "_.json", truth_dir=truth_dir, target_person=p).items()}
           for p in persons}
     out = {}
     for cam in seg["cameras"]:
-        raw = load_joblib_compat(ROOT / cam["pkl"])
-        stem = Path(cam["pkl"]).stem
+        pkl = input_path(cam, "pkl", brute_cfg_path)
+        raw = load_joblib_compat(pkl)
+        stem = pkl.stem
         out[stem] = {}
         for person in persons:
             other = next(p for p in persons if p != person)
-            track = resolve_person_payload(raw, pkl_path=ROOT / cam["pkl"], target_person=person)
+            track = resolve_person_payload(raw, pkl_path=pkl, target_person=person)
             margins = {}
             if track is not None:
                 for row, fid in enumerate(np.asarray(track["frame_ids"]).astype(int)):
