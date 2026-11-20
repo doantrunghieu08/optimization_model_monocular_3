@@ -148,6 +148,14 @@ Caveats, all verified:
 # 0) once per new dataset without person mapping (writes *_person_mapping.txt next to the pkl)
 python -m preprocessing_data.label_persons input/043_Grappling2 --brute-config configs/brute_force_grappling2_043.yml
 python build_identity_mask.py configs/brute_force_grappling2_043.yml configs/identity_mask_grappling2_043.json
+#    or from a brute-force YAML whose ground_truth_dir / pkl / video are local paths OR Google Drive
+#    File IDs (GT: zip of poses3d/*.npy). Drive files and the extracted GT are kept in
+#    inputs/drive/<sequence>/ (--data-dir; same layout as a dataset folder, reused on rerun), the
+#    mapping is written next to each pkl, and `<key>_local: "<absolute path>"` is added under each
+#    Drive ID in the same YAML (comments kept); build_identity_mask.py reads it.
+#    Add the mask to evaluation.identity_mask.path in configs/pipeline.yml.
+python -m preprocessing_data.label_persons configs/brute_force_005_sword3.yml
+python build_identity_mask.py configs/brute_force_005_sword3.yml configs/identity_mask_005_sword3.json
 
 # 1) one camera pair: set inputs.* in configs/pipeline.yml, then
 #    runtime.stage: visualization  + visualization.enabled: false  -> full pipeline, no video render
