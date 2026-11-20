@@ -92,6 +92,80 @@ def _resolve_input_path(workspace: Path, path_str: str | Path) -> Path:
         return p_clean
     return p
 
+
+def _resolve_local_or_drive_path(
+    workspace: Path,
+    config: dict,
+    remote_key: str,
+    local_key: str,
+    description: str = "input",
+    required: bool = True,
+) -> Path | None:
+    """
+    Ưu tiên local path nếu tồn tại.
+    Nếu không có, thử original path (ví dụ đường dẫn trong workspace).
+    Google Drive File ID không được coi là local path.
+    """
+    local_value = config.get(local_key)
+    remote_value = config.get(remote_key)
+
+    # 1. Ưu tiên đường dẫn local
+    if local_value:
+        local_path = Path(str(local_value)).expanduser()
+
+        if not local_path.is_absolute():
+            local_path = workspace / local_path
+
+        if local_path.exists():
+            print(f"[Input] {description}: LOCAL -> {local_path}")
+            return local_path.resolve()
+
+    # 2. Thử đường dẫn gốc
+    if remote_value:
+        remote_str = str(remote_value).strip()
+
+        # File ID thường là chuỗi không chứa dấu phân cách đường dẫn.
+        looks_like_drive_id = (
+            len(remote_str) >= 20
+            and "/" not in remote_str
+            and "\\" not in remote_str
+        )
+
+        if not looks_like_drive_id:
+            remote_path = _resolve_input_path(workspace, remote_str)
+
+            if remote_path.exists():
+                print(f"[Input] {description}: ORIGINAL -> {remote_path}")
+                return remote_path.resolve()
+
+    # 3. Không tìm thấy
+    if not required:
+        return None
+
+    raise FileNotFoundError(
+        f"Không tìm thấy {description}.\n"
+        f"  {local_key}: {local_value}\n"
+        f"  {remote_key}: {remote_value}\n"
+        f"Đã kiểm tra local path và original path."
+    )
+
+
+def _resolve_camera_inputs(
+    workspace: Path,
+    camera: dict,
+) -> dict:
+    """Phân giải đồng thời PKL và video của một camera."""
+    return {
+        "pkl": _resolve_local_or_drive_path(
+            workspace, camera, "pkl", "pkl_local",
+            description=f"{camera['id']} PKL"
+        ),
+        "video": _resolve_local_or_drive_path(
+            workspace, camera, "video", "video_local",
+            description=f"{camera['id']} video"
+        ),
+    }
+
 def _build_format_requests(sheet_id: int, total_rows: int, total_cols: int) -> list:
     reqs = []
     reqs.append({"repeatCell": {
@@ -568,32 +642,76 @@ def _resolve_pair_mode(master_cfg: dict, master: str, slave: str) -> str:
         raise ValueError(f"Unsupported fusion pair mode: {mode}")
     return mode
 
-def _setup_pipeline_config(base_cfg, gt_dir, camA, camB, workspace, target_person=None):
+
+def _setup_pipeline_config(
+    base_cfg,
+    gt_dir,
+    camA,
+    camB,
+    workspace,
+    target_person=None
+):
     import copy
     import torch
+
     cfg = copy.deepcopy(base_cfg)
+
+    # Resolve camera inputs, ưu tiên local
+    camA_inputs = _resolve_camera_inputs(workspace, camA)
+    camB_inputs = _resolve_camera_inputs(workspace, camB)
+
+    # Ground truth đã được resolve trước khi truyền vào
+    gt_path = Path(gt_dir).expanduser()
+    if not gt_path.is_absolute():
+        gt_path = workspace / gt_path
+
+    if not gt_path.exists():
+        raise FileNotFoundError(
+            f"Không tìm thấy Ground Truth: {gt_path}"
+        )
+
     cfg.setdefault("inputs", {})
     cfg["inputs"].update({
-        "ground_truth_dir": str(_resolve_input_path(workspace, gt_dir)),
-        "cam1_pkl": str(_resolve_input_path(workspace, camA["pkl"])),
-        "camera1_video": str(_resolve_input_path(workspace, camA["video"])),
-        "cam2_pkl": str(_resolve_input_path(workspace, camB["pkl"])),
-        "camera2_video": str(_resolve_input_path(workspace, camB["video"]))
+        "ground_truth_dir": str(gt_path.resolve()),
+        "cam1_pkl": str(camA_inputs["pkl"]),
+        "camera1_video": str(camA_inputs["video"]),
+        "cam2_pkl": str(camB_inputs["pkl"]),
+        "camera2_video": str(camB_inputs["video"]),
     })
+
     if target_person is not None:
         cfg["inputs"]["target_person"] = target_person
+
     cfg.setdefault("visualization", {})["enabled"] = False
     cfg.setdefault("runtime", {})["clean_output"] = True
     cfg["runtime"]["stage"] = "default"
-    master_cfg = cfg.setdefault("fusion", {}).setdefault("master_protection", {})
-    pair_mode = _resolve_pair_mode(master_cfg, camA["id"], camB["id"])
-    master_cfg["enabled"] = master_cfg.get("enabled", True) if pair_mode != "disabled" else False
+
+    master_cfg = cfg.setdefault(
+        "fusion", {}
+    ).setdefault("master_protection", {})
+
+    pair_mode = _resolve_pair_mode(
+        master_cfg, camA["id"], camB["id"]
+    )
+
+    master_cfg["enabled"] = (
+        master_cfg.get("enabled", True)
+        if pair_mode != "disabled" else False
+    )
+
     cfg["fusion"]["pair_mode"] = pair_mode
-    print(f"[Fusion] Pair mode {camA['id']}->{camB['id']}: {pair_mode}")
+
+    print(
+        f"[Fusion] Pair mode "
+        f"{camA['id']}->{camB['id']}: {pair_mode}"
+    )
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     cfg.setdefault("learnable", {})["device"] = device
     cfg.setdefault("learnable_extra", {})["device"] = device
+
     return absolutize_config_paths(cfg, workspace)
+
 
 def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_id: str, seg_name: str) -> dict:
     eval_dir = Path(config["paths"]["evaluation_output_dir"])
@@ -690,15 +808,19 @@ def _parse_pipeline_results(config: dict, current_set: str, camA_id: str, camB_i
     }
 
 def _evaluate_camera_pair(camA, camB, base_cfg, gt_dir, workspace, seg_name: str, target_person=None) -> dict:
-    current_set = extract_set_name(camA["pkl"])
     os_v, usr, ts = get_system_metadata()
-    camA_pkl = _resolve_input_path(workspace, camA["pkl"])
-    camB_pkl = _resolve_input_path(workspace, camB["pkl"])
-    if not camA_pkl.exists() or not camB_pkl.exists():
-        print(f"Bỏ qua cặp {camA['id']}-{camB['id']} do thiếu file pkl đầu vào.")
-        return None
     try:
-        config = _setup_pipeline_config(base_cfg, gt_dir, camA, camB, workspace, target_person=target_person)
+        camA_inputs = _resolve_camera_inputs(workspace, camA)
+        camB_inputs = _resolve_camera_inputs(workspace, camB)
+
+        current_set = extract_set_name(
+            str(camA_inputs["pkl"])
+        )
+
+        config = _setup_pipeline_config(
+            base_cfg, gt_dir, camA, camB,
+            workspace, target_person=target_person
+        )
         executed = run_pipeline(config, stage_override=None)
         if executed is False:
             return None
@@ -823,8 +945,16 @@ def _process_segment(seg, existing, base_cfg, ws_dir, sh_name, ws_title, all_res
         if cached:
             print(f"[BruteForce] IGNORE stale result with protocol={cached.get('protocol')!r}")
         
+        gt_dir = _resolve_local_or_drive_path(
+            ws_dir,
+            seg,
+            "ground_truth_dir",
+            "ground_truth_dir_local",
+            description=f"{seg_name} Ground Truth"
+        )
+
         res = _evaluate_camera_pair(
-            cA, cB, base_cfg, str(ws_dir / seg["ground_truth_dir"]), ws_dir, seg_name,
+            cA, cB, base_cfg, str(gt_dir), ws_dir, seg_name,
             target_person=seg.get("target_person")
         )
         if res is not None:
