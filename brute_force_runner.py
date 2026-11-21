@@ -30,7 +30,7 @@ try:
     import gspread
     HAS_GSPREAD = True
 except (ImportError, Exception):
-    print("[Local Mode] Chạy môi trường Local (không dùng Google Sheets / Colab). Báo cáo xuất ra file CSV local.")
+    pass  # local mode, announced by run_brute_force (not at import: --workers processes import this file too)
 
 from config_loader import load_config, absolutize_config_paths
 from pipeline import run_pipeline
@@ -1113,8 +1113,196 @@ def _process_segment(seg, existing, base_cfg, ws_dir, sh_name, ws_title, all_res
     )
     return sorted_results, current_idx
 
-def run_brute_force(base_cfg=None, brute_cfg=None, *, local_report_dir=None):
+
+# ---------------------------------------------------------------------------
+# --workers N: N camera pairs at once, one process each.
+# A pair is single-threaded Python (AOTR); BLAS/torch threads only add overhead
+# (cam01->cam02 on M1: 41 s with 77 s CPU by default, 37.5 s with 37 s CPU on one
+# thread), so the workers get one thread each. Every stage cleans and rewrites its
+# paths.*_output_dir, so each worker has its own copy of those directories.
+# ---------------------------------------------------------------------------
+THREAD_ENV_VARS = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+                   "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS")
+WORKERS_DIR_NAME = "brute_force_workers"
+_WORKER = {}  # state of one worker process, set by _init_worker
+
+
+def _report_dir() -> Path:
+    return ACTIVE_LOCAL_REPORT_DIR or Path(__file__).parent.resolve() / "output"
+
+
+def _worker_config(base_cfg: dict, worker_dir: Path) -> dict:
+    """base_cfg with every paths.*_output_dir moved into worker_dir (one sub-directory per key)."""
+    import copy
+    cfg = copy.deepcopy(base_cfg)
+    paths = cfg.setdefault("paths", {})
+    for key in list(paths):
+        if key.endswith("_output_dir"):
+            paths[key] = str(Path(worker_dir) / (key[:-len("_output_dir")] + "_results"))
+    return cfg
+
+
+def _pair_log_name(seg_name: str, cam_a: str, cam_b: str) -> str:
+    safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in str(seg_name))
+    return f"{safe}__{cam_a}-{cam_b}.log"
+
+
+def _init_worker(slots, root: str, base_cfg: dict, workspace: str, evaluate):
+    import signal
+    # Ctrl+C reaches the whole process group: only the parent handles it (and stops the workers).
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    slot = slots.get()
+    worker_dir = Path(root) / f"w{slot:02d}"
+    worker_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        import torch
+        torch.set_num_threads(1)
+    except Exception:
+        pass
+    _WORKER.update(slot=slot, cfg=_worker_config(base_cfg, worker_dir), workspace=Path(workspace),
+                   logs=Path(root) / "logs", evaluate=evaluate)
+
+
+def _pool_evaluate_pair(seg_name, cam_a, cam_b, gt_dir, target_person):
+    """One pair in a worker; everything the pipeline prints goes to one log file per pair."""
+    import contextlib
+    log_path = _WORKER["logs"] / _pair_log_name(seg_name, cam_a["id"], cam_b["id"])
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    started = time.perf_counter()
+    with log_path.open("w", encoding="utf-8") as log, \
+            contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):
+        res = _WORKER["evaluate"](cam_a, cam_b, _WORKER["cfg"], gt_dir, _WORKER["workspace"],
+                                  seg_name, target_person=target_person)
+    return res, time.perf_counter() - started, str(log_path), _WORKER["slot"]
+
+
+def _plan_pairs(segments, existing, base_cfg, ws_dir):
+    """({segment: cached results}, [(segment, master, slave, gt_dir) still to run]), in runner order."""
+    results = {seg["name"]: [] for seg in segments}
+    tasks = []
+    for seg in segments:
+        seg_protocol = _segment_protocol(base_cfg, seg)
+        gt_dir = None
+        for cA, cB in itertools.permutations(seg.get("cameras", []), 2):
+            cached = existing.get((seg["name"], cA["id"], cB["id"]))
+            if cache_compatible(cached, seg_protocol):
+                cached.update({"set": cached.get("set", extract_set_name(cA["pkl"])),
+                               "master": cA["id"], "supplement": cB["id"]})
+                results[seg["name"]].append(cached)
+                continue
+            if cached:
+                print(f"[BruteForce] IGNORE stale result {seg['name']} {cA['id']}->{cB['id']} "
+                      f"with protocol={cached.get('protocol')!r}")
+            if gt_dir is None:
+                gt_dir = _resolve_local_or_drive_path(
+                    ws_dir, seg, "ground_truth_dir", "ground_truth_dir_local",
+                    description=f"{seg['name']} Ground Truth")
+            tasks.append((seg, cA, cB, str(gt_dir)))
+    return results, tasks
+
+
+def _format_duration(seconds: float) -> str:
+    minutes, secs = divmod(int(round(max(seconds, 0.0))), 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h{minutes:02d}m" if hours else f"{minutes}m{secs:02d}s"
+
+
+def _result_summary(res: dict) -> str:
+    def num(key):
+        try:
+            return float(res.get(key))
+        except (TypeError, ValueError):
+            return float("inf")
+
+    def show(key):
+        value = num(key)
+        return "N/A" if value == float("inf") else f"{value:.2f}"
+
+    deltas = ", ".join(f"{label} {num(key):+.2f}%" for label, key in (
+        ("MPJPE", "% delta_mpjpe"), ("PA", "% delta_pa_mpjpe"),
+        ("Accel", "% delta_accel"), ("MBLE", "% delta_mble")) if num(key) != float("inf"))
+    return (f"Δ: {deltas} | MPJPE={show('mpjpe')}, PA-MPJPE={show('pa_mpjpe')}, "
+            f"Accel={show('accel')}, MBLE={show('mble')}")
+
+
+def _run_pairs_parallel(segments, existing, base_cfg, ws_dir, sh_name, ws_title, workers, evaluate=None):
+    """Same pairs, cache and report as the sequential loop, on `workers` processes.
+
+    The report (CSV) is rewritten after every finished pair, with the cached rows of every
+    segment, so Ctrl+C loses only the pairs that were running. Returns {segment: ranked results}.
+    """
+    import multiprocessing as mp
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    results, tasks = _plan_pairs(segments, existing, base_cfg, ws_dir)
+
+    def write_report():
+        ranked = {name: sorted(rows, key=_ranking_key, reverse=True) for name, rows in results.items()}
+        generate_spreadsheet_report_safe(ranked, sh_name, ws_title, silent=True)
+        return ranked
+
+    cached = sum(len(rows) for rows in results.values())
+    root = _report_dir() / WORKERS_DIR_NAME
+    if not tasks:
+        print(f"\n=== Không còn cặp nào cần chạy: {cached} cặp lấy từ cache ===")
+        return write_report()
+    n = max(1, min(int(workers), len(tasks)))
+    print(f"\n=== Song song: {len(tasks)} cặp cần chạy trên {n} worker (1 luồng mỗi worker), "
+          f"{cached} cặp lấy từ cache ===")
+    print(f"[BruteForce] Log của từng cặp: {root / 'logs'}")
+
+    ctx = mp.get_context("spawn")  # fork is unsafe once torch / BLAS threads exist
+    slots = ctx.Queue()
+    for slot in range(n):
+        slots.put(slot)
+    saved_env = {var: os.environ.get(var) for var in THREAD_ENV_VARS}
+    os.environ.update({var: "1" for var in THREAD_ENV_VARS})  # read by numpy/torch when a worker starts
+    pool = ProcessPoolExecutor(
+        max_workers=n, mp_context=ctx, initializer=_init_worker,
+        initargs=(slots, str(root), base_cfg, str(ws_dir), evaluate or _evaluate_camera_pair))
+    started = time.perf_counter()
+    try:
+        futures = {
+            pool.submit(_pool_evaluate_pair, seg["name"], cA, cB, gt_dir, seg.get("target_person")):
+                (seg["name"], cA["id"], cB["id"])
+            for seg, cA, cB, gt_dir in tasks
+        }
+        for done, future in enumerate(as_completed(futures), start=1):
+            seg_name, cam_a, cam_b = futures[future]
+            eta = (time.perf_counter() - started) / done * (len(tasks) - done)
+            head = f"[{done}/{len(tasks)} | còn ~{_format_duration(eta)}] {seg_name} {cam_a}->{cam_b}"
+            try:
+                res, seconds, log_path, slot = future.result()
+            except Exception as exc:
+                print(f"{head}: LỖI worker {type(exc).__name__}: {exc}")
+                continue
+            if res is None:
+                print(f"{head} (w{slot:02d}, {seconds:.0f}s): không có kết quả, xem {log_path}")
+                continue
+            results[seg_name].append(res)
+            print(f"{head} (w{slot:02d}, {seconds:.0f}s) {_result_summary(res)}")
+            write_report()
+    except KeyboardInterrupt:
+        print("\n[BruteForce] Ctrl+C: dừng các worker. Các cặp đã xong nằm trong báo cáo; "
+              "chạy lại lệnh để tiếp tục.")
+        for proc in mp.active_children():
+            proc.terminate()
+        raise
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
+        for var, value in saved_env.items():
+            if value is None:
+                os.environ.pop(var, None)
+            else:
+                os.environ[var] = value
+    print(f"[BruteForce] {len(tasks)} cặp xong sau {_format_duration(time.perf_counter() - started)}")
+    return write_report()
+
+
+def run_brute_force(base_cfg=None, brute_cfg=None, *, local_report_dir=None, workers=1):
     global ACTIVE_EVALUATION_PROTOCOL, ACTIVE_REPORT_CSV_NAME, ACTIVE_LOCAL_REPORT_DIR
+    if not HAS_GSPREAD:
+        print("[Local Mode] Chạy môi trường Local (không dùng Google Sheets / Colab). Báo cáo xuất ra file CSV local.")
     ACTIVE_LOCAL_REPORT_DIR = Path(local_report_dir) if local_report_dir is not None else None
     WS_DIR = Path(__file__).parent.resolve()
     if brute_cfg is None:
@@ -1147,16 +1335,20 @@ def run_brute_force(base_cfg=None, brute_cfg=None, *, local_report_dir=None):
         for seg in brute_cfg.get("segments", [])
         if len(seg.get("cameras", [])) >= 2
     )
-    current_pair_idx = 0 
+    current_pair_idx = 0
 
-    for seg in brute_cfg.get("segments", []):
-        if len(seg.get("cameras", [])) < 2: continue
-        
-        sorted_res, current_pair_idx = _process_segment(
-            seg, existing, base_cfg, WS_DIR, sh_name, ws_title, all_res, current_pair_idx, total_pairs
-        )
-        all_res[seg["name"]] = sorted_res
-        
+    if int(workers) > 1:
+        segments = [seg for seg in brute_cfg.get("segments", []) if len(seg.get("cameras", [])) >= 2]
+        all_res = _run_pairs_parallel(segments, existing, base_cfg, WS_DIR, sh_name, ws_title, int(workers))
+    else:
+        for seg in brute_cfg.get("segments", []):
+            if len(seg.get("cameras", [])) < 2: continue
+
+            sorted_res, current_pair_idx = _process_segment(
+                seg, existing, base_cfg, WS_DIR, sh_name, ws_title, all_res, current_pair_idx, total_pairs
+            )
+            all_res[seg["name"]] = sorted_res
+
     generate_spreadsheet_report_safe(all_res, sh_name, ws_title, silent=False, is_final=True)
     return all_res
 
@@ -1172,7 +1364,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Brute Force Combinatorial Evaluation")
     parser.add_argument("--config", type=str, default=None, help="Base pipeline config (default: configs/pipeline.yml)")
     parser.add_argument("--brute-config", type=str, default=None, help="Brute force segments config (default: configs/brute_force.yml)")
+    parser.add_argument("--workers", type=int, default=1,
+                        help="Number of camera pairs run at once, one process and one thread each "
+                             "(default 1 = sequential). Pair logs: output/brute_force_workers/logs/. "
+                             "About one worker per CPU core, minus one or two for the system.")
     args = parser.parse_args()
+    if args.workers < 1:
+        parser.error("--workers must be >= 1")
 
     WS_DIR = Path(__file__).parent.resolve()
     base_cfg = load_config(WS_DIR / args.config) if args.config else None
@@ -1180,4 +1378,4 @@ if __name__ == "__main__":
     if args.brute_config:
         with open(WS_DIR / args.brute_config, "r", encoding="utf-8") as f:
             brute_cfg = yaml.safe_load(f)
-    run_brute_force(base_cfg=base_cfg, brute_cfg=brute_cfg)
+    run_brute_force(base_cfg=base_cfg, brute_cfg=brute_cfg, workers=args.workers)
