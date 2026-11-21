@@ -180,8 +180,16 @@ python main.py --config configs/pipeline.yml
 # 2) all ordered pairs of a dataset
 python brute_force_runner.py --config configs/pipeline.yml --brute-config configs/brute_force.yml               # Hugging
 python brute_force_runner.py --config configs/pipeline.yml --brute-config configs/brute_force_grappling2_043.yml  # 043
+#    --workers N runs N pairs at once (one process, one BLAS/torch thread each; a pair is
+#    single-threaded Python, the GPU is not used when AOTR is on). Same pairs, cache and CSV as
+#    the sequential run (identical numbers); each worker uses its own
+#    output/brute_force_workers/wNN/*_results and every pair logs to
+#    output/brute_force_workers/logs/<segment>__<master>-<slave>.log. About one worker per core,
+#    minus one or two (M1, 8 cores: --workers 6). Ctrl+C keeps finished pairs; rerun to resume.
+#    Never start two runners on the same report at once: the last one to write the CSV wins.
+python brute_force_runner.py --config configs/pipeline.yml --brute-config configs/001_mma5.yml --workers 6
 
-# 3) tests (135)
+# 3) tests (167; test_method_comparison needs a working pandas)
 python -m pytest -q
 
 # 4) check a new (Harmony4D) sequence before running anything; prints the remaining steps
@@ -227,6 +235,6 @@ fusion_pipeline/
 evaluation_pipeline/executor.py    metrics, identity mask, GT loading
 preprocessing_data/label_persons.py   track -> person labelling
 build_identity_mask.py             identity mask builder
-brute_force_runner.py              all-pairs benchmark
+brute_force_runner.py              all-pairs benchmark (--workers N: pairs in parallel)
 tests/                             unit and regression tests
 ```
