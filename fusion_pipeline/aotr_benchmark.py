@@ -16,8 +16,44 @@ NAIVE_REVISION = "naive_kabsch_average_v1"
 SEQUENCE_METHODS = ("partwise", "naive")  # replace camera1 after the per-frame AOTR pass
 
 
+ROOT = Path(__file__).resolve().parents[1]  # relative mask paths: same base as evaluation_pipeline
+
+
 def fusion_method(config):
     return str(config.get("fusion", {}).get("method", "aotr")).strip().lower()
+
+
+def identity_mask_exclusions(id_mask):
+    """Frames the evaluator drops: {pkl stem: {person: [frame ids]}}.
+
+    Mirrors evaluation_pipeline._identity_excluded_ids: the mask files are merged by
+    pkl stem (a later file wins) and a frame is dropped when margin > margin_mm. Only
+    this set changes the scores, so rebuilding a mask with the same dropped frames (new
+    "source" path, other margins below the threshold) keeps the protocol. A missing or
+    unreadable mask file is returned in `problems` instead of raising.
+    """
+    paths = id_mask["path"] if isinstance(id_mask["path"], (list, tuple)) else [id_mask["path"]]
+    margin = float(id_mask.get("margin_mm", 10.0))
+    merged, problems = {}, []
+    for raw in paths:
+        path = Path(raw)
+        if not path.is_absolute():
+            path = ROOT / path
+        try:
+            merged.update(json.loads(path.read_text(encoding="utf-8")).get("margins", {}))
+        except (OSError, ValueError, AttributeError) as exc:
+            problems.append(f"{raw}: {type(exc).__name__}")
+    excluded = {}
+    for stem, per_person in merged.items():
+        for person, frames in (per_person or {}).items():
+            try:
+                ids = sorted(int(fid) for fid, value in frames.items() if float(value) > margin)
+            except (AttributeError, TypeError, ValueError) as exc:
+                problems.append(f"{stem}/{person}: {type(exc).__name__}")
+                continue
+            if ids:
+                excluded.setdefault(str(stem), {})[str(person).lower()] = ids
+    return excluded, problems
 
 
 def aotr_enabled(config):
@@ -56,7 +92,15 @@ def evaluation_protocol(config):
     # Excluding identity-swapped frames changes the metrics: never reuse unmasked caches.
     id_mask = config.get("evaluation", {}).get("identity_mask")
     if id_mask and id_mask.get("path"):
-        settings["identity_mask"] = {"path": str(id_mask["path"]), "margin_mm": id_mask.get("margin_mm", 10.0)}
+        # The CONTENT counts too: a rebuilt mask that drops other frames scores differently,
+        # even under the same file name, so results cached with the old mask are stale.
+        excluded, problems = identity_mask_exclusions(id_mask)
+        settings["identity_mask"] = {
+            "path": str(id_mask["path"]), "margin_mm": id_mask.get("margin_mm", 10.0),
+            "excluded_frames_sha256": hashlib.sha256(
+                json.dumps(excluded, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest(),
+            "unreadable": problems,
+        }
     # Scoring definition changes the numbers: joint set and MPJPE alignment are part of the identity.
     ev = config.get("evaluation", {})
     if ev.get("joint_set", "priority1") != "priority1" or ev.get("mpjpe_alignment", "frame") != "frame":
