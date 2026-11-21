@@ -8,7 +8,7 @@ from zipfile import ZipFile
 
 import numpy as np
 
-from run_drive_benchmark import extract_poses, is_drive_segment, main, prepare_segment_inputs, report_complete
+from run_drive_benchmark import extract_poses, is_drive_segment, main, prepare_segment_inputs, report_complete, run_segment, segment_protocol
 
 
 class DriveBenchmarkTest(unittest.TestCase):
@@ -21,7 +21,7 @@ class DriveBenchmarkTest(unittest.TestCase):
                 f"segments:\n- name: {name}\n  ground_truth_dir: 1example_drive_id_0123456789\n  cameras: []\n",
                 encoding="utf-8",
             )
-            dataset_dir = root / "input" / "drive_benchmark" / name
+            dataset_dir = root / "input" / "drive_benchmark" / "001_mma5"
 
             def fail_after_download(segment, directory, *, local_only):
                 self.assertFalse(local_only)
@@ -87,3 +87,84 @@ class DriveBenchmarkTest(unittest.TestCase):
             with report.open("a", newline="", encoding="utf-8") as file:
                 csv.writer(file).writerow(["test", "current", "cam02", "cam01"])
             self.assertTrue(report_complete(report, segment, "current"))
+
+    def test_run_segment_defaults_to_6_workers(self):
+        segment = {"name": "001_mma5_aria01", "cameras": []}
+        base_config = {"paths": {"fused_output_dir": "output/fused"}}
+        with patch("run_drive_benchmark.run_brute_force", return_value={"001_mma5_aria01": []}) as run_bf:
+            run_segment(base_config, segment, Path("output/drive_benchmark/001_mma5_aria01"))
+        self.assertEqual(run_bf.call_args.kwargs["workers"], 6)
+
+    def test_expands_both_persons_into_one_parallel_run(self):
+        file_id = "1example_drive_id_0123456789"
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "configs").mkdir()
+            (root / "configs/002_sword3.yml").write_text(
+                "segments:\n"
+                "- name: 002_sword3_aria01\n"
+                "  target_person: aria01\n"
+                f"  ground_truth_dir: {file_id}\n"
+                "  cameras:\n"
+                f"  - id: cam01\n    pkl: {file_id}\n    video: {file_id}\n"
+                f"  - id: cam02\n    pkl: {file_id}\n    video: {file_id}\n",
+                encoding="utf-8",
+            )
+            dataset_dir = root / "input" / "drive_benchmark" / "002_sword3"
+            dataset_dir.mkdir(parents=True)
+            (dataset_dir / "person_labels_report.json").write_text('{"persons": ["aria01", "aria02"]}', encoding="utf-8")
+            base_cfg = {"fusion": {"aotr": {"enabled": True}, "method": "aotr"}, "paths": {"fused_output_dir": "out"}}
+
+            def fake_stage(seg, directory, *, local_only):
+                self.assertEqual(directory, dataset_dir)
+                return {**seg, "ground_truth_dir": str(directory / "poses3d"), "cameras": seg["cameras"],
+                        "_persons": ["aria01", "aria02"]}
+
+            def fake_run_bf(cfg, brute_cfg, *, local_report_dir, workers):
+                self.assertEqual(workers, 6)
+                names = [s["name"] for s in brute_cfg["segments"]]
+                self.assertEqual(names, ["002_sword3_aria01", "002_sword3_aria02"])
+                from fusion_pipeline.aotr_benchmark import report_csv_name
+                csv_path = Path(local_report_dir) / report_csv_name(cfg)
+                with csv_path.open("w", newline="", encoding="utf-8-sig") as f:
+                    w = csv.writer(f)
+                    w.writerow(["Segment", "Protocol", "Cam Master", "Cam Slave"])
+                    for s in brute_cfg["segments"]:
+                        proto = segment_protocol(cfg, s)
+                        w.writerow([s["name"], proto, "cam01", "cam02"])
+                        w.writerow([s["name"], proto, "cam02", "cam01"])
+                return {n: [{}, {}] for n in names}
+
+            with patch("run_drive_benchmark.ROOT", root), \
+                    patch("sys.argv", ["run_drive_benchmark.py", "--local-only"]), \
+                    patch("run_drive_benchmark.load_config", return_value=base_cfg), \
+                    patch("run_drive_benchmark.stage_segment", side_effect=fake_stage), \
+                    patch("run_drive_benchmark.run_brute_force", side_effect=fake_run_bf):
+                self.assertEqual(main(), 0)
+
+    def test_reverse_runs_configs_and_cameras_bottom_to_top(self):
+        file_id = "1example_drive_id_0123456789"
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "configs").mkdir()
+            for name in ("001_mma5", "002_sword3"):
+                (root / f"configs/{name}.yml").write_text(
+                    "segments:\n"
+                    f"- name: {name}_aria01\n  target_person: aria01\n  ground_truth_dir: {file_id}\n"
+                    f"  cameras:\n  - id: cam01\n    pkl: {file_id}\n    video: {file_id}\n"
+                    f"  - id: cam02\n    pkl: {file_id}\n    video: {file_id}\n",
+                    encoding="utf-8",
+                )
+            seen = []
+
+            def fake_stage(seg, directory, *, local_only):
+                seen.append((seg["name"], [c["id"] for c in seg["cameras"]]))
+                return {**seg, "ground_truth_dir": str(directory / "poses3d"), "cameras": seg["cameras"], "_persons": ["aria01"]}
+
+            with patch("run_drive_benchmark.ROOT", root), \
+                    patch("sys.argv", ["run_drive_benchmark.py", "--reverse"]), \
+                    patch("run_drive_benchmark.load_config", return_value={"fusion": {}, "paths": {"fused_output_dir": "out"}}), \
+                    patch("run_drive_benchmark.stage_segment", side_effect=fake_stage), \
+                    patch("run_drive_benchmark.run_brute_force", side_effect=lambda cfg, bc, **kw: {s["name"]: [] for s in bc["segments"]}):
+                main()
+            self.assertEqual(seen, [("002_sword3_aria01", ["cam02", "cam01"]), ("001_mma5_aria01", ["cam02", "cam01"])])

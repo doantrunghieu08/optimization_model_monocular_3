@@ -3,6 +3,7 @@
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import csv
+import json
 from pathlib import Path
 import re
 import shutil
@@ -108,7 +109,40 @@ def stage_segment(segment, dataset_dir, *, local_only=False):
         raise ValueError(f"Ground truth for {segment['name']} has no {segment['target_person']}")
     # The Drive configs have no track mapping. Use GT only to assign track IDs.
     label_persons(dataset_dir, persons=persons)
-    return {**segment, "ground_truth_dir": str(poses_dir), "cameras": cameras}
+    return {**segment, "ground_truth_dir": str(poses_dir), "cameras": cameras, "_persons": persons}
+
+
+def segment_protocol(config, segment):
+    person = segment.get("target_person")
+    if not person:
+        return evaluation_protocol(config)
+    return evaluation_protocol({**config, "inputs": {**config.get("inputs", {}), "target_person": person}})
+
+
+def _sequence_name(segment_name):
+    return re.sub(r"_aria\d+$", "", segment_name)
+
+
+def _expand_person_segments(seq_name, seq_segments, persons):
+    base = seq_segments[0]
+    by_person = {s.get("target_person"): s for s in seq_segments}
+    expanded = list(seq_segments)
+    for person in persons:
+        if person not in by_person:
+            expanded.append({**base, "name": f"{seq_name}_{person}", "target_person": person})
+    return expanded
+
+
+def _cached_persons(dataset_dir, seq_segments):
+    report = dataset_dir / "person_labels_report.json"
+    if report.is_file():
+        try:
+            persons = json.loads(report.read_text(encoding="utf-8")).get("persons") or []
+            if persons:
+                return persons
+        except Exception:
+            pass
+    return [s["target_person"] for s in seq_segments if s.get("target_person")]
 
 
 def report_complete(report, segment, protocol):
@@ -121,26 +155,49 @@ def report_complete(report, segment, protocol):
     return all((master, slave) in pairs for master in cameras for slave in cameras if master != slave)
 
 
-def run_segment(base_config, segment, report_dir):
+def run_segments(base_config, segments, report_dir, *, workers=6):
     config = {**base_config, "paths": {
         key: str(report_dir / "work" / key) if key.endswith("_output_dir") else value
         for key, value in base_config["paths"].items()
     }}
-    return run_brute_force(config, {"segments": [segment]}, local_report_dir=report_dir)[segment["name"]]
+    return run_brute_force(
+        config, {"segments": segments}, local_report_dir=report_dir, workers=workers
+    )
+
+
+def run_segment(base_config, segment, report_dir, *, workers=6):
+    return run_segments(base_config, [segment], report_dir, workers=workers)[segment["name"]]
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("configs", nargs="*", type=Path, help="Default: all Drive brute-force configs in configs/")
+    parser.add_argument("--workers", type=int, default=6, help="Parallel pair workers (default: 6)")
+    parser.add_argument("--reverse", action="store_true", help="Run configs and cameras from bottom to top")
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--download-only", action="store_true", help="Cache inputs without launching the benchmark")
     modes.add_argument("--local-only", action="store_true", help="Evaluate using cached inputs only")
     args = parser.parse_args()
-    segments = [segment for path in args.configs or sorted((ROOT / "configs").glob("brute_force*.yml"))
-                for segment in yaml.safe_load(path.read_text(encoding="utf-8"))["segments"]
+    if args.workers < 1:
+        parser.error("--workers must be >= 1")
+    segments = [segment for path in args.configs or sorted((ROOT / "configs").glob("*.yml"))
+                for segment in (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("segments", [])
                 if is_drive_segment(segment)]
+    if args.reverse:
+        segments = [{**s, "cameras": list(reversed(s["cameras"]))} for s in reversed(segments)]
     if not segments:
         parser.error("No segments with Drive file IDs found")
+
+    for segment in segments:
+        name = segment["name"]
+        if not re.fullmatch(r"\d{3}_[a-z0-9]+_aria\d+", name) or any(
+            not re.fullmatch(r"cam\d+", camera["id"]) for camera in segment["cameras"]
+        ):
+            raise ValueError(f"Invalid Harmony4D segment or camera name in {name!r}")
+
+    grouped = {}
+    for segment in segments:
+        grouped.setdefault(_sequence_name(segment["name"]), []).append(segment)
 
     if not args.download_only:
         config = load_config(ROOT / "configs" / "pipeline.yml")
@@ -149,37 +206,54 @@ def main():
     reports = ROOT / "output" / "drive_benchmark"
     datasets = ROOT / "input" / "drive_benchmark"
     downloaded = 0
-    for segment in segments:
-        name = segment["name"]
-        if not re.fullmatch(r"\d{3}_[a-z0-9]+_aria\d+", name) or any(
-            not re.fullmatch(r"cam\d+", camera["id"]) for camera in segment["cameras"]
-        ):
-            raise ValueError(f"Invalid Harmony4D segment or camera name in {name!r}")
-        report_dir = reports / name
-        if not args.download_only and report_complete(report_dir / report_csv_name(config), segment, evaluation_protocol(config)):
-            print(f"[Drive] {name}: already complete", flush=True)
-            continue
-        dataset_dir = datasets / name
-        print(f"[Drive] Starting {name} | cache={dataset_dir}", flush=True)
+    final_checks = []
+    for seq_name, seq_segments in grouped.items():
+        primary = seq_segments[0]
+        dataset_dir = datasets / seq_name
+        if not dataset_dir.exists() and (datasets / f"{seq_name}_aria01").exists():
+            dataset_dir = datasets / f"{seq_name}_aria01"
+        report_dir = reports / seq_name
+        if not report_dir.exists() and (reports / f"{seq_name}_aria01").exists():
+            report_dir = reports / f"{seq_name}_aria01"
+        if not args.download_only:
+            known_persons = _cached_persons(dataset_dir, seq_segments)
+            known_segments = _expand_person_segments(seq_name, seq_segments, known_persons)
+            if (dataset_dir / "person_labels_report.json").is_file() and all(
+                report_complete(report_dir / report_csv_name(config), seg, segment_protocol(config, seg))
+                for seg in known_segments
+            ):
+                print(f"[Drive] {seq_name} ({', '.join(known_persons)}): already complete", flush=True)
+                final_checks.extend((report_dir, seg) for seg in known_segments)
+                continue
+        print(f"[Drive] Starting {seq_name} | cache={dataset_dir}", flush=True)
         try:
             if args.download_only:
-                cameras = prepare_segment_inputs(segment, dataset_dir)
+                cameras = prepare_segment_inputs(primary, dataset_dir)
                 downloaded += 1
-                print(f"[Drive] {name}: {1 + 2 * len(cameras)} input files ready", flush=True)
+                print(f"[Drive] {seq_name}: {1 + 2 * len(cameras)} input files ready", flush=True)
                 continue
-            local_segment = stage_segment(segment, dataset_dir, local_only=args.local_only)
+            staged = stage_segment(primary, dataset_dir, local_only=args.local_only)
+            persons = staged.pop("_persons", None) or [s.get("target_person") for s in seq_segments]
+            local_segments = _expand_person_segments(
+                seq_name,
+                [{**staged, "name": s["name"], "target_person": s["target_person"]} for s in seq_segments],
+                persons,
+            )
             report_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy2(dataset_dir / "person_labels_report.json", report_dir)
-            results = run_segment(config, local_segment, report_dir)
-            cameras = len(segment["cameras"])
-            print(f"[Drive] {name}: {len(results)}/{cameras * (cameras - 1)} pairs reported", flush=True)
+            results = run_segments(config, local_segments, report_dir, workers=args.workers)
+            cameras = len(primary["cameras"])
+            for seg in local_segments:
+                print(f"[Drive] {seg['name']}: {len(results.get(seg['name'], []))}/{cameras * (cameras - 1)} pairs reported", flush=True)
+            final_checks.extend((report_dir, seg) for seg in local_segments)
         except Exception as exc:
-            print(f"[Drive] {name}: {exc}", flush=True)
+            print(f"[Drive] {seq_name}: {exc}", flush=True)
+            final_checks.extend((report_dir, seg) for seg in seq_segments)
     if args.download_only:
-        print(f"[Drive] Inputs ready for {downloaded}/{len(segments)} datasets", flush=True)
-        return int(downloaded != len(segments))
-    return 0 if all(report_complete(reports / s["name"] / report_csv_name(config), s, evaluation_protocol(config))
-                    for s in segments) else 1
+        print(f"[Drive] Inputs ready for {downloaded}/{len(grouped)} datasets", flush=True)
+        return int(downloaded != len(grouped))
+    return 0 if all(report_complete(rdir / report_csv_name(config), seg, segment_protocol(config, seg))
+                    for rdir, seg in final_checks) else 1
 
 
 if __name__ == "__main__":
