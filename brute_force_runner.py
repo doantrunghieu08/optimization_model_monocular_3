@@ -73,7 +73,7 @@ def _cleanup_local_input_files(
 
     print("\n" + "=" * 65)
     print("[CLEANUP] Dọn dẹp dữ liệu đầu vào sau khi brute-force hoàn tất.")
-    print("Chương trình sẽ xóa các file pkl_local và video_local.")
+    print("Chương trình sẽ xóa các file pkl_local, video_local và tracking_result_local.")
     print(f"Nhập N hoặc n trong {timeout} giây để GIỮ LẠI các file.")
     print("Nếu không nhập hoặc nhập nội dung khác: chương trình sẽ XÓA.")
     print("=" * 65)
@@ -99,7 +99,7 @@ def _cleanup_local_input_files(
     for segment in brute_cfg.get("segments", []):
         for camera in segment.get("cameras", []):
 
-            for key in ("pkl_local", "video_local"):
+            for key in ("pkl_local", "video_local", "tracking_result_local"):
                 value = camera.get(key)
 
                 if not value:
@@ -468,9 +468,11 @@ def _get_header_indices(header: list) -> dict:
     }
     return idx
 
-def _parse_history_row(row: list, idx: dict, expected_protocol: str = EVALUATION_PROTOCOL) -> tuple:
+def _parse_history_row(row: list, idx: dict, expected_protocol=EVALUATION_PROTOCOL) -> tuple:
+    # expected_protocol: one protocol or a set (one per target person: aria01 / aria02 segments).
+    expected = {expected_protocol} if isinstance(expected_protocol, str) else set(expected_protocol)
     if idx.get('Segment', -1) == -1 or idx['Segment'] >= len(row): return None, None
-    if idx.get('Protocol', -1) == -1 or idx['Protocol'] >= len(row) or row[idx['Protocol']] != expected_protocol: return None, None
+    if idx.get('Protocol', -1) == -1 or idx['Protocol'] >= len(row) or row[idx['Protocol']] not in expected: return None, None
     if row[idx['Segment']] == "End": return None, None
     if idx.get('mpjpe.all_method', -1) != -1 and row[idx['mpjpe.all_method']] in ("N/A", "", "inf"): return None, None
     
@@ -546,7 +548,7 @@ def _parse_history_row(row: list, idx: dict, expected_protocol: str = EVALUATION
     }
     return key, res
 
-def load_existing_spreadsheet_results(sheet_name: str, expected_protocol: str | None = None) -> dict:
+def load_existing_spreadsheet_results(sheet_name: str, expected_protocol=None) -> dict:
     expected_protocol = expected_protocol or ACTIVE_EVALUATION_PROTOCOL
     existing = {}
     if ACTIVE_LOCAL_REPORT_DIR is None and HAS_GSPREAD:
@@ -1046,20 +1048,34 @@ def get_spreadsheet_name_input(default_name: str = "Brute_Force_Report_Pipeline 
     print(f"\n[+] Đã ghi nhận tên file tùy chỉnh: '{user_input}'")
     return user_input
 
+def _segment_protocol(base_cfg, seg) -> str:
+    """Protocol of one segment. It includes the target person (and height), so an aria02
+    segment has its own protocol; its rows are found again only with it."""
+    person = seg.get("target_person")
+    if not person:
+        return ACTIVE_EVALUATION_PROTOCOL
+    import copy
+    cfg = copy.deepcopy(base_cfg)
+    cfg.setdefault("inputs", {})["target_person"] = person
+    return evaluation_protocol(cfg)
+
+
 def _process_segment(seg, existing, base_cfg, ws_dir, sh_name, ws_title, all_res, current_idx, total_pairs):
     seg_name, cameras = seg["name"], seg.get("cameras", [])
     seg_total_pairs = len(cameras) * (len(cameras) - 1)
-    print(f"\n=== Bắt đầu vét cạn cho Segment: {seg_name} ({seg_total_pairs} cặp) ===")
-    
+    seg_protocol = _segment_protocol(base_cfg, seg)
+    print(f"\n=== Bắt đầu vét cạn cho Segment: {seg_name} "
+          f"(target_person={seg.get('target_person', 'N/A')}, {seg_total_pairs} cặp) ===")
+
     results = []
     last_update_time = time.time()
-    
+
     for cA, cB in itertools.permutations(cameras, 2):
         current_idx += 1
         print(f"\n--- [Tiến trình: {current_idx}/{total_pairs}] Master={cA['id']} | Supplement={cB['id']} ---")
 
         cached = existing.get((seg_name, cA["id"], cB["id"]))
-        if cache_compatible(cached, ACTIVE_EVALUATION_PROTOCOL):
+        if cache_compatible(cached, seg_protocol):
             res = cached
             res.update({"set": res.get("set", extract_set_name(cA["pkl"])), "master": cA["id"], "supplement": cB["id"]})
             results.append(res)
@@ -1120,7 +1136,10 @@ def run_brute_force(base_cfg=None, brute_cfg=None, *, local_report_dir=None):
     sh_name = default_sh_name if ACTIVE_LOCAL_REPORT_DIR is not None else get_spreadsheet_name_input(default_name=default_sh_name, timeout=10)
     
     ws_title = f"Run_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
-    existing = load_existing_spreadsheet_results(sh_name, expected_protocol=ACTIVE_EVALUATION_PROTOCOL)
+    # One expected protocol per target person, so cached aria02 rows are reused too.
+    expected = {ACTIVE_EVALUATION_PROTOCOL} | {
+        _segment_protocol(base_cfg, seg) for seg in brute_cfg.get("segments", [])}
+    existing = load_existing_spreadsheet_results(sh_name, expected_protocol=expected)
     all_res = {}
 
     total_pairs = sum(
