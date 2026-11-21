@@ -36,6 +36,132 @@ from pipeline import run_pipeline
 
 GC_CLIENT = None
 
+def _get_timed_input(timeout: int, prompt: str = ">> Tên file của bạn: ") -> str | None:
+    """
+    Đọc input có timeout, không tạo thread đọc stdin chạy ngầm.
+    Phù hợp với môi trường terminal macOS/Linux.
+    """
+    import select
+    import sys
+
+    print(prompt, end="", flush=True)
+
+    try:
+        ready, _, _ = select.select([sys.stdin], [], [], timeout)
+        if ready:
+            return sys.stdin.readline().strip()
+        return None
+    except (OSError, ValueError, AttributeError):
+        print("\n[!] Không hỗ trợ timed input trong terminal này.")
+        return None
+    
+def _cleanup_local_input_files(
+    brute_cfg: dict,
+    workspace: Path,
+    timeout: int = 10
+):
+    """
+    Hỏi người dùng có muốn xóa toàn bộ pkl_local và video_local không.
+
+    Quy tắc:
+    - Nhập N hoặc n: giữ nguyên.
+    - Các trường hợp còn lại, bao gồm timeout: xóa.
+    - Chỉ xóa file được khai báo trong pkl_local/video_local.
+    - Không xóa thư mục, symlink hoặc file khác.
+    """
+
+    print("\n" + "=" * 65)
+    print("[CLEANUP] Dọn dẹp dữ liệu đầu vào sau khi brute-force hoàn tất.")
+    print("Chương trình sẽ xóa các file pkl_local và video_local.")
+    print(f"Nhập N hoặc n trong {timeout} giây để GIỮ LẠI các file.")
+    print("Nếu không nhập hoặc nhập nội dung khác: chương trình sẽ XÓA.")
+    print("=" * 65)
+
+    choice = _get_timed_input(
+        timeout,
+        prompt=f">> Bạn có muốn giữ lại các file đầu vào không? [N/n để giữ, mặc định xóa] ({timeout}s): "
+    )
+
+    if choice in ("N", "n"):
+        print("\n[CLEANUP] Người dùng chọn giữ lại dữ liệu.")
+        print("[CLEANUP] Không có file đầu vào nào bị xóa.")
+        return
+
+    if choice is None:
+        print("\n[CLEANUP] Hết thời gian chờ. Tự động xóa dữ liệu đầu vào.")
+    else:
+        print(f"\n[CLEANUP] Lựa chọn '{choice}' không phải N/n. Tiến hành xóa.")
+
+    # Thu thập tất cả file PKL và video từ cấu hình.
+    files_to_delete = set()
+
+    for segment in brute_cfg.get("segments", []):
+        for camera in segment.get("cameras", []):
+
+            for key in ("pkl_local", "video_local"):
+                value = camera.get(key)
+
+                if not value:
+                    continue
+
+                path = Path(str(value)).expanduser()
+
+                if not path.is_absolute():
+                    path = workspace / path
+
+                # Chuẩn hóa đường dẫn nhưng không dereference symlink.
+                path = Path(os.path.abspath(str(path)))
+
+                files_to_delete.add(path)
+
+    if not files_to_delete:
+        print("[CLEANUP] Không tìm thấy pkl_local/video_local trong cấu hình.")
+        return
+
+    deleted_count = 0
+    missing_count = 0
+    skipped_count = 0
+    failed_count = 0
+
+    print(f"\n[CLEANUP] Tổng số đường dẫn duy nhất: {len(files_to_delete)}")
+
+    for path in sorted(files_to_delete, key=lambda p: str(p)):
+
+        try:
+            # Không xóa symlink để tránh ảnh hưởng dữ liệu bên ngoài.
+            if path.is_symlink():
+                print(f"[SKIP] Symlink: {path}")
+                skipped_count += 1
+                continue
+
+            if not path.exists():
+                print(f"[MISSING] {path}")
+                missing_count += 1
+                continue
+
+            # Chỉ xóa file, tuyệt đối không xóa thư mục.
+            if not path.is_file():
+                print(f"[SKIP] Không phải file: {path}")
+                skipped_count += 1
+                continue
+
+            path.unlink()
+
+            print(f"[DELETED] {path}")
+            deleted_count += 1
+
+        except Exception as e:
+            print(f"[ERROR] Không thể xóa {path}: {e}")
+            failed_count += 1
+
+    print("\n" + "=" * 65)
+    print("[CLEANUP] KẾT QUẢ")
+    print(f"  Đã xóa       : {deleted_count}")
+    print(f"  Không tồn tại: {missing_count}")
+    print(f"  Bỏ qua       : {skipped_count}")
+    print(f"  Lỗi          : {failed_count}")
+    print("=" * 65)
+
 def get_gspread_client():
     global GC_CLIENT
     if not HAS_GSPREAD:
@@ -869,14 +995,6 @@ def _ranking_key(result: dict) -> tuple[float, float, float]:
     return pa_gain, -pa_error, -(accel + mble)
 
 
-def _get_timed_input(timeout: int) -> str | None:
-    q = queue.Queue()
-    def ask():
-        try: q.put(input(">> Tên file của bạn: ").strip())
-        except Exception: q.put(None)
-    threading.Thread(target=ask, daemon=True).start()
-    try: return q.get(timeout=timeout)
-    except queue.Empty: return None
 
 def _archive_old_spreadsheet(default_name: str):
     if not HAS_GSPREAD:
@@ -1016,6 +1134,13 @@ def run_brute_force(base_cfg=None, brute_cfg=None):
         all_res[seg["name"]] = sorted_res
         
     generate_spreadsheet_report_safe(all_res, sh_name, ws_title, silent=False, is_final=True)
+
+    # Dọn dẹp PKL và video sau khi đã hoàn tất báo cáo.
+    _cleanup_local_input_files(
+        brute_cfg=brute_cfg,
+        workspace=WS_DIR,
+        timeout=10
+    )
 
 if __name__ == "__main__":
     import argparse
