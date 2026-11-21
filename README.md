@@ -65,6 +65,12 @@ and the skeleton is rebuilt with the Master bone lengths, so MBLE equals the bas
   (the farther view is weighted more).
 * The same sequence-stability pass is applied afterwards.
 
+**`naive`: comparison baseline** (`fusion_pipeline/naive.py`). For each frame, the Slave is
+rigidly aligned to the Master with one Kabsch rotation about the pelvis, and the joint
+positions are averaged (`fusion.naive.master_weight`, fixed at 0.5). It has no learning, no
+temporal model and does not preserve bone lengths. It is the minimum that any proposed
+fusion must beat.
+
 ### Ground-truth use
 
 | Where | GT used? |
@@ -166,11 +172,22 @@ python main.py --config configs/pipeline.yml
 python brute_force_runner.py --config configs/pipeline.yml --brute-config configs/brute_force.yml               # Hugging
 python brute_force_runner.py --config configs/pipeline.yml --brute-config configs/brute_force_grappling2_043.yml  # 043
 
-# 3) tests (108)
+# 3) tests (135)
 python -m pytest -q
+
+# 4) check a new (Harmony4D) sequence before running anything; prints the remaining steps
+python -m preprocessing_data.check_dataset input/<sequence> --gt-align
+
+# 5) mono vs aotr vs partwise vs naive on the same pairs, current scoring, masked + unmasked
+#    (see docs/PREREGISTRATION_harmony4d.md); e.g. Hugging design / held-out:
+python run_method_comparison.py run --brute configs/brute_force.yml \
+    --mask configs/identity_mask_hugging_002.json \
+    --split design=aria01:cam02,cam04,cam13,cam19 --split heldout=aria02:cam03,cam05,cam17,cam20 \
+    --out output/method_comparison/hugging_002 --worker 0 --n-workers 1
+python run_method_comparison.py summarize --out output/method_comparison/hugging_002
 ```
 
-Choose the method with `fusion.method: aotr | partwise` in `configs/pipeline.yml`. Each
+Choose the method with `fusion.method: aotr | partwise | naive` in `configs/pipeline.yml`. Each
 method writes its own report (`output/brute_force_report_<method>_<hash>.csv`). The hash
 covers the method, its parameters and the identity mask, so cached results are never mixed.
 

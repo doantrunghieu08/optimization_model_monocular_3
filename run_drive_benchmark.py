@@ -1,0 +1,186 @@
+"""Run Harmony4D brute-force configs whose inputs are Google Drive file IDs."""
+
+import argparse
+from concurrent.futures import ThreadPoolExecutor
+import csv
+from pathlib import Path
+import re
+import shutil
+from zipfile import ZipFile
+
+import numpy as np
+import yaml
+
+from brute_force_runner import run_brute_force
+from config_loader import load_config
+from fusion_pipeline.aotr_benchmark import evaluation_protocol, report_csv_name
+from preprocessing_data.label_persons import run as label_persons
+
+
+ROOT = Path(__file__).resolve().parent
+DRIVE_ID = re.compile(r"[A-Za-z0-9_-]{25,}")
+
+
+def is_drive_segment(segment):
+    return DRIVE_ID.fullmatch(segment["ground_truth_dir"]) and all(
+        DRIVE_ID.fullmatch(camera[key]) for camera in segment["cameras"] for key in ("pkl", "video")
+    )
+
+
+def download(file_id, path):
+    import gdown
+    import requests
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_file() and path.stat().st_size:
+        return
+    params = {"id": file_id, "export": "download", "confirm": "t"}
+    for url in ("https://drive.usercontent.google.com/download", "https://drive.google.com/uc"):
+        with requests.get(url, params=params, headers={"Accept-Encoding": "identity"},
+                          stream=True, timeout=(15, 60)) as response:
+            if response.status_code != 200 or "attachment" not in response.headers.get("Content-Disposition", "").lower():
+                continue
+            partial = path.with_suffix(path.suffix + ".http-part")
+            with partial.open("wb") as target:
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    target.write(chunk)
+            size = partial.stat().st_size
+            content_length = response.headers.get("Content-Length")
+            if content_length and size != int(content_length):
+                raise RuntimeError(f"Incomplete download for {path.name}: {size}/{content_length} bytes")
+            if size:
+                partial.replace(path)
+                break
+    if not path.is_file():
+        gdown.download(id=file_id, output=str(path), use_cookies=False, quiet=True, resume=True)
+    if not path.is_file() or not path.stat().st_size:
+        raise RuntimeError(f"Cannot download {file_id} to {path.name}")
+    print(f"[Drive] {path.name} downloaded ({path.stat().st_size:,} bytes)", flush=True)
+
+
+def extract_poses(archive_path, poses_dir):
+    poses_dir.mkdir(parents=True, exist_ok=True)
+    persons = set()
+    with ZipFile(archive_path) as archive:
+        for member in archive.infolist():
+            name = Path(member.filename).name
+            if not re.fullmatch(r"\d+\.npy", name):
+                continue
+            target = poses_dir / name
+            with archive.open(member) as source, target.open("wb") as destination:
+                shutil.copyfileobj(source, destination)
+            persons.update(str(person).lower() for person in np.load(target, allow_pickle=True).item())
+    return sorted(persons)
+
+
+def prepare_segment_inputs(segment, dataset_dir, *, local_only=False):
+    name = segment["name"].removesuffix(f"_{segment['target_person']}")
+    archive = dataset_dir / "poses3d.zip"
+    cameras = []
+    downloads = []
+    for camera in segment["cameras"]:
+        cam_dir = dataset_dir / "exo" / camera["id"]
+        stem = f"harmony4D_{name}_{camera['id']}"
+        pkl = cam_dir / f"{stem}_wham" / f"wham_{stem}_ffmpeg.pkl"
+        video = cam_dir / "images" / f"{stem}_ffmpeg.mp4"
+        downloads.extend(((camera["pkl"], pkl), (camera["video"], video)))
+        cameras.append({"id": camera["id"], "pkl": str(pkl), "video": str(video)})
+
+    if local_only:
+        required = [archive, *(path for _, path in downloads)]
+        missing = [path.name for path in required if not path.is_file() or not path.stat().st_size]
+        if missing:
+            raise FileNotFoundError(f"Missing {len(missing)} of {len(required)} local inputs: {', '.join(missing)}")
+    else:
+        download(segment["ground_truth_dir"], archive)
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [pool.submit(download, file_id, path) for file_id, path in downloads]
+            for future in futures:
+                future.result()
+    return cameras
+
+
+def stage_segment(segment, dataset_dir, *, local_only=False):
+    cameras = prepare_segment_inputs(segment, dataset_dir, local_only=local_only)
+    poses_dir = dataset_dir / "processed_data" / "poses3d"
+    persons = extract_poses(dataset_dir / "poses3d.zip", poses_dir)
+    if segment["target_person"] not in persons:
+        raise ValueError(f"Ground truth for {segment['name']} has no {segment['target_person']}")
+    # The Drive configs have no track mapping. Use GT only to assign track IDs.
+    label_persons(dataset_dir, persons=persons)
+    return {**segment, "ground_truth_dir": str(poses_dir), "cameras": cameras}
+
+
+def report_complete(report, segment, protocol):
+    if not report.is_file():
+        return False
+    with report.open(encoding="utf-8-sig", newline="") as source:
+        pairs = {(row["Cam Master"], row["Cam Slave"]) for row in csv.DictReader(source)
+                 if row.get("Segment") == segment["name"] and row.get("Protocol") == protocol}
+    cameras = [camera["id"] for camera in segment["cameras"]]
+    return all((master, slave) in pairs for master in cameras for slave in cameras if master != slave)
+
+
+def run_segment(base_config, segment, report_dir):
+    config = {**base_config, "paths": {
+        key: str(report_dir / "work" / key) if key.endswith("_output_dir") else value
+        for key, value in base_config["paths"].items()
+    }}
+    return run_brute_force(config, {"segments": [segment]}, local_report_dir=report_dir)[segment["name"]]
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("configs", nargs="*", type=Path, help="Default: all Drive brute-force configs in configs/")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--download-only", action="store_true", help="Cache inputs without launching the benchmark")
+    modes.add_argument("--local-only", action="store_true", help="Evaluate using cached inputs only")
+    args = parser.parse_args()
+    segments = [segment for path in args.configs or sorted((ROOT / "configs").glob("brute_force*.yml"))
+                for segment in yaml.safe_load(path.read_text(encoding="utf-8"))["segments"]
+                if is_drive_segment(segment)]
+    if not segments:
+        parser.error("No segments with Drive file IDs found")
+
+    if not args.download_only:
+        config = load_config(ROOT / "configs" / "pipeline.yml")
+        # These per-pair overrides were selected on Hugging.
+        config["fusion"].setdefault("master_protection", {})["pair_modes"] = {}
+    reports = ROOT / "output" / "drive_benchmark"
+    datasets = ROOT / "input" / "drive_benchmark"
+    downloaded = 0
+    for segment in segments:
+        name = segment["name"]
+        if not re.fullmatch(r"\d{3}_[a-z0-9]+_aria\d+", name) or any(
+            not re.fullmatch(r"cam\d+", camera["id"]) for camera in segment["cameras"]
+        ):
+            raise ValueError(f"Invalid Harmony4D segment or camera name in {name!r}")
+        report_dir = reports / name
+        if not args.download_only and report_complete(report_dir / report_csv_name(config), segment, evaluation_protocol(config)):
+            print(f"[Drive] {name}: already complete", flush=True)
+            continue
+        dataset_dir = datasets / name
+        print(f"[Drive] Starting {name} | cache={dataset_dir}", flush=True)
+        try:
+            if args.download_only:
+                cameras = prepare_segment_inputs(segment, dataset_dir)
+                downloaded += 1
+                print(f"[Drive] {name}: {1 + 2 * len(cameras)} input files ready", flush=True)
+                continue
+            local_segment = stage_segment(segment, dataset_dir, local_only=args.local_only)
+            report_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(dataset_dir / "person_labels_report.json", report_dir)
+            results = run_segment(config, local_segment, report_dir)
+            cameras = len(segment["cameras"])
+            print(f"[Drive] {name}: {len(results)}/{cameras * (cameras - 1)} pairs reported", flush=True)
+        except Exception as exc:
+            print(f"[Drive] {name}: {exc}", flush=True)
+    if args.download_only:
+        print(f"[Drive] Inputs ready for {downloaded}/{len(segments)} datasets", flush=True)
+        return int(downloaded != len(segments))
+    return 0 if all(report_complete(reports / s["name"] / report_csv_name(config), s, evaluation_protocol(config))
+                    for s in segments) else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

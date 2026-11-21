@@ -34,7 +34,12 @@ fusion:
   # - aotr    : trust-region lấy Master làm gốc (mặc định).
   # - partwise: trộn đối xứng hướng xương, căn Slave theo từng phần thân (hông/vai),
   #             trọng số theo độ sâu, giữ chiều dài xương Master. Xem MODEL_CHANGES.md.
+  # - naive   : BASELINE so sánh. Mỗi frame: căn Slave vào Master bằng một phép xoay Kabsch
+  #             (tâm hông), rồi lấy trung bình vị trí khớp. Không học, không làm mượt.
   method: aotr
+  naive:
+    # Trọng số Master cố định; 0.5 = trung bình thuần. Không được tinh chỉnh (là baseline).
+    master_weight: 0.5
   partwise:
     # Tham số logistic học MỘT LẦN trên split design (aria01, cam02/04/13/19) và đóng băng.
     # w_Master = sigmoid(a + b * ((depth_M - depth_S) - mu) / sd), depth = z của tâm hông (m).

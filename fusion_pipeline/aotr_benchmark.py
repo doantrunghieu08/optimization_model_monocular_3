@@ -12,6 +12,8 @@ LEGACY_PROTOCOL = "no_gt_v10_master_only_postopt"
 # Invalidate results where enabled acceleration control was silently skipped.
 AOTR_REVISION = "aotr_fk_trustregion_v3_all_evidence_stable"
 PARTWISE_REVISION = "partwise_depth_logit_v1"
+NAIVE_REVISION = "naive_kabsch_average_v1"
+SEQUENCE_METHODS = ("partwise", "naive")  # replace camera1 after the per-frame AOTR pass
 
 
 def fusion_method(config):
@@ -48,6 +50,9 @@ def evaluation_protocol(config):
     if method == "partwise":
         revision = PARTWISE_REVISION
         settings["partwise"] = config["fusion"].get("partwise", {})
+    elif method == "naive":
+        revision = NAIVE_REVISION
+        settings["naive"] = {"master_weight": float(config["fusion"].get("naive", {}).get("master_weight", 0.5))}
     # Excluding identity-swapped frames changes the metrics: never reuse unmasked caches.
     id_mask = config.get("evaluation", {}).get("identity_mask")
     if id_mask and id_mask.get("path"):
@@ -64,7 +69,8 @@ def evaluation_protocol(config):
 
 def report_csv_name(config):
     if aotr_enabled(config):
-        prefix = "partwise" if fusion_method(config) == "partwise" else "aotr"
+        method = fusion_method(config)
+        prefix = method if method in SEQUENCE_METHODS else "aotr"
         return f"brute_force_report_{prefix}_" + evaluation_protocol(config).rsplit("__", 1)[-1] + ".csv"
     return "brute_force_report.csv"
 
@@ -90,6 +96,8 @@ def verify_aotr_execution(config):
     summary = json.loads(report.read_text(encoding="utf-8"))
     if fusion_method(config) == "partwise":
         return _verify_partwise(config, summary)
+    if fusion_method(config) == "naive":
+        return _verify_naive(config, summary)
     frames = int(summary.get("frames", 0))
     corrected = int(summary.get("corrected_frames", 0))
     fallbacks = int(summary.get("fallback_frames", 0))
@@ -125,4 +133,15 @@ def _verify_partwise(config, summary):
     status = diag.get("sequence_stability", {}).get("status")
     if stab_enabled and status not in {"applied", "unchanged"}:
         raise RuntimeError("Partwise sequence stability was enabled but did not run: " + str(diag))
+    return summary
+
+
+def _verify_naive(config, summary):
+    """Naive baseline replaces camera1 for every frame; its diagnostics must cover the current pair."""
+    report = Path(config["paths"]["fused_output_dir"]) / "naive_diagnostics.json"
+    if summary.get("mode") != "naive" or not report.is_file():
+        raise RuntimeError("fusion.method=naive but naive diagnostics are missing: " + str(summary))
+    diag = json.loads(report.read_text(encoding="utf-8"))
+    if int(diag.get("frames", 0)) <= 0 or int(diag["frames"]) != int(summary.get("frames", -1)):
+        raise RuntimeError("Naive diagnostics do not cover the current pair: " + str(diag))
     return summary

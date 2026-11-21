@@ -21,6 +21,7 @@ from fusion_pipeline.aotr_benchmark import (
 )
 ACTIVE_EVALUATION_PROTOCOL = EVALUATION_PROTOCOL
 ACTIVE_REPORT_CSV_NAME = "brute_force_report.csv"
+ACTIVE_LOCAL_REPORT_DIR = None
 
 HAS_GSPREAD = False
 try:
@@ -548,7 +549,7 @@ def _parse_history_row(row: list, idx: dict, expected_protocol: str = EVALUATION
 def load_existing_spreadsheet_results(sheet_name: str, expected_protocol: str | None = None) -> dict:
     expected_protocol = expected_protocol or ACTIVE_EVALUATION_PROTOCOL
     existing = {}
-    if HAS_GSPREAD:
+    if ACTIVE_LOCAL_REPORT_DIR is None and HAS_GSPREAD:
         try:
             header, rows = _get_sheet_data(sheet_name)
             if header:
@@ -566,7 +567,7 @@ def load_existing_spreadsheet_results(sheet_name: str, expected_protocol: str | 
             pass
 
     ws_dir = Path(__file__).parent.resolve()
-    local_csv = ws_dir / "output" / ACTIVE_REPORT_CSV_NAME
+    local_csv = (ACTIVE_LOCAL_REPORT_DIR or ws_dir / "output") / ACTIVE_REPORT_CSV_NAME
     if local_csv.exists():
         try:
             with open(local_csv, "r", encoding="utf-8-sig") as f:
@@ -719,12 +720,15 @@ def generate_spreadsheet_report(all_results, sheet_name, worksheet_title=None, s
         rows_to_insert.append(["End"] * len(rows_to_insert[0]))
 
     ws_dir = Path(__file__).parent.resolve()
-    csv_path = ws_dir / "output" / ACTIVE_REPORT_CSV_NAME
+    csv_path = (ACTIVE_LOCAL_REPORT_DIR or ws_dir / "output") / ACTIVE_REPORT_CSV_NAME
     csv_path.parent.mkdir(parents=True, exist_ok=True)
+    write_path = csv_path.with_suffix(".tmp") if ACTIVE_LOCAL_REPORT_DIR is not None else csv_path
     try:
-        with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
+        with write_path.open("w", newline="", encoding="utf-8-sig") as f:
             writer = csv.writer(f)
             writer.writerows(rows_to_insert)
+        if write_path != csv_path:
+            write_path.replace(csv_path)
         if not silent:
             print(f"\n[Local] Đã lưu báo cáo CSV: {csv_path.resolve()}")
     except PermissionError:
@@ -736,7 +740,7 @@ def generate_spreadsheet_report(all_results, sheet_name, worksheet_title=None, s
     except Exception as e:
         if not silent: print(f"[-] Lỗi khi ghi CSV local: {e}")
 
-    if not HAS_GSPREAD:
+    if ACTIVE_LOCAL_REPORT_DIR is not None or not HAS_GSPREAD:
         return
 
     try:
@@ -1093,8 +1097,9 @@ def _process_segment(seg, existing, base_cfg, ws_dir, sh_name, ws_title, all_res
     )
     return sorted_results, current_idx
 
-def run_brute_force(base_cfg=None, brute_cfg=None):
-    global ACTIVE_EVALUATION_PROTOCOL, ACTIVE_REPORT_CSV_NAME
+def run_brute_force(base_cfg=None, brute_cfg=None, *, local_report_dir=None):
+    global ACTIVE_EVALUATION_PROTOCOL, ACTIVE_REPORT_CSV_NAME, ACTIVE_LOCAL_REPORT_DIR
+    ACTIVE_LOCAL_REPORT_DIR = Path(local_report_dir) if local_report_dir is not None else None
     WS_DIR = Path(__file__).parent.resolve()
     if brute_cfg is None:
         with open(WS_DIR / "configs/brute_force.yml", "r", encoding="utf-8") as f: brute_cfg = yaml.safe_load(f)
@@ -1103,7 +1108,7 @@ def run_brute_force(base_cfg=None, brute_cfg=None):
     ACTIVE_EVALUATION_PROTOCOL = evaluation_protocol(base_cfg)
     ACTIVE_REPORT_CSV_NAME = report_csv_name(base_cfg)
     print(f"[BruteForce] Active protocol: {ACTIVE_EVALUATION_PROTOCOL}")
-    print(f"[BruteForce] Results CSV: output/{ACTIVE_REPORT_CSV_NAME}")
+    print(f"[BruteForce] Results CSV: {(ACTIVE_LOCAL_REPORT_DIR or WS_DIR / 'output') / ACTIVE_REPORT_CSV_NAME}")
     print(f"[BruteForce] AOTR enabled: {aotr_enabled(base_cfg)}")
     # Kiểm tra xem file config đã nhận đúng giá trị chưa
     print("Alpha trong config:", base_cfg['fusion']['belief']['alpha'])
@@ -1112,7 +1117,7 @@ def run_brute_force(base_cfg=None, brute_cfg=None):
     _, runner_name, _ = get_system_metadata()
     suffix = ACTIVE_EVALUATION_PROTOCOL.rsplit("__", 1)[-1] if aotr_enabled(base_cfg) else "legacy"
     default_sh_name = f"{runner_name}_AOTR_brute_force_{suffix}" if aotr_enabled(base_cfg) else f"{runner_name}_brute_force_pipeline"
-    sh_name = get_spreadsheet_name_input(default_name=default_sh_name, timeout=10)
+    sh_name = default_sh_name if ACTIVE_LOCAL_REPORT_DIR is not None else get_spreadsheet_name_input(default_name=default_sh_name, timeout=10)
     
     ws_title = f"Run_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
     existing = load_existing_spreadsheet_results(sh_name, expected_protocol=ACTIVE_EVALUATION_PROTOCOL)
@@ -1134,6 +1139,7 @@ def run_brute_force(base_cfg=None, brute_cfg=None):
         all_res[seg["name"]] = sorted_res
         
     generate_spreadsheet_report_safe(all_res, sh_name, ws_title, silent=False, is_final=True)
+    return all_res
 
     # Dọn dẹp PKL và video sau khi đã hoàn tất báo cáo.
     _cleanup_local_input_files(
