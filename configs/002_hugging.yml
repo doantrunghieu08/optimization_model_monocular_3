@@ -1,0 +1,18 @@
+segments:
+  - name: "002_hugging_aria01"
+    target_person: aria01
+    ground_truth_dir: "1BLrD11N_lFZoJDIAdf1NrM4iISBiLO31"
+    ground_truth_dir_2d: "1DHR7CskxtPpY9zRaWBDCMJH27504jscX"
+    cameras:
+      - id: "cam02"
+        pkl: "1vpsvKiusReCDvWALHQ02_k09kSawPUea"
+        video: "13lqmwzcqxYwvOa6st3zWMcB41TdHnSvR"
+        tracking_result: "1xjW7NoAcPR_BPTNtH6ivS-W8ZILOjvH8"
+      - id: "cam06"
+        pkl: "19FXXzSSZFsHXKBX2tDzC_QAboOXTYOz6"
+        video: "1k6fTbPpkA-chtTfn7oQ0JEvNJ8XL3WtP"
+        tracking_result: "1rjNv9L_NoChuv6YHmPIW4CVaLbvqdYng"
+      - id: "cam12"
+        pkl: "1yI4VxzGI0CaE87sLi-lPmmA9wX0jyk78"
+        video: "1XONbwfRH73RFE3OjxhY0IyNhErlpYDW1"
+        tracking_result: "13rBwkI_MCqc4ZU97R1IVi-CoJ4RCx1o1"
