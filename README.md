@@ -159,8 +159,17 @@ python build_identity_mask.py configs/brute_force_grappling2_043.yml configs/ide
 #    inputs/drive/<sequence>/ (--data-dir; same layout as a dataset folder, reused on rerun), the
 #    mapping is written next to each pkl, and `<key>_local: "<absolute path>"` is added under each
 #    Drive ID in the same YAML (comments kept); build_identity_mask.py reads it.
+#    A Drive pkl is stored as exo/<cam>/<sequence>_<cam>_wham/wham_<sequence>_<cam>.pkl: the identity
+#    mask is keyed by the pkl stem, and Drive names (wham_output.pkl) repeat across cameras.
+#    Tracks are labelled against every person of the GT; add --overwrite to replace mappings made
+#    before that (they only know aria01).
+#    cameras[].tracking_result (WHAM tracking_results.pth, path or Drive ID) is put next to the pkl,
+#    where the 2D preprocessing reads keypoints + confidences; its coverage per person is printed.
+#    --persons N improves the first N GT persons: --persons 2 adds a <sequence>_aria02 segment
+#    (same cameras, `added_by: label_persons --persons`), so the runner does 2 x 380 pairs;
+#    --persons 1 removes it again. The runner keeps a cache per target person.
 #    Add the mask to evaluation.identity_mask.path in configs/pipeline.yml.
-python -m preprocessing_data.label_persons configs/brute_force_005_sword3.yml
+python -m preprocessing_data.label_persons configs/brute_force_005_sword3.yml --persons 2
 python build_identity_mask.py configs/brute_force_005_sword3.yml configs/identity_mask_005_sword3.json
 
 # 1) one camera pair: set inputs.* in configs/pipeline.yml, then
@@ -190,6 +199,9 @@ python run_method_comparison.py summarize --out output/method_comparison/hugging
 Choose the method with `fusion.method: aotr | partwise | naive` in `configs/pipeline.yml`. Each
 method writes its own report (`output/brute_force_report_<method>_<hash>.csv`). The hash
 covers the method, its parameters and the identity mask, so cached results are never mixed.
+For the mask it covers the frames actually excluded (all mask files merged, cut at
+`margin_mm`), not only the file names: rebuilding a mask that drops other frames starts a
+new report, while rebuilding one with the same excluded frames reuses the cache.
 
 Evaluation outputs (`output/evaluation_results/*_cam1.csv`): `posed_*` columns are WHAM
 mono, `fused_*` columns are the fusion result.
