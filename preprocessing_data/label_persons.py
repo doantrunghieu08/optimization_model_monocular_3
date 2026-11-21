@@ -27,11 +27,24 @@ Input (first argument) is either
       ground_truth_dir: GT folder | local .zip | Drive ID of a zip holding poses3d/*.npy
       cameras[].pkl:    WHAM pkl  | Drive ID of the pkl
       cameras[].video:  video     | Drive ID of the video (optional; downloaded, not read)
-  Segments sharing a ground_truth_dir are one sequence, labelled with their
-  target_person values (--persons overrides). Drive files and GT zips are KEPT under
-  <data-dir>/<sequence>/ in the dataset-folder layout, because build_identity_mask.py
-  and the pipeline read the pkl and its mapping again later:
-      exo/<cam id>/<stem>_wham/wham_<stem>_ffmpeg.pkl  (+ _person_mapping.txt, _person_labels.json)
+      cameras[].tracking_result: WHAM tracking_results.pth | Drive ID (optional): the 2D
+                        keypoints + confidences; placed next to the pkl, where
+                        preprocess_pipeline/extract_2d.py reads them (else AOTR only has
+                        its 3D surrogate). Its coverage of each person is reported.
+  Segments sharing a ground_truth_dir are one sequence. Its tracks are labelled against
+  EVERY person of the GT (aria01 and aria02 even if the YAML only targets aria01), so
+  another subject's track is never taken for the target.
+  --persons N picks the TARGET persons whose poses brute_force_runner.py improves: the
+  first N persons of the GT (or names). The YAML gets one segment per target person:
+  --persons 2 adds e.g. 005_sword3_aria02 (cameras shared through a YAML alias, marked
+  `added_by`), so every camera pair runs twice (20 cameras: 2 x 380 = 760 runs);
+  --persons 1 removes the added segment again. Hand-written segments are never removed.
+  Drive files and GT zips are KEPT under <data-dir>/<sequence>/ in the dataset-folder
+  layout, because build_identity_mask.py and the pipeline read the pkl and its mapping
+  again later. A Drive pkl gets a per-camera name (Drive names such as wham_output.pkl
+  repeat across cameras, but the identity mask is keyed by the pkl stem):
+      exo/<cam id>/<sequence>_<cam id>_wham/wham_<sequence>_<cam id>.pkl  (+ _person_mapping.txt,
+          _person_labels.json, tracking_results.pth)
       exo/<cam id>/images/<video>.mp4
       processed_data/poses3d/*.npy
   Downloads are one at a time and reused on a rerun (same Drive ID). Local files are
@@ -46,7 +59,7 @@ Usage:
   python -m preprocessing_data.label_persons input/043_Grappling2 \
       --brute-config configs/brute_force_grappling2_043.yml [--overwrite]
   python -m preprocessing_data.label_persons configs/brute_force_005_sword3.yml \
-      [--data-dir inputs/drive] [--overwrite]
+      [--persons 2] [--data-dir inputs/drive] [--overwrite]
   python build_identity_mask.py configs/brute_force_005_sword3.yml configs/identity_mask_005_sword3.json
 """
 import argparse
@@ -76,7 +89,11 @@ DRIVE_MARKER = ".drive_source.json"  # in exo/<cam id>/: Drive IDs of the kept p
 GT_MARKER = ".gt_source"             # in processed_data/: which zip poses3d/ was extracted from
 # YAML keys that may hold a Drive File ID; label_persons writes <key>_local (absolute path)
 # next to them, which build_identity_mask.py reads.
-LOCAL_KEYS = ("ground_truth_dir", "pkl", "video")
+LOCAL_KEYS = ("ground_truth_dir", "pkl", "video", "tracking_result")
+# preprocess_pipeline/extract_2d.py reads the 2D keypoints + confidences of a pkl from
+# pkl.parent/tracking_results*.pth (WHAM's tracker output).
+TRACKING_NAME = "tracking_results.pth"
+ADDED_BY = "label_persons --persons"  # marks segments this tool added (and may remove)
 
 
 # ------------------------------------------------------------------ voting
@@ -169,6 +186,23 @@ def pkl_stem(pkl):
     return Path(pkl).stem.replace("wham_", "", 1).replace("_ffmpeg", "")
 
 
+OUTPUT_SUFFIXES = ("_person_mapping.txt", "_person_labels.json")
+
+
+def gt_persons(truth_dir):
+    """Person ids of the first GT frame (e.g. ['aria01', 'aria02']); [] if unreadable."""
+    truth_dir = Path(truth_dir)
+    frames = sorted(p for p in list(truth_dir.glob("*.npy")) + list(truth_dir.glob("poses3d/*.npy"))
+                    if p.stem.isdigit())
+    if not frames:
+        return []
+    try:
+        first = np.load(frames[0], allow_pickle=True).item()
+    except Exception:
+        return []
+    return sorted(str(k) for k in first) if isinstance(first, dict) else []
+
+
 def _track_order(tid):
     return (not tid.isdigit(), int(tid) if tid.isdigit() else 0, tid)
 
@@ -183,6 +217,12 @@ def write_camera_outputs(tracks, persons, out_dir, stem, overwrite):
     written = False
     if existing and not overwrite:
         print(f"[label]   keep existing {existing[0].name} (use --overwrite)")
+        kept = {line.split("=", 1)[1].strip().lower()
+                for line in existing[0].read_text(encoding="utf-8").splitlines() if "=" in line}
+        missing = sorted(set(mapping.values()) - kept)
+        if missing:  # e.g. a mapping made when only aria01 was labelled
+            print(f"[label]   WARNING: {existing[0].name} has no track for {missing}, the new labels do; "
+                  "rerun with --overwrite to write them")
     else:
         (out_dir / f"wham_{stem}_person_mapping.txt").write_text(
             "".join(f"{tid} = {lab}\n" for tid, lab in sorted(mapping.items(), key=lambda kv: _track_order(kv[0]))),
@@ -209,12 +249,15 @@ def discover_cameras(dataset_dir):
     return cams
 
 
-def run(dataset_dir, persons=DEFAULT_PERSONS, margin_mm=10.0, max_pa_mm=120.0,
+def run(dataset_dir, persons=None, margin_mm=10.0, max_pa_mm=120.0,
         min_vote_fraction=0.5, overwrite=False, brute_config=None):
     dataset_dir = Path(dataset_dir).resolve()
-    persons = list(persons)
-    labeller = Labeller(margin_mm, max_pa_mm, min_vote_fraction)
     truth_dir = dataset_dir / "processed_data" / "poses3d"
+    gt_list = gt_persons(truth_dir)
+    # Votes: every GT subject. Targets (one brute-force segment each): --persons, default all.
+    persons, wanted = choose_persons(persons, gt_list, gt_list)
+    print(f"[label] persons in the GT: {persons}; target persons: {wanted}")
+    labeller = Labeller(margin_mm, max_pa_mm, min_vote_fraction)
     gt = labeller.load_gt(truth_dir, persons)
     report = {"dataset": str(dataset_dir), "persons": persons, "gt_used": GT_USED,
               "params": labeller.params, "cameras": {}}
@@ -236,7 +279,7 @@ def run(dataset_dir, persons=DEFAULT_PERSONS, margin_mm=10.0, max_pa_mm=120.0,
             "target_person": p,
             "ground_truth_dir": str(truth_dir.relative_to(ROOT)).replace("\\", "/"),
             "cameras": cameras,
-        } for p in persons]}
+        } for p in wanted]}
         Path(brute_config).write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
         print(f"[label] wrote {brute_config}")
     return report
@@ -371,20 +414,57 @@ def _read_drive_marker(cam_dir):
         if isinstance(info, dict) else {}
 
 
-def fetch_drive_file(file_id, cam_dir, cam_id, kind):
+def _move_kept_pkl(old_pkl, new_pkl):
+    """Rename a kept pkl (an earlier download stored under its Drive file name) to its
+    per-camera name, together with its <stem>_wham folder and mapping / labels files."""
+    old_dir, new_dir = old_pkl.parent, new_pkl.parent
+    if old_dir != new_dir and not new_dir.exists():
+        old_dir.rename(new_dir)
+    else:
+        new_dir.mkdir(parents=True, exist_ok=True)
+        if old_dir != new_dir:  # target folder already there: move only this pkl's files
+            for f in [old_pkl] + [old_dir / f"wham_{pkl_stem(old_pkl)}{s}" for s in OUTPUT_SUFFIXES]:
+                if f.exists():
+                    f.replace(new_dir / f.name)
+    (new_dir / old_pkl.name).replace(new_pkl)
+    for suffix in OUTPUT_SUFFIXES:  # wham_output_person_mapping.txt -> wham_<new stem>_person_mapping.txt
+        old_out = new_dir / f"wham_{pkl_stem(old_pkl)}{suffix}"
+        if old_out.exists():
+            old_out.replace(new_dir / f"wham_{pkl_stem(new_pkl)}{suffix}")
+
+
+def fetch_drive_file(file_id, cam_dir, cam_id, kind, stem=None, dest=None):
     """Keep a camera's Drive file in the dataset-folder layout (kept, not deleted:
     build_identity_mask.py and the pipeline read it later):
-        kind 'pkl':   cam_dir/<stem>_wham/<Drive file name>  (the mapping goes next to it)
-        kind 'video': cam_dir/images/<Drive file name>
-    Reused while cam_dir/.drive_source.json names the same ID. When the ID changed, the
-    old file is removed first (for a pkl: its whole <stem>_wham folder, mapping included)."""
+        kind 'pkl':      cam_dir/<stem>_wham/wham_<stem>.pkl  (the mapping goes next to it)
+        kind 'video':    cam_dir/images/<Drive file name>
+        kind 'tracking': `dest` (tracking_results.pth next to the pkl)
+    A pkl is stored under `stem` (e.g. 005_sword3_cam04), NOT under its Drive file name:
+    Drive pkls are often all called wham_output.pkl, and build_identity_mask.py and the
+    evaluator key the identity mask by the pkl stem, so every camera needs its own.
+    Reused while cam_dir/.drive_source.json names the same ID (an earlier download kept
+    under another name is moved, not downloaded again). When the ID changed, the old
+    file is removed first (for a pkl: its whole <stem>_wham folder, mapping included)."""
     markers = _read_drive_marker(cam_dir)
     old = markers.get(kind)
+    named = kind == "pkl" and stem is not None
+    if dest is None and named:
+        dest = cam_dir / f"{stem}_wham" / f"wham_{stem}.pkl"
     if old is not None:
         old_path = (cam_dir / old["path"]).resolve()
         if old["id"] == file_id and old_path.is_file() and old_path.stat().st_size > 0:
-            print(f"[cache] {cam_id} {kind}: reuse {config_path_str(old_path)}")
-            return old_path
+            want = Path(dest).resolve() if dest is not None else old_path
+            if want != old_path:
+                if kind == "pkl":
+                    _move_kept_pkl(old_path, want)
+                else:
+                    want.parent.mkdir(parents=True, exist_ok=True)
+                    old_path.replace(want)
+                markers[kind] = {"id": file_id, "path": want.relative_to(cam_dir.resolve()).as_posix()}
+                (cam_dir / DRIVE_MARKER).write_text(json.dumps(markers, indent=1), encoding="utf-8")
+                print(f"[cache] {cam_id} {kind}: renamed {old['path']} -> {markers[kind]['path']}")
+            print(f"[cache] {cam_id} {kind}: reuse {config_path_str(want)}")
+            return want
         if old["id"] != file_id:
             stale = old_path.parent if kind == "pkl" else old_path
             print(f"[cache] {cam_id} {kind}: Drive ID changed ({old['id']} -> {file_id}); "
@@ -398,7 +478,9 @@ def fetch_drive_file(file_id, cam_dir, cam_id, kind):
     # Download next to the final place, then move: a half-downloaded file is never kept.
     with tempfile.TemporaryDirectory(prefix=".download_", dir=cam_dir) as tmp:
         got = download_drive_file(file_id, Path(tmp), f"{cam_id} {'WHAM pkl' if kind == 'pkl' else kind}")
-        dest = cam_dir / (f"{pkl_stem(got)}_wham" if kind == "pkl" else "images") / got.name
+        if dest is None:
+            dest = cam_dir / (f"{pkl_stem(got)}_wham" if kind == "pkl" else "images") / got.name
+        dest = Path(dest)
         dest.parent.mkdir(parents=True, exist_ok=True)
         got.replace(dest)
     markers[kind] = {"id": file_id, "path": dest.relative_to(cam_dir).as_posix()}
@@ -429,11 +511,12 @@ def optional_source(value):
         return None
 
 
-def load_config(config_path, persons=None):
+def load_config(config_path):
     """Group the YAML segments by ground_truth_dir into sequences
-    {name, gt, persons, cameras: [{id, pkl, video}]}; gt / pkl / video are
-    ('local', Path) or ('drive', id) (video may be None). Every ground_truth_dir / pkl is
-    checked here, before any download."""
+    {name, gt, targets, persons, cameras: [{id, pkl, video, tracking}]}; gt / pkl / video /
+    tracking are ('local', Path) or ('drive', id) (video / tracking may be None); targets
+    are the segments' target_person values. Every ground_truth_dir / pkl is checked here,
+    before any download."""
     cfg = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
     segments = cfg.get("segments") or []
     if not segments:
@@ -455,17 +538,97 @@ def load_config(config_path, persons=None):
             if known is not None and known["pkl"] != pkl:
                 raise ValueError(f"{where}: camera {cam_id} has another pkl than in an earlier "
                                  "segment with the same ground_truth_dir")
-            seq["cameras"][cam_id] = {"id": cam_id, "pkl": pkl, "video": optional_source(cam.get("video"))}
+            seq["cameras"][cam_id] = {"id": cam_id, "pkl": pkl, "video": optional_source(cam.get("video")),
+                                      "tracking": optional_source(cam.get("tracking_result"))}
     sequences, used = [], set()
     for seq in groups.values():
         name, k = seq["name"], 2
         while seq["name"] in used:  # two sequences with the same segment name -> keep data apart
             seq["name"], k = f"{name}_{k}", k + 1
         used.add(seq["name"])
-        seq["persons"] = list(persons) if persons else (seq["persons"] or list(DEFAULT_PERSONS))
+        seq["targets"] = list(seq["persons"])
+        seq["persons"] = list(seq["persons"] or DEFAULT_PERSONS)
         seq["cameras"] = list(seq["cameras"].values())
         sequences.append(seq)
     return sequences
+
+
+def choose_persons(option, gt_list, targets):
+    """-> (persons to vote against, target persons whose poses get improved).
+
+    option None: the YAML's targets; an int N: the first N persons of the GT
+    (--persons 2 -> aria01 and aria02); a list: those names. Votes always include every
+    GT person, so another subject's track is never taken for a target."""
+    if isinstance(option, int):
+        if option < 1:
+            raise ValueError("--persons N needs N >= 1")
+        pool = gt_list or list(DEFAULT_PERSONS)
+        if option > len(pool):
+            print(f"[label] WARNING: --persons {option} but the GT has {len(pool)} person(s): {pool}")
+        wanted = pool[:option]
+    elif option:
+        wanted = [str(p) for p in option]
+    else:
+        wanted = list(targets) or list(DEFAULT_PERSONS)
+    voting = list(dict.fromkeys(list(gt_list) + wanted + list(targets)))
+    return voting, wanted
+
+
+# ------------------------------------------------------------------ tracking_results.pth
+
+def _as_numpy(value):
+    if hasattr(value, "detach"):
+        value = value.detach().cpu()
+    return np.asarray(value)
+
+
+def place_tracking(source, pkl, cam_dir, cam_id, own_pkl):
+    """Make the camera's tracking_results reachable where preprocess_pipeline/extract_2d.py
+    looks for it: pkl.parent/tracking_results*.pth. A Drive file is downloaded there when
+    the pkl folder is ours (Drive pkl), else into cam_dir/tracking/; a file elsewhere is
+    linked next to the pkl. A different tracking file already next to the pkl is never
+    replaced. -> (path the pipeline will read, downloaded / linked path or None)."""
+    kind, ref = source
+    if kind == "drive":
+        folder = pkl.parent if own_pkl else cam_dir / "tracking"
+        got = fetch_drive_file(ref, cam_dir, cam_id, "tracking", dest=folder / TRACKING_NAME)
+    else:
+        got = ref
+    got = Path(got)
+    near = sorted(pkl.parent.glob("tracking_results*.pth"))  # extract_2d.py reads near[0]
+    same = [p for p in near if p.resolve() == got.resolve()]
+    if not same and not near:
+        link = pkl.parent / TRACKING_NAME
+        link.symlink_to(got.resolve())
+        print(f"[tracking] {cam_id}: linked {config_path_str(link)} -> {config_path_str(got)}")
+        near = [link]
+    elif not same:
+        print(f"[tracking] WARNING {cam_id}: {near[0].name} is already next to the pkl and is what the "
+              f"pipeline reads; {config_path_str(got)} is not used")
+    elif near[0].resolve() != got.resolve():
+        print(f"[tracking] WARNING {cam_id}: the pipeline reads {near[0].name} (first by name), "
+              f"not {got.name}")
+    return near[0], got
+
+
+def tracking_coverage(tracking_path, wham_frames, mapping):
+    """Per mapped person: how many of its WHAM frames have 2D keypoints in the tracking
+    file (same track ids, as the pipeline merges them) and their mean confidence."""
+    data = load_joblib_compat(tracking_path)
+    out = {}
+    for person in sorted(set(mapping.values())):
+        tids = [tid for tid, p in mapping.items() if p == person]
+        wham = set().union(*(wham_frames.get(tid, set()) for tid in tids))
+        have, conf = set(), []
+        for tid in tids:
+            track = data.get(int(tid)) if tid.isdigit() and int(tid) in data else data.get(tid)
+            if isinstance(track, dict) and "frame_id" in track and "keypoints" in track:
+                have |= set(_as_numpy(track["frame_id"]).astype(int).reshape(-1).tolist())
+                conf.append(_as_numpy(track["keypoints"])[..., 2].reshape(-1))
+        conf = np.concatenate(conf) if conf else np.array([])
+        out[person] = {"wham_frames": len(wham), "frames_with_2d": len(wham & have),
+                       "mean_confidence": round(float(conf.mean()), 3) if conf.size else None}
+    return out
 
 
 # ------------------------------------------------------------------ <key>_local in the YAML
@@ -553,14 +716,157 @@ def write_local_keys(config_path, local):
     return changes
 
 
+def _line_start(text, i):
+    return text.rfind("\n", 0, i) + 1
+
+
+def sync_person_segments(config_path, wanted_by_gt):
+    """Give each sequence one segment per wanted target person, so brute_force_runner.py
+    runs every camera pair once per person (2 persons, 20 cameras: 2 x 380 runs).
+
+    wanted_by_gt: {ground_truth source: (sequence name, [persons])}. A missing person
+    gets a copy of the sequence's first segment: name <sequence>_<person>, the same
+    ground truth, its cameras shared through a YAML alias, and `added_by:
+    label_persons --persons`. Segments marked that way are removed again when their
+    person is no longer wanted (--persons 1); a segment written by hand is never removed.
+    Only those blocks change (comments and anchors stay). -> list of changes."""
+    path = Path(config_path)
+    with open(path, encoding="utf-8", newline="") as f:
+        text = f.read()
+    nl = "\r\n" if "\r\n" in text else "\n"
+    root, data = yaml.compose(text), yaml.safe_load(text)
+    seg_item = next(((k, v) for k, v in root.value if k.value == "segments"), None) \
+        if isinstance(root, yaml.MappingNode) else None
+    if seg_item is None or not isinstance(seg_item[1], yaml.SequenceNode) or seg_item[1].flow_style:
+        raise ValueError(f"{path}: `segments` must be a block list to add / remove person segments")
+    nodes, segs = seg_item[1].value, data["segments"]
+    root_keys = [k for k, _ in root.value]
+    after = root_keys.index(seg_item[0]) + 1
+    end_all = _line_start(text, root_keys[after].start_mark.index) if after < len(root_keys) else len(text)
+
+    def block_start(node):  # start of the "- name: ..." line of a segment
+        key = node.value[0][0]
+        start = _line_start(text, key.start_mark.index)
+        if not re.fullmatch(r"[ \t]*-[ \t]+", text[start:key.start_mark.index]):
+            raise ValueError(f"{path}: line {key.start_mark.line + 1}: segments must be '- key: value' items")
+        return start
+
+    starts = [block_start(n) for n in nodes] + [end_all]
+    groups = {}
+    for i, seg in enumerate(segs):
+        groups.setdefault(optional_source(seg.get("ground_truth_dir")), []).append(i)
+    edits, changes, removed, added = [], [], set(), []
+    for gt, (seq_name, wanted) in wanted_by_gt.items():
+        have = {}
+        for i in groups.get(gt, []):
+            person = str(segs[i].get("target_person", ""))
+            if segs[i].get("added_by") == ADDED_BY and person not in wanted:
+                edits.append((starts[i], starts[i + 1], ""))
+                removed.add(i)
+                changes.append(f"- segment {segs[i].get('name')} (target_person {person})")
+            else:
+                have.setdefault(person, i)
+        missing = [p for p in wanted if p not in have]
+        if not missing or not have:
+            continue
+        src = min(have.values())
+        node = nodes[src]
+        keys = {k.value: (k, v) for k, v in node.value}
+        if "cameras" not in keys:
+            print(f"[yaml] WARNING: segment {segs[src].get('name')} has no cameras; add {missing} by hand")
+            continue
+        ck = keys["cameras"][0]
+        line_end = text.find("\n", ck.start_mark.index)
+        line = text[ck.start_mark.index:line_end if line_end >= 0 else len(text)]
+        m = re.match(r"""["']?cameras["']?\s*:\s*([&*])([^\s#]+)""", line)
+        if m:
+            anchor = m.group(2)
+        else:  # give the cameras an anchor so the new segments can share them
+            anchor, n = f"cams_{re.sub(r'[^0-9A-Za-z_]', '_', seq_name)}", 2
+            while f"&{anchor}" in text:
+                anchor, n = f"{anchor}_{n}", n + 1
+            colon = text.index(":", ck.end_mark.index)
+            edits.append((colon + 1, colon + 1, f" &{anchor}"))
+        first = node.value[0][0]
+        dash, indent = text[starts[src]:first.start_mark.index], " " * first.start_mark.column
+        for person in missing:
+            lines = [f"{dash}name: {json.dumps(f'{seq_name}_{person}')}",
+                     f"{indent}target_person: {person}", f"{indent}added_by: {json.dumps(ADDED_BY)}"]
+            for key, (k, v) in keys.items():
+                if key in ("name", "target_person", "cameras", "added_by") or (
+                        key.endswith("_local") and key[:-len("_local")] in LOCAL_KEYS):
+                    continue  # <key>_local comes back through write_local_keys
+                raw = text[v.start_mark.index:v.end_mark.index]
+                value = raw if isinstance(v, yaml.ScalarNode) and "\n" not in raw else \
+                    json.dumps(segs[src][key], ensure_ascii=False)
+                lines.append(f"{indent}{key}: {value}")
+            lines.append(f"{indent}cameras: *{anchor}")
+            added.append((src, person, nl.join(lines) + nl))
+            changes.append(f"+ segment {seq_name}_{person} (target_person {person}, cameras of "
+                           f"{segs[src].get('name')})")
+    if not edits and not added:
+        return []
+    if added:
+        head = nl if end_all == len(text) and text and not text.endswith("\n") else ""
+        edits.append((end_all, end_all, head + "".join(block for _, _, block in added)))
+    new = text
+    for start, end, repl in sorted(edits, key=lambda e: (e[0], e[1]), reverse=True):
+        new = new[:start] + repl + new[end:]
+    # Safety net: the kept segments load as before, each new one is its source with a new person.
+    got = yaml.safe_load(new)["segments"]
+    want = [s for i, s in enumerate(segs) if i not in removed]
+    for src, person, _ in added:
+        copy_seg = {k: v for k, v in segs[src].items()
+                    if not (k.endswith("_local") and k[:-len("_local")] in LOCAL_KEYS)}
+        copy_seg.update(name=f"{wanted_by_gt[optional_source(segs[src].get('ground_truth_dir'))][0]}_{person}",
+                        target_person=person, added_by=ADDED_BY)
+        want.append(copy_seg)
+    if got != want:
+        raise RuntimeError(f"could not add / remove person segments in {path} safely; the file was not changed")
+    tmp = path.with_name(f".{path.name}.tmp")
+    with open(tmp, "w", encoding="utf-8", newline="") as f:
+        f.write(new)
+    os.replace(tmp, path)
+    return changes
+
+
 # ------------------------------------------------------------------ YAML input
+
+def _attach_tracking(cam, pkl, own_pkl, cam_dir, wham_frames, local, entry):
+    """Put tracking_result next to the pkl and report how much of each mapped person it
+    covers with 2D keypoints (what AOTR uses instead of the 3D surrogate)."""
+    reads, got = place_tracking(cam["tracking"], pkl, cam_dir, cam["id"], own_pkl)
+    local[cam["tracking"]] = got
+    entry["tracking_result"] = describe_source(cam["tracking"])
+    entry["local_tracking_result"] = config_path_str(reads)
+    from compat import parse_person_mapping
+    cover = tracking_coverage(reads, wham_frames, parse_person_mapping(pkl))
+    entry["tracking_coverage"] = cover
+    for person, c in cover.items():
+        share = c["frames_with_2d"] / c["wham_frames"] * 100 if c["wham_frames"] else 0.0
+        print(f"[tracking]   {cam['id']} {person}: 2D keypoints on {c['frames_with_2d']}/{c['wham_frames']} "
+              f"frames ({share:.0f}%), mean confidence {c['mean_confidence']}")
+        if c["wham_frames"] and not c["frames_with_2d"]:
+            print(f"[tracking]   WARNING {cam['id']}: no track of {person} in {reads.name}; is it the "
+                  "tracking_results of this video? AOTR falls back to the 3D surrogate")
+
+
+def _brute_force_runs(config_path):
+    segs = (yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}).get("segments") or []
+    per = [(s.get("name"), s.get("target_person"), len(s.get("cameras") or [])) for s in segs]
+    return per, sum(n * (n - 1) for _, _, n in per)
+
 
 def run_config(config_path, persons=None, margin_mm=10.0, max_pa_mm=120.0, min_vote_fraction=0.5,
                overwrite=False, data_dir=DEFAULT_DATA_DIR, labeller=None):
-    """Label every camera of a brute-force YAML, keep the Drive downloads, then write the
-    <key>_local paths into the same YAML. -> (reports, failed)."""
+    """Label every camera of a brute-force YAML, keep the Drive downloads (pkl, video,
+    tracking_result), then update the same YAML: one segment per target person (only when
+    `persons` is given) and the <key>_local paths. -> (reports, failed).
+
+    persons: None (the YAML's target persons), an int N (the first N persons of the GT;
+    2 -> every camera pair is run for aria01 and for aria02) or a list of names."""
     config_path = Path(config_path).resolve()
-    sequences = load_config(config_path, persons)
+    sequences = load_config(config_path)
     labeller = labeller or Labeller(margin_mm, max_pa_mm, min_vote_fraction)
     data_root = Path(data_dir).resolve()
     local = {}  # ('local'|'drive', ref) -> path on this machine
@@ -568,16 +874,18 @@ def run_config(config_path, persons=None, margin_mm=10.0, max_pa_mm=120.0, min_v
     for seq in sequences:
         seq_dir = data_root / seq["name"]
         print("=" * 72)
-        print(f"[label] {seq['name']}: GT {describe_source(seq['gt'])}, persons {seq['persons']}, "
-              f"{len(seq['cameras'])} camera(s)")
-        if len(seq["persons"]) < 2:
-            print("[label] WARNING: only one person -> every track close to that GT is labelled with it; "
-                  "pass --persons aria01 aria02 to label against all subjects")
+        print(f"[label] {seq['name']}: GT {describe_source(seq['gt'])}, {len(seq['cameras'])} camera(s)")
         report = {"config": str(config_path), "sequence": seq["name"],
                   "ground_truth": describe_source(seq["gt"]), "persons": seq["persons"],
                   "gt_used": GT_USED, "params": labeller.params, "cameras": {}}
         try:
             truth_dir = fetch_ground_truth(seq["gt"], seq_dir)
+            # Vote against EVERY subject of the GT; improve the poses of the wanted ones.
+            seq["persons"], seq["wanted"] = choose_persons(persons, gt_persons(truth_dir), seq["targets"])
+            report.update(persons=seq["persons"], target_persons=seq["wanted"])
+            print(f"[label] persons in the GT: {seq['persons']}; target persons: {seq['wanted']}")
+            if len(seq["persons"]) < 2:
+                print("[label] WARNING: only one person -> every track close to that GT is labelled with it")
             gt = labeller.load_gt(truth_dir, seq["persons"])
             local[seq["gt"]] = truth_dir
             report["local_ground_truth"] = config_path_str(truth_dir)
@@ -589,14 +897,17 @@ def run_config(config_path, persons=None, margin_mm=10.0, max_pa_mm=120.0, min_v
         for k, cam in enumerate(seq["cameras"] if gt is not None else [], 1):
             cam_dir = seq_dir / "exo" / cam["id"]
             print(f"[label] {cam['id']} ({k}/{len(seq['cameras'])}): {describe_source(cam['pkl'])}")
-            entry = {"pkl": describe_source(cam["pkl"])}
+            entry, pkl, wham_frames = {"pkl": describe_source(cam["pkl"])}, None, {}
             try:  # download / pkl error: record it, go on with the next camera
                 kind, ref = cam["pkl"]
-                pkl = ref if kind == "local" else fetch_drive_file(ref, cam_dir, cam["id"], "pkl")
+                stem = re.sub(r"[^\w.-]+", "_", f"{seq['name']}_{cam['id']}")  # unique per camera
+                pkl = ref if kind == "local" else fetch_drive_file(ref, cam_dir, cam["id"], "pkl", stem=stem)
                 local[cam["pkl"]] = pkl
                 raw = load_joblib_compat(pkl)
                 print(f"[label]   {len(raw)} WHAM tracks in {pkl.name}")
                 tracks = labeller.label(raw, gt, seq["persons"])
+                wham_frames = {str(tid): set(_as_numpy(t["frame_ids"]).astype(int).reshape(-1).tolist())
+                               for tid, t in raw.items() if isinstance(t, dict) and "frame_ids" in t}
                 del raw
                 gc.collect()
                 entry["local_pkl"] = config_path_str(pkl)
@@ -607,6 +918,14 @@ def run_config(config_path, persons=None, margin_mm=10.0, max_pa_mm=120.0, min_v
                 failed.append(f"{seq['name']}/{cam['id']}")
                 entry["error"] = f"{type(exc).__name__}: {exc}"
                 print(f"[label]   ERROR {cam['id']}: {type(exc).__name__}: {exc}")
+                pkl = None
+            if cam["tracking"] is not None and pkl is not None:
+                try:
+                    _attach_tracking(cam, pkl, cam["pkl"][0] == "drive", cam_dir, wham_frames, local, entry)
+                except Exception as exc:
+                    failed.append(f"{seq['name']}/{cam['id']} (tracking_result)")
+                    entry["tracking_error"] = f"{type(exc).__name__}: {exc}"
+                    print(f"[tracking]   ERROR {cam['id']}: {type(exc).__name__}: {exc}")
             if cam["video"] is not None:
                 try:
                     kind, ref = cam["video"]
@@ -626,18 +945,27 @@ def run_config(config_path, persons=None, margin_mm=10.0, max_pa_mm=120.0, min_v
         reports.append(report)
 
     print("=" * 72)
-    try:
-        changes = write_local_keys(config_path, local)
-    except Exception as exc:
-        failed.append("*_local keys")
-        print(f"[yaml] ERROR: {type(exc).__name__}: {exc}")
-    else:
-        print(f"[yaml] {config_path_str(config_path)}: "
+    yaml_steps = []
+    if persons is not None:  # --persons N / names: one segment per target person
+        wanted = {seq["gt"]: (seq["name"], seq["wanted"]) for seq in sequences if "wanted" in seq}
+        yaml_steps.append(("person segments", lambda: sync_person_segments(config_path, wanted)))
+    yaml_steps.append(("*_local keys", lambda: write_local_keys(config_path, local)))
+    for what, step in yaml_steps:
+        try:
+            changes = step()
+        except Exception as exc:
+            failed.append(what)
+            print(f"[yaml] ERROR ({what}): {type(exc).__name__}: {exc}")
+            continue
+        print(f"[yaml] {config_path_str(config_path)} {what}: "
               + ("unchanged" if not changes else f"{len(changes)} change(s)"))
         for change in changes:
             print(f"[yaml]   {change}")
     if failed:
         print(f"[label] FAILED: {', '.join(failed)}; rerun the same command (kept downloads are reused)")
+    per, runs = _brute_force_runs(config_path)
+    print(f"[label] brute_force_runner: {len(per)} segment(s) "
+          f"({', '.join(f'{p}: {n} cameras' for _, p, n in per)}) -> {runs} camera-pair runs")
     mask = f"configs/identity_mask_{sequences[0]['name']}.json"
     print(f"[label] next: python build_identity_mask.py {config_path_str(config_path)} {mask}")
     if len(sequences) > 1:
@@ -645,12 +973,23 @@ def run_config(config_path, persons=None, margin_mm=10.0, max_pa_mm=120.0, min_v
     return reports, failed
 
 
+def parse_persons(values):
+    """--persons 2 -> 2 (the first 2 GT persons); --persons aria02 -> ['aria02']; none -> None."""
+    if not values:
+        return None
+    if len(values) == 1 and values[0].isdigit():
+        return int(values[0])
+    return list(values)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("source", help="dataset folder, or brute-force YAML whose pkl / video / ground_truth_dir "
-                                   "are local paths or Google Drive File IDs")
+    ap.add_argument("source", help="dataset folder, or brute-force YAML whose pkl / video / tracking_result / "
+                                   "ground_truth_dir are local paths or Google Drive File IDs")
     ap.add_argument("--persons", nargs="+", default=None,
-                    help="default: aria01 aria02 (folder), the target_person values (YAML)")
+                    help="target persons whose poses are improved: a count N (the first N persons of the GT; "
+                         "2 -> aria01 and aria02, i.e. every camera pair runs twice) or names. YAML input: "
+                         "adds / removes the person segments. Votes always use every GT person.")
     ap.add_argument("--margin-mm", type=float, default=10.0)
     ap.add_argument("--max-pa-mm", type=float, default=120.0)
     ap.add_argument("--min-vote-fraction", type=float, default=0.5)
@@ -660,18 +999,19 @@ def main():
                     help="YAML input: Drive files and extracted GT zips are kept in <data-dir>/<sequence>/")
     a = ap.parse_args()
     source = Path(a.source)
+    persons = parse_persons(a.persons)
     if source.suffix.lower() in (".yml", ".yaml") or source.is_file():
         if a.brute_config:
             ap.error("--brute-config applies to a dataset folder; a YAML gets <key>_local keys instead")
         try:  # config errors (missing local path, conflicting cameras) stop before any download
-            _, failed = run_config(source, a.persons, a.margin_mm, a.max_pa_mm, a.min_vote_fraction,
+            _, failed = run_config(source, persons, a.margin_mm, a.max_pa_mm, a.min_vote_fraction,
                                    a.overwrite, a.data_dir)
         except (ValueError, FileNotFoundError) as exc:
             ap.error(str(exc))
         if failed:
             raise SystemExit(1)
     else:
-        run(source, a.persons or DEFAULT_PERSONS, a.margin_mm, a.max_pa_mm, a.min_vote_fraction,
+        run(source, persons, a.margin_mm, a.max_pa_mm, a.min_vote_fraction,
             a.overwrite, a.brute_config)
 
 
