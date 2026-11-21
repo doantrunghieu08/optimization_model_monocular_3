@@ -126,6 +126,28 @@ class SynchronizationTests(unittest.TestCase):
             }, root / "tracking_results_video.pth")
             self.assertEqual(_load_tracking_payload(pkl_path, target_person="aria02")["name"], "target")
 
+    def test_tracking_fragments_of_one_person_all_keep_their_2d(self):
+        # Like WHAM's tracking_results.pth: torch tensors, frame_id + keypoints (x, y, conf).
+        import joblib
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "wham_seq_cam04_person_mapping.txt").write_text("0 = aria01\n13 = aria01\n1 = aria02",
+                                                                    encoding="utf-8")
+            pkl_path = root / "wham_seq_cam04.pkl"
+            joblib.dump({0: {"pose": np.zeros((3, 72)), "frame_ids": np.array([0, 1, 2])}}, pkl_path)
+
+            def track(frames, conf):
+                n = len(frames)
+                return {"frame_id": torch.tensor(frames), "keypoints": torch.full((n, 17, 3), conf),
+                        "bbox": torch.zeros(n, 3), "init_betas": torch.zeros(1, 10)}
+            joblib.dump({0: track([0, 1, 2, 3], 0.9), 13: track([3, 4, 5], 0.4), 1: track([0, 1], 0.1)},
+                        root / "tracking_results.pth")
+            t = _load_tracking_payload(pkl_path, target_person="aria01")
+            np.testing.assert_array_equal(np.asarray(t["frame_id"]), [0, 1, 2, 3, 4, 5])
+            conf = np.asarray(t["keypoints"])[:, 0, 2]
+            np.testing.assert_allclose(conf, [0.9, 0.9, 0.9, 0.9, 0.4, 0.4])  # the longer track wins frame 3
+            self.assertEqual(len(t["bbox"]), 6)
+
     def test_calibration_file_is_preferred_over_video_heuristic(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -212,6 +234,27 @@ class FusionOptimizationTests(unittest.TestCase):
         stale = ["S1", "seg1", "no_gt_v6_visible_confidence_transfer", "cam1", "cam2"]
         self.assertEqual(_parse_history_row(stale, _get_header_indices(header)), (None, None))
         self.assertEqual(EVALUATION_PROTOCOL, "no_gt_v10_master_only_postopt")
+
+    def test_each_target_person_finds_its_own_cached_rows(self):
+        import brute_force_runner as bfr
+        base = {"inputs": {"target_person": "aria01"}, "fusion": {"aotr": {"enabled": True}}}
+        old_active = bfr.ACTIVE_EVALUATION_PROTOCOL
+        bfr.ACTIVE_EVALUATION_PROTOCOL = bfr.evaluation_protocol(base)
+        try:
+            p1 = bfr._segment_protocol(base, {"name": "s_aria01", "target_person": "aria01"})
+            p2 = bfr._segment_protocol(base, {"name": "s_aria02", "target_person": "aria02"})
+        finally:
+            bfr.ACTIVE_EVALUATION_PROTOCOL = old_active
+        self.assertEqual(p1, bfr.evaluation_protocol(base))
+        self.assertNotEqual(p1, p2)
+        # The protocol the runner records for an aria02 pair is the aria02 segment protocol.
+        self.assertEqual(p2, bfr.evaluation_protocol({**base, "inputs": {"target_person": "aria02"}}))
+        header = ["Set", "Segment", "Protocol", "Cam Master", "Cam Slave", "mpjpe.all_method"]
+        idx = _get_header_indices(header)
+        row = ["S1", "s_aria02", p2, "cam1", "cam2", "10.0"]
+        self.assertEqual(_parse_history_row(row, idx, expected_protocol=p1), (None, None))
+        key, res = _parse_history_row(row, idx, expected_protocol={p1, p2})
+        self.assertEqual(key, ("s_aria02", "cam1", "cam2"))
 
     def test_adaptive_detector_uses_aggressive_mode_only_for_reliable_slave(self):
         names = [f"joint_{idx}" for idx in range(8)]

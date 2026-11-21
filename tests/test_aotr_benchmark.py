@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from fusion_pipeline.aotr_benchmark import (
-    LEGACY_PROTOCOL, cache_compatible, evaluation_protocol,
+    LEGACY_PROTOCOL, cache_compatible, evaluation_protocol, identity_mask_exclusions,
     report_csv_name, verify_aotr_execution,
 )
 
@@ -94,6 +94,54 @@ class AOTRBenchmarkTests(unittest.TestCase):
             }), encoding="utf-8")
             with self.assertRaisesRegex(RuntimeError, "enabled but did not run"):
                 verify_aotr_execution(cfg)
+
+
+class IdentityMaskProtocolTests(unittest.TestCase):
+    """The identity mask's content is part of the protocol: results cached with another
+    set of excluded frames must not be reused (same mask file name, rebuilt content)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.mask = Path(self.tmp.name) / "identity_mask_005_sword3.json"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def protocol(self, margins, source="configs/brute_force_005_sword3.yml", margin_mm=10.0, paths=None):
+        if margins is not None:
+            self.mask.write_text(json.dumps({"source": source, "margins": margins}), encoding="utf-8")
+        return evaluation_protocol({"fusion": {"aotr": {"enabled": True}}, "evaluation": {
+            "identity_mask": {"path": paths or [str(self.mask)], "margin_mm": margin_mm}}})
+
+    def test_rebuilt_mask_with_other_excluded_frames_invalidates_cache(self):
+        # Before the fix: every camera shared one key, nothing excluded.
+        old = self.protocol({"wham_output": {"aria01": {"0": 2.0, "1": 3.0}}})
+        # After: one key per camera, cam04 follows aria02 in frame 1.
+        new = self.protocol({"wham_005_sword3_cam01": {"aria01": {"0": 2.0, "1": 3.0}},
+                             "wham_005_sword3_cam04": {"aria01": {"0": 4.0, "1": 41.5}}})
+        self.assertNotEqual(old, new)
+        self.assertFalse(cache_compatible({"protocol": old}, new))
+
+    def test_same_excluded_frames_keep_cache(self):
+        a = self.protocol({"cam04": {"aria01": {"0": 4.0, "1": 41.5}}})
+        b = self.protocol({"cam04": {"aria01": {"0": 6.0, "1": 30.0}}, "cam01": {"aria01": {"0": 1.0}}},
+                          source="/abs/other/path.yml")  # margins move but stay on the same side of 10 mm
+        self.assertEqual(a, b)
+
+    def test_threshold_and_merge_order_follow_the_evaluator(self):
+        self.protocol({"cam04": {"aria01": {"3": 10.0, "1": 10.5, "2": -50}}})  # writes the mask
+        excluded, problems = identity_mask_exclusions({"path": [str(self.mask)], "margin_mm": 10.0})
+        self.assertEqual((excluded, problems), ({"cam04": {"aria01": [1]}}, []))  # > margin, not >=
+        later = Path(self.tmp.name) / "later.json"
+        later.write_text(json.dumps({"margins": {"cam04": {"aria01": {"7": 99}}}}), encoding="utf-8")
+        merged, _ = identity_mask_exclusions({"path": [str(self.mask), str(later)]})
+        self.assertEqual(merged, {"cam04": {"aria01": [7]}})  # a later file replaces the stem, as in evaluation
+
+    def test_missing_mask_file_does_not_crash_and_differs(self):
+        missing = self.protocol(None, paths=[str(Path(self.tmp.name) / "not_built_yet.json")])
+        present = self.protocol({"cam04": {"aria01": {"1": 41.5}}})
+        self.assertIn("__aotr_", missing)
+        self.assertNotEqual(missing, present)
 
 
 if __name__ == "__main__":
