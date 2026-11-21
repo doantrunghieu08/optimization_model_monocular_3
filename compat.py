@@ -45,12 +45,23 @@ def parse_person_mapping(pkl_path):
 
 def _payload_frame_ids(payload):
     frame_ids = payload.get("frame_ids")
+    per_frame = payload.get("pose", [])
     if frame_ids is None and isinstance(payload.get("tracking_results_for_reproj"), dict):
         frame_ids = payload["tracking_results_for_reproj"].get("frame_id")
+    if frame_ids is None and payload.get("frame_id") is not None:
+        # A track of WHAM's tracking_results.pth: frame_id + keypoints (2D with confidence).
+        frame_ids, per_frame = payload["frame_id"], payload.get("keypoints", [])
     if frame_ids is None:
         return None
+    if hasattr(frame_ids, "detach"):  # torch tensor
+        frame_ids = frame_ids.detach().cpu().numpy()
     frame_ids = np.asarray(frame_ids).astype(int).reshape(-1)
-    return frame_ids if len(frame_ids) == len(payload.get("pose", [])) else None
+    return frame_ids if per_frame is not None and len(frame_ids) == len(per_frame) else None
+
+
+def _frame_count(payload):
+    ids = _payload_frame_ids(payload)
+    return len(ids) if ids is not None else len(payload.get("pose", []))
 
 
 def _merge_frame_value(values, lengths, rows):
@@ -81,8 +92,10 @@ def _merge_frame_value(values, lengths, rows):
 
 
 def _merge_person_tracks(candidates):
-    """Join re-ID fragments by absolute frame id; the longest track wins overlaps."""
-    candidates = sorted(candidates, key=lambda value: len(value.get("pose", [])), reverse=True)
+    """Join re-ID fragments by absolute frame id; the longest track wins overlaps.
+    Works for WHAM pkl tracks (frame_ids / pose) and tracking_results.pth tracks
+    (frame_id / keypoints), so every fragment of a person keeps its 2D keypoints."""
+    candidates = sorted(candidates, key=_frame_count, reverse=True)
     frame_ids = [_payload_frame_ids(value) for value in candidates]
     if len(candidates) == 1 or any(ids is None for ids in frame_ids):
         return candidates[0]
