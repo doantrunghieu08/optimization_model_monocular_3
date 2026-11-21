@@ -452,6 +452,16 @@ def _get_header_indices(header: list) -> dict:
         'Timestamp': ['Timestamp'],
         'OS Version': ['OS Version'],
         'Username': ['Username'],
+        # Written by _build_report_rows; without them a resumed run rewrote these columns as N/A.
+        'Target Person': ['Target Person'],
+        'Evaluated Frames': ['Evaluated Frames'],
+        'AOTR corrected frames': ['AOTR corrected frames'],
+        'AOTR accepted bones': ['AOTR accepted bones'],
+        'AOTR fallback frames': ['AOTR fallback frames'],
+        'AOTR temporal retention %': ['AOTR temporal retention %'],
+        'AOTR residual accel before mm/f2': ['AOTR residual accel before mm/f2'],
+        'AOTR residual accel after mm/f2': ['AOTR residual accel after mm/f2'],
+        'AOTR anatomy calibrated bones': ['AOTR anatomy calibrated bones'],
     }
     idx = {}
     for canonical, candidates in aliases.items():
@@ -482,11 +492,28 @@ def _parse_history_row(row: list, idx: dict, expected_protocol=EVALUATION_PROTOC
         v = row[idx[col_name]] if idx.get(col_name, -1) != -1 and idx[col_name] < len(row) else "N/A"
         v = str(v).strip().replace(',', '.')
         return float(v) if v not in ("N/A", "") else float('inf')
-    
+    def count(col_name):
+        # Frame / bone counts come back as int (as written fresh), "N/A" when absent.
+        v = sf(col_name)
+        if v == float('inf'):
+            return "N/A"
+        return int(v) if float(v).is_integer() else v
+    def delta(col_name, baseline_col, method_col):
+        # The stored % delta (from unrounded metrics) first: recomputing it from the 2-decimal
+        # metrics moved % delta_accel by 0.01 on resume. Recompute only when it is missing.
+        stored = sf(col_name)
+        if stored != float('inf'):
+            return stored
+        base, method = sf(baseline_col), sf(method_col)
+        if base not in (0.0, float('inf')) and method not in (0.0, float('inf')):
+            return round((base - method) * 100.0 / base, 2)
+        return 0.0
+
     key = (row[idx['Segment']], row[idx['Cam Master']], row[idx['Cam Slave']])
     res = {
         "set": get_val('Set', "Unknown_Set"),
         "protocol": get_val('Protocol'),
+        "evaluated_frames": count('Evaluated Frames'),
         "master": get_val('Cam Master', "N/A"),
         "supplement": get_val('Cam Slave', "N/A"),
         "alpha": sf('Alpha'), "beta": sf('Beta'),
@@ -506,13 +533,13 @@ def _parse_history_row(row: list, idx: dict, expected_protocol=EVALUATION_PROTOC
         "old_accel_error": sf('accel.baseline'),
         "le_mpjpe_master": get_val('mpjpe.all_le', "N/A"),
         "le_pa_mpjpe_master": get_val('pa-mpjpe.all_le', "N/A"),
-        "aotr_corrected_frames": sf('AOTR corrected frames'),
-        "aotr_accepted_bones": sf('AOTR accepted bones'),
-        "aotr_fallback_frames": sf('AOTR fallback frames'),
+        "aotr_corrected_frames": count('AOTR corrected frames'),
+        "aotr_accepted_bones": count('AOTR accepted bones'),
+        "aotr_fallback_frames": count('AOTR fallback frames'),
         "aotr_stability_retention": sf('AOTR temporal retention %'),
         "aotr_residual_accel_before": sf('AOTR residual accel before mm/f2'),
         "aotr_residual_accel_after": sf('AOTR residual accel after mm/f2'),
-        "aotr_calibrated_bones": sf('AOTR anatomy calibrated bones'),
+        "aotr_calibrated_bones": count('AOTR anatomy calibrated bones'),
         "belief_master": get_val('belief Master', "[]"),
         "belief_slave": get_val('belief Slave', "[]"),
         "old_mpjpe": sf('mpjpe.all_baseline'),
@@ -521,31 +548,18 @@ def _parse_history_row(row: list, idx: dict, expected_protocol=EVALUATION_PROTOC
         "old_pa_mpjpe": sf('pa-mpjpe.all_baseline'),
         "old_pa_mpjpe_occ": sf('pa-mpjpe.occ_baseline'),
         "old_pa_mpjpe_vis": sf('pa-mpjpe.vis_baseline'),
-        "% delta_mpjpe": (
-            round((sf('mpjpe.all_baseline') - sf('mpjpe.all_method')) * 100.0 / sf('mpjpe.all_baseline'), 2)
-            if sf('mpjpe.all_baseline') not in (0.0, float('inf')) and sf('mpjpe.all_method') not in (0.0, float('inf'))
-            else (sf('% delta_mpjpe') if sf('% delta_mpjpe') != float('inf') else 0.0)
-        ),
-        "% delta_pa_mpjpe": (
-            round((sf('pa-mpjpe.all_baseline') - sf('pa-mpjpe.all_method')) * 100.0 / sf('pa-mpjpe.all_baseline'), 2)
-            if sf('pa-mpjpe.all_baseline') not in (0.0, float('inf')) and sf('pa-mpjpe.all_method') not in (0.0, float('inf'))
-            else (sf('% delta_pa-mpjpe') if sf('% delta_pa-mpjpe') != float('inf') else 0.0)
-        ),
-        "% delta_accel": (
-            round((sf('accel.baseline') - sf('accel.method')) * 100.0 / sf('accel.baseline'), 2)
-            if sf('accel.baseline') not in (0.0, float('inf')) and sf('accel.method') not in (0.0, float('inf'))
-            else (sf('% delta_accel') if sf('% delta_accel') != float('inf') else 0.0)
-        ),
-        "% delta_mble": (
-            round((sf('mble.baseline') - sf('mble.method')) * 100.0 / sf('mble.baseline'), 2)
-            if sf('mble.baseline') not in (0.0, float('inf')) and sf('mble.method') not in (0.0, float('inf'))
-            else (sf('% delta_mble') if sf('% delta_mble') != float('inf') else 0.0)
-        ),
+        "% delta_mpjpe": delta('% delta_mpjpe', 'mpjpe.all_baseline', 'mpjpe.all_method'),
+        "% delta_pa_mpjpe": delta('% delta_pa-mpjpe', 'pa-mpjpe.all_baseline', 'pa-mpjpe.all_method'),
+        "% delta_accel": delta('% delta_accel', 'accel.baseline', 'accel.method'),
+        "% delta_mble": delta('% delta_mble', 'mble.baseline', 'mble.method'),
         "timestamp": get_val('Timestamp'),
         "os_version": get_val('OS Version'),
         "username": get_val('Username'),
         "joints": {jn: float(str(row[ji]).strip().replace(',', '.')) for jn, ji in idx['joints'].items() if ji < len(row) and row[ji] not in ("N/A", "")}
     }
+    person = str(get_val('Target Person', "")).strip()
+    if person and person != "N/A":  # rows damaged by older runs get it from their segment (_reuse_cached)
+        res["target_person"] = person
     return key, res
 
 def load_existing_spreadsheet_results(sheet_name: str, expected_protocol=None) -> dict:
@@ -1060,6 +1074,15 @@ def _segment_protocol(base_cfg, seg) -> str:
     return evaluation_protocol(cfg)
 
 
+def _reuse_cached(cached: dict, seg: dict, cA: dict, cB: dict) -> dict:
+    """A report row reused as the result of pair cA->cB of seg (sequential and --workers runs)."""
+    cached.update({"set": cached.get("set", extract_set_name(cA["pkl"])), "master": cA["id"], "supplement": cB["id"]})
+    if not cached.get("target_person") and seg.get("target_person"):
+        # The protocol matched this segment's, so the row is for its target person.
+        cached["target_person"] = seg["target_person"]
+    return cached
+
+
 def _process_segment(seg, existing, base_cfg, ws_dir, sh_name, ws_title, all_res, current_idx, total_pairs):
     seg_name, cameras = seg["name"], seg.get("cameras", [])
     seg_total_pairs = len(cameras) * (len(cameras) - 1)
@@ -1076,9 +1099,7 @@ def _process_segment(seg, existing, base_cfg, ws_dir, sh_name, ws_title, all_res
 
         cached = existing.get((seg_name, cA["id"], cB["id"]))
         if cache_compatible(cached, seg_protocol):
-            res = cached
-            res.update({"set": res.get("set", extract_set_name(cA["pkl"])), "master": cA["id"], "supplement": cB["id"]})
-            results.append(res)
+            results.append(_reuse_cached(cached, seg, cA, cB))
             continue
         if cached:
             print(f"[BruteForce] IGNORE stale result with protocol={cached.get('protocol')!r}")
@@ -1186,9 +1207,7 @@ def _plan_pairs(segments, existing, base_cfg, ws_dir):
         for cA, cB in itertools.permutations(seg.get("cameras", []), 2):
             cached = existing.get((seg["name"], cA["id"], cB["id"]))
             if cache_compatible(cached, seg_protocol):
-                cached.update({"set": cached.get("set", extract_set_name(cA["pkl"])),
-                               "master": cA["id"], "supplement": cB["id"]})
-                results[seg["name"]].append(cached)
+                results[seg["name"]].append(_reuse_cached(cached, seg, cA, cB))
                 continue
             if cached:
                 print(f"[BruteForce] IGNORE stale result {seg['name']} {cA['id']}->{cB['id']} "
@@ -1274,13 +1293,14 @@ def _run_pairs_parallel(segments, existing, base_cfg, ws_dir, sh_name, ws_title,
             try:
                 res, seconds, log_path, slot = future.result()
             except Exception as exc:
-                print(f"{head}: LỖI worker {type(exc).__name__}: {exc}")
+                print(f"{head}: LỖI worker {type(exc).__name__}: {exc}", flush=True)
                 continue
             if res is None:
-                print(f"{head} (w{slot:02d}, {seconds:.0f}s): không có kết quả, xem {log_path}")
+                print(f"{head} (w{slot:02d}, {seconds:.0f}s): không có kết quả, xem {log_path}", flush=True)
                 continue
             results[seg_name].append(res)
-            print(f"{head} (w{slot:02d}, {seconds:.0f}s) {_result_summary(res)}")
+            # flush: progress must show up even when stdout is redirected to a file
+            print(f"{head} (w{slot:02d}, {seconds:.0f}s) {_result_summary(res)}", flush=True)
             write_report()
     except KeyboardInterrupt:
         print("\n[BruteForce] Ctrl+C: dừng các worker. Các cặp đã xong nằm trong báo cáo; "
