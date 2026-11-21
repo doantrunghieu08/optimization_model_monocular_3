@@ -256,6 +256,57 @@ class FusionOptimizationTests(unittest.TestCase):
         key, res = _parse_history_row(row, idx, expected_protocol={p1, p2})
         self.assertEqual(key, ("s_aria02", "cam1", "cam2"))
 
+    def test_resumed_run_rewrites_every_report_column_unchanged(self):
+        # Before: a cached row lost Target Person, Evaluated Frames and the AOTR columns (N/A)
+        # every time a run was resumed, because the parser had no alias for them.
+        import csv
+        import io
+        import brute_force_runner as bfr
+        fresh = {
+            "set": "Seq1", "protocol": "P2", "target_person": "aria02", "evaluated_frames": 145,
+            "master": "cam04", "supplement": "cam07", "alpha": 0.001, "beta": 0.8,
+            "mpjpe": 66.53, "mpjpe_occ": 70.1, "mpjpe_vis": 60.2,
+            "pa_mpjpe": 45.27, "pa_mpjpe_occ": 59.2, "pa_mpjpe_vis": 44.9,
+            # Accel 10.004 -> 5.004: the stored delta is 49.98, recomputed from "10.0"/"5.0" it was 50.0.
+            "mble": 21.98, "accel": 5.004, "fusion_mble": 21.98, "le_mble": float("inf"), "old_mble": 21.98,
+            "fusion_accel_error": 5.004, "le_accel_error": float("inf"), "old_accel_error": 10.004,
+            "le_mpjpe_master": "N/A", "le_pa_mpjpe_master": "N/A",
+            "belief_master": "[0.9, 0.8]", "belief_slave": "[0.7]",
+            "old_mpjpe": 70.58, "old_mpjpe_occ": 75.0, "old_mpjpe_vis": 65.0,
+            "old_pa_mpjpe": 50.05, "old_pa_mpjpe_occ": 66.0, "old_pa_mpjpe_vis": 49.0,
+            "% delta_mpjpe": (70.58 - 66.53) * 100 / 70.58, "% delta_pa_mpjpe": (50.05 - 45.27) * 100 / 50.05,
+            "% delta_accel": (10.004 - 5.004) * 100 / 10.004, "% delta_mble": 0.0,
+            "joints": {"MPJPE_neck": 40.12, "PA-MPJPE_neck": 30.5},
+            "aotr_corrected_frames": 145, "aotr_accepted_bones": 1063, "aotr_fallback_frames": 0,
+            "aotr_stability_retention": 85.76, "aotr_residual_accel_before": 20.76,
+            "aotr_residual_accel_after": 375.77, "aotr_calibrated_bones": 0,
+            "os_version": "macOS", "username": "u", "timestamp": "2026-11-21 20:00:00",
+        }
+        joints = ["MPJPE_neck", "PA-MPJPE_neck"]
+
+        def as_csv(rows):
+            buf = io.StringIO()
+            csv.writer(buf).writerows(rows)
+            return buf.getvalue()
+
+        written = as_csv(bfr._build_report_rows({"seg_aria02": [fresh]}, joints))
+        header, row = list(csv.reader(io.StringIO(written)))
+        key, cached = _parse_history_row(row, _get_header_indices(header), expected_protocol={"P2"})
+        self.assertEqual(key, ("seg_aria02", "cam04", "cam07"))
+        rewritten = as_csv(bfr._build_report_rows({"seg_aria02": [cached]}, joints))
+        self.assertEqual(rewritten, written)
+        self.assertEqual(float(dict(zip(header, row))["AOTR accepted bones"]), 1063)  # not N/A
+
+        # A row damaged by an older resume gets its person back from the segment it is reused for.
+        damaged = [("N/A" if h in ("Target Person", "Evaluated Frames") else v) for h, v in zip(header, row)]
+        _, cached = _parse_history_row(damaged, _get_header_indices(header), expected_protocol={"P2"})
+        self.assertNotIn("target_person", cached)
+        self.assertEqual(cached["evaluated_frames"], "N/A")
+        reused = bfr._reuse_cached(cached, {"target_person": "aria02"}, {"id": "cam04", "pkl": "x.pkl"}, {"id": "cam07"})
+        self.assertEqual(reused["target_person"], "aria02")
+        self.assertEqual(as_csv(bfr._build_report_rows({"seg_aria02": [reused]}, joints)).replace(",145,", ",N/A,", 1),
+                         written.replace(",145,", ",N/A,", 1))
+
     def test_adaptive_detector_uses_aggressive_mode_only_for_reliable_slave(self):
         names = [f"joint_{idx}" for idx in range(8)]
         cam1 = {name: np.array([idx * 0.1, 0.0, 1.0]) for idx, name in enumerate(names)}
