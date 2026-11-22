@@ -43,7 +43,7 @@ def input_path(entry, key, brute_cfg_path):
                             f"run: python -m preprocessing_data.label_persons {brute_cfg_path}")
 
 
-def build(brute_cfg_path, persons=("aria01", "aria02")):
+def build(brute_cfg_path, persons=None):
     seg = yaml.safe_load(Path(brute_cfg_path).read_text(encoding="utf-8"))["segments"][0]
     kmap = load_keypoints3d_map(str(ROOT / "configs/keypoints3D_map.yml"))
     names = {k["name"] for k in kmap["keypoints"]}
@@ -51,6 +51,9 @@ def build(brute_cfg_path, persons=("aria01", "aria02")):
     keys = [k for k in kmap["priority1"] if k != "neck"]
     J = np.load(ROOT / "models/J_regressor_body25_extended.npy")
     truth_dir = input_path(seg, "ground_truth_dir", brute_cfg_path)
+    if persons is None:
+        from preprocessing_data.label_persons import gt_persons
+        persons = tuple(gt_persons(truth_dir) or ("aria01", "aria02"))
     gt = {p: {f: _parse_new_gt(it, names, kmap)
               for f, it in _load_ground_truth(truth_dir / "_.json", truth_dir=truth_dir, target_person=p).items()}
           for p in persons}
@@ -61,22 +64,26 @@ def build(brute_cfg_path, persons=("aria01", "aria02")):
         stem = pkl.stem
         out[stem] = {}
         for person in persons:
-            other = next(p for p in persons if p != person)
+            others = [p for p in persons if p != person]
             track = resolve_person_payload(raw, pkl_path=pkl, target_person=person)
             margins = {}
-            if track is not None:
+            if track is not None and others:
                 for row, fid in enumerate(np.asarray(track["frame_ids"]).astype(int)):
-                    if fid not in gt[person] or fid not in gt[other]:
+                    if fid not in gt[person]:
+                        continue
+                    other_gts = [gt[o][fid] for o in others if fid in gt[o]]
+                    if not other_gts:
                         continue
                     jt = J @ np.asarray(track["verts"][row])
                     pred = {n: jt[i] for n, i in reg_idx.items()}
                     own = _compute_pa_mpjpe(pred, gt[person][fid], keys)[0]
-                    oth = _compute_pa_mpjpe(pred, gt[other][fid], keys)[0]
+                    # ponytail: N-person margin = PA(own) - min_{other != own} PA(other)
+                    oth = min(_compute_pa_mpjpe(pred, og, keys)[0] for og in other_gts)
                     margins[str(int(fid))] = round(own - oth, 2)
             out[stem][person] = margins
             bad = sum(m > 10 for m in margins.values())
             print(f"{cam['id']} {person}: {bad}/{len(margins)} frames margin>10mm")
-    return {"description": "margin_mm = PA(own) - PA(other); exclude frames with margin > margin_mm",
+    return {"description": "margin_mm = PA(own) - min_other PA(other); exclude frames with margin > margin_mm",
             "source": str(brute_cfg_path), "margins": out}
 
 

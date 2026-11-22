@@ -76,7 +76,10 @@ import numpy as np
 import yaml
 
 from compat import load_joblib_compat
-from evaluation_pipeline.executor import _compute_pa_mpjpe, _load_ground_truth, _parse_new_gt
+from evaluation_pipeline.executor import (
+    _compute_mpjpe_fixed_rotation, _compute_pa_mpjpe, _load_ground_truth,
+    _parse_new_gt, _sequence_rotation,
+)
 from keypoints_map import load_keypoints3d_map
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -110,7 +113,33 @@ def _segments(labels):
     return [tuple(s) for s in out]
 
 
-def label_track(track, gt, persons, joints_fn, keys, margin_mm, max_pa_mm):
+def _estimate_shared_camera_rotation(raw, gt, persons, joints_fn, keys, max_med_mm=200.0):
+    """Estimate one static camera->world rotation from the cleanest (track, person) anchor.
+
+    Used only to disambiguate PA-ambiguous frames (e.g. two hugging people facing each other
+    differ by ~180 deg in camera frame, which PA-MPJPE strips away).
+    """
+    if len(persons) < 2:
+        return None
+    best_R, best_med = None, float(max_med_mm)
+    for track in raw.values():
+        if not isinstance(track, dict) or "frame_ids" not in track or "verts" not in track:
+            continue
+        fids = np.asarray(track["frame_ids"]).astype(int)
+        verts = np.asarray(track["verts"])
+        jmap = {int(fid): joints_fn(verts[r]) for r, fid in enumerate(fids)}
+        for p in persons:
+            frames = [(jmap[f], gt[p][f], keys) for f in sorted(jmap) if f in gt[p]]
+            if len(frames) < 10:
+                continue
+            R = _sequence_rotation(frames)
+            med = float(np.median([_compute_mpjpe_fixed_rotation(pr, tr, k, R)[0] for pr, tr, k in frames]))
+            if med < best_med:
+                best_med, best_R = med, R
+    return best_R
+
+
+def label_track(track, gt, persons, joints_fn, keys, margin_mm, max_pa_mm, shared_R=None):
     per_frame = []
     for row, fid in enumerate(np.asarray(track["frame_ids"]).astype(int)):
         if not all(fid in gt[p] for p in persons):
@@ -122,7 +151,13 @@ def label_track(track, gt, persons, joints_fn, keys, margin_mm, max_pa_mm):
         if pa[best] > max_pa_mm:
             vote = "none"
         elif second is not None and pa[second] - pa[best] <= margin_mm:
+            # ponytail: break PA-ambiguous symmetric-pose ties via shared camera rotation
             vote = "ambiguous"
+            if shared_R is not None:
+                seq_err = {p: _compute_mpjpe_fixed_rotation(pred, gt[p][fid], keys, shared_R)[0] for p in persons}
+                s_order = sorted(persons, key=seq_err.get)
+                if seq_err[s_order[1]] - seq_err[s_order[0]] > 2.0 * margin_mm:
+                    vote = s_order[0]
         else:
             vote = best
         per_frame.append((int(fid), vote, {p: round(float(v), 1) for p, v in pa.items()}))
@@ -173,8 +208,9 @@ class Labeller:
     def label(self, raw, gt, persons):
         """{track id: summary} for every track of a loaded WHAM pkl."""
         p = self.params
+        shared_R = _estimate_shared_camera_rotation(raw, gt, persons, self.joints, self.keys)
         return {str(tid): summarize_track(
-                    label_track(track, gt, persons, self.joints, self.keys, p["margin_mm"], p["max_pa_mm"]),
+                    label_track(track, gt, persons, self.joints, self.keys, p["margin_mm"], p["max_pa_mm"], shared_R=shared_R),
                     persons, p["min_vote_fraction"])
                 for tid, track in raw.items()}
 

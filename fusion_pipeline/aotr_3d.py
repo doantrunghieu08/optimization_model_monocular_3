@@ -12,7 +12,10 @@ import numpy as np
 from fusion_pipeline.correction import (
     apply_similarity, estimate_bidirectional_similarity,
 )
-from fusion_pipeline.aotr import _ordered_bones, _trust_region_1d, _unit, TORSO
+from fusion_pipeline.aotr import (
+    _ordered_bones, _trust_region_1d, _unit, TORSO,
+    _median_cross_view_bone_angle, _fallback_transform_from_prev,
+)
 
 
 def _bone_dir(pose, child, parent):
@@ -75,6 +78,7 @@ def optimize_aotr_3d(
     master, slave, vis_master=None, vis_slave=None, config=None,
     prev_master=None, prev_slave=None,
     prev_prev_master=None, prev_prev_slave=None,
+    prev_transform=None,
 ):
     """Optimize only bone orientation blending in Master coordinates.
 
@@ -105,32 +109,55 @@ def optimize_aotr_3d(
         j for j in TORSO if j in M and
         v1.get(j, True) and v2.get(j, True)
     ]
+    t12 = t21 = None
+    align_fail_reason = None
+    used_temporal_alignment = False
     if len(anchor) < 3:
-        return fail("insufficient_torso_anchors")
-    basis = np.vstack([M[j] for j in anchor])
-    if np.linalg.matrix_rank(basis - basis.mean(0), tol=1e-5) < 2:
-        return fail("degenerate_torso_alignment")
+        align_fail_reason = "insufficient_torso_anchors"
+    else:
+        basis = np.vstack([M[j] for j in anchor])
+        if np.linalg.matrix_rank(basis - basis.mean(0), tol=1e-5) < 2:
+            align_fail_reason = "degenerate_torso_alignment"
+        else:
+            t12, t21, inliers = estimate_bidirectional_similarity(
+                M, S, anchor,
+                threshold=float(cfg.get("ransac_threshold_m", 0.06)),
+                max_combos=int(cfg.get("ransac_max_combos", 100)),
+            )
+            if len(inliers) < 3:
+                align_fail_reason = "insufficient_alignment_inliers"
+            else:
+                residual = [float(np.linalg.norm(apply_similarity(M[j], t12) - S[j]))
+                            for j in anchor]
+                median = float(np.median(residual))
+                q75 = float(np.percentile(residual, 75))
+                details["alignment_median_m"] = median
+                details["alignment_q75_m"] = q75
+                if median > float(cfg.get("alignment_median_max_m", 0.12)) or q75 > float(cfg.get("alignment_q75_max_m", 0.18)):
+                    align_fail_reason = "unreliable_alignment"
 
-    t12, t21, inliers = estimate_bidirectional_similarity(
-        M, S, anchor,
-        threshold=float(cfg.get("ransac_threshold_m", 0.06)),
-        max_combos=int(cfg.get("ransac_max_combos", 100)),
-    )
-    if len(inliers) < 3:
-        return fail("insufficient_alignment_inliers")
-    residual = [float(np.linalg.norm(apply_similarity(M[j], t12) - S[j]))
-                for j in anchor]
-    median = float(np.median(residual))
-    q75 = float(np.percentile(residual, 75))
-    details["alignment_median_m"] = median
-    details["alignment_q75_m"] = q75
-    if median > float(cfg.get("alignment_median_max_m", 0.12)) or q75 > float(cfg.get("alignment_q75_max_m", 0.18)):
-        return fail("unreliable_alignment")
+    if align_fail_reason is not None:
+        t12 = t21 = None
+        if bool(cfg.get("temporal_alignment_fallback", False)):
+            t12, t21 = _fallback_transform_from_prev(M, S, prev_transform, v1, v2)
+        if t12 is None:
+            return fail(align_fail_reason)
+        used_temporal_alignment = True
+        details["alignment_source"] = "temporal_fallback"
+    else:
+        details["alignment_source"] = "torso_ransac"
+        details["_transform"] = (t12, t21)
 
     bones = _ordered_bones(M)
     prior_M, prior_S = _as_pose(prev_master), _as_pose(prev_slave)
     older_M, older_S = _as_pose(prev_prev_master), _as_pose(prev_prev_slave)
     rotation = t21[1]
+    max_cv_angle = cfg.get("max_cross_view_bone_angle_deg")
+    if max_cv_angle is not None:
+        med_ang = _median_cross_view_bone_angle(M, S, rotation, bones, v1, v2)
+        details["median_cross_view_bone_angle_deg"] = med_ang
+        if med_ang > float(max_cv_angle):
+            return fail("cross_view_pose_mismatch")
     alpha_by_bone = {}
     directions = {}
     weights = {}
@@ -139,7 +166,7 @@ def optimize_aotr_3d(
     jitter_count = 0
     floor = float(cfg.get("three_d_consensus_weight", 0.12))
     advantage_scale = float(cfg.get("three_d_slave_advantage_gain", 3.0))
-    master_weight = float(cfg.get("three_d_master_prior_weight", 0.75))
+    master_weight = float(cfg.get("three_d_master_prior_weight", 0.75)) * (1.5 if used_temporal_alignment else 1.0)
     temporal_weight = float(cfg.get("three_d_temporal_weight", 0.15))
     jitter_smoothing = max(1e-5, float(cfg.get("three_d_jitter_epsilon", 0.06)))
     min_gain = max(0.0, float(cfg.get("minimum_cost_reduction", 1e-7)))

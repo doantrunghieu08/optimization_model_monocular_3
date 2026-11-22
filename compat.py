@@ -27,13 +27,26 @@ def load_joblib_compat(filepath):
         return joblib.load(f)
 
 
+def normalize_person_name(target_person):
+    if target_person is None:
+        return None
+    s = str(target_person).strip().lower()
+    if s in ("aria1", "aria_1", "aria-1"):
+        return "aria01"
+    if s in ("aria2", "aria_2", "aria-2"):
+        return "aria02"
+    return s
+
+
 def parse_person_mapping(pkl_path):
     if pkl_path is None:
         return {}
     pkl_path = Path(pkl_path)
-    candidates = list(pkl_path.parent.glob("*person_mapping.txt"))
+    # ponytail: match exact stem first, then sorted same-dir mappings; never glob sibling camera dirs
+    stem_matches = sorted(pkl_path.parent.glob(f"{pkl_path.stem}*person_mapping.txt"))
+    candidates = stem_matches or sorted(pkl_path.parent.glob("*person_mapping.txt"))
     if not candidates and pkl_path.parent.parent.exists():
-        candidates = list(pkl_path.parent.parent.glob("**/*person_mapping.txt"))
+        candidates = sorted(pkl_path.parent.parent.glob("*person_mapping.txt"))
     mapping = {}
     if candidates:
         for line in candidates[0].read_text(encoding="utf-8").splitlines():
@@ -41,6 +54,41 @@ def parse_person_mapping(pkl_path):
                 k, v = line.split("=", 1)
                 mapping[k.strip()] = v.strip().lower()
     return mapping
+
+
+def resolve_target_track_ids(wham_data, pkl_path=None, target_person=None):
+    """Return the set of track keys in wham_data that belong to target_person."""
+    if not isinstance(wham_data, dict) and "defaultdict" not in str(type(wham_data)):
+        return set()
+    if target_person is not None:
+        target_str = normalize_person_name(target_person)
+        if pkl_path is not None:
+            mapping = parse_person_mapping(pkl_path)
+            found = set()
+            for track_str, person_name in mapping.items():
+                if person_name == target_str:
+                    track_id = int(track_str) if track_str.isdigit() else track_str
+                    if track_id in wham_data:
+                        found.add(track_id)
+                    elif str(track_id) in wham_data:
+                        found.add(str(track_id))
+            if found or mapping:
+                return found
+        for cand in (target_person, target_str, int(target_str) if target_str.isdigit() else None):
+            if cand is not None and cand in wham_data:
+                return {cand}
+        if target_str.startswith("s") and target_str[1:].isdigit() and 0 in wham_data:
+            return {0}
+        return set()
+    if 0 in wham_data:
+        return {0}
+    if "0" in wham_data:
+        return {"0"}
+    best_key, max_frames = None, -1
+    for k, v in wham_data.items():
+        if isinstance(v, dict) and "pose" in v and len(v["pose"]) > max_frames:
+            best_key, max_frames = k, len(v["pose"])
+    return {best_key} if best_key is not None else set()
 
 
 def _payload_frame_ids(payload):

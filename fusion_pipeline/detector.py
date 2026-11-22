@@ -118,15 +118,93 @@ def require_ray_casting_backend() -> None:
         ) from exc
 
 
-def compute_visibility_from_mesh_vertices(joints, verts, intrinsics=None, occlusion_tau=0.05, extra_verts=None):
+def compute_inter_person_occlusion(
+    joints,
+    other_verts_list,
+    occlusion_tau=0.05,
+    ray_radius=0.045,
+    vertex_stride=2,
+    min_hits=3,
+):
+    """Vectorized 3D ray-to-vertex inter-person occlusion check for ALL joints against N other people.
+
+    Unlike ConvexHull(torso), checks full-body vertices (arms/legs/head/torso) of every other
+    person in camera coordinates without convex-hull inflation on bent/hugging poses.
+    """
+    occluded = {name: False for name in joints}
+    if not other_verts_list or not joints:
+        return occluded
+    names = list(joints.keys())
+    pts = np.array([as_xyz(joints[n]) for n in names], dtype=float)
+    dists = np.linalg.norm(pts, axis=1)
+    valid = dists > 1e-6
+    if not np.any(valid):
+        return occluded
+
+    ray_dirs = np.zeros_like(pts)
+    ray_dirs[valid] = pts[valid] / dists[valid, None]
+    r2 = float(ray_radius) ** 2
+    stride = max(1, int(vertex_stride))
+    min_hits = max(1, int(min_hits))
+    hit_counts = np.zeros(len(names), dtype=int)
+
+    for raw_v in other_verts_list:
+        if raw_v is None:
+            continue
+        v = np.asarray(raw_v, dtype=float)
+        if v.ndim != 2 or v.shape[1] != 3 or len(v) == 0:
+            continue
+        v = v[::stride]
+        v_norm2 = np.sum(v * v, axis=1, keepdims=True)          # (V, 1)
+        t = v @ ray_dirs.T                                       # (V, J)
+        perp2 = v_norm2 - t * t                                  # (V, J)
+        # ponytail: ray cylinder test against strided SMPL vertices (<0.2ms/frame, N-person)
+        hits = (t > 0.05) & (t < (dists[None, :] - float(occlusion_tau))) & (perp2 < r2)
+        hit_counts += np.sum(hits, axis=0)
+
+    for idx, name in enumerate(names):
+        if valid[idx] and hit_counts[idx] >= min_hits:
+            occluded[name] = True
+    return occluded
+
+
+def compute_visibility_from_mesh_vertices(
+    joints,
+    verts,
+    intrinsics=None,
+    occlusion_tau=0.05,
+    extra_verts=None,
+    inter_person_radius=0.045,
+    inter_person_min_hits=3,
+    inter_person_tau=0.15,
+):
     """
     3D Ray-casting occlusion detection:
-    For each joint in OCCLUSION_CHECK_JOINTS, cast a 3D ray from camera center (0, 0, 0)
-    to the joint position. If the ray intersects the 3D torso mesh surface at a distance
-    significantly closer than the joint (hit_distance < joint_distance - occlusion_tau),
-    the joint is marked as occluded (visibility = False).
+    1) Self-occlusion: cast 3D ray from camera center (0, 0, 0) to OCCLUSION_CHECK_JOINTS
+       against target person's torso hull (margin = occlusion_tau).
+    2) Inter-person occlusion (when extra_verts is provided as one array or list of arrays):
+       check ALL joints against full-body vertices of every other person in the frame
+       (margin = inter_person_tau, larger than self-occlusion to avoid false positives on
+       touching/hugging contact under monocular depth noise).
     """
     visibility = {name: True for name in joints.keys()}
+    if extra_verts is not None:
+        other_list = (
+            list(extra_verts)
+            if isinstance(extra_verts, (list, tuple))
+            else [extra_verts]
+        )
+        inter_occ = compute_inter_person_occlusion(
+            joints,
+            other_list,
+            occlusion_tau=float(inter_person_tau),
+            ray_radius=inter_person_radius,
+            min_hits=inter_person_min_hits,
+        )
+        for name, is_occ in inter_occ.items():
+            if is_occ:
+                visibility[name] = False
+
     if verts is None or _TORSO_MASK is None:
         return visibility
     verts = np.asarray(verts, dtype=float)
@@ -140,18 +218,10 @@ def compute_visibility_from_mesh_vertices(joints, verts, intrinsics=None, occlus
     try:
         hull_3d = ConvexHull(torso_verts)
         mesh = trimesh.Trimesh(vertices=torso_verts, faces=hull_3d.simplices, process=False)
-        if extra_verts is not None:
-            extra_v = np.asarray(extra_verts, dtype=float)
-            if extra_v.ndim == 2 and len(extra_v) == len(_TORSO_MASK):
-                extra_torso = extra_v[_TORSO_MASK]
-                if len(extra_torso) >= 4:
-                    hull_extra = ConvexHull(extra_torso)
-                    mesh_extra = trimesh.Trimesh(vertices=extra_torso, faces=hull_extra.simplices, process=False)
-                    mesh = trimesh.util.concatenate([mesh, mesh_extra])
     except Exception:
         return visibility
 
-    check_names = [name for name in joints.keys() if name in OCCLUSION_CHECK_JOINTS]
+    check_names = [name for name in joints.keys() if name in OCCLUSION_CHECK_JOINTS and visibility.get(name, True)]
     if not check_names:
         return visibility
 

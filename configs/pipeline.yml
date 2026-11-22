@@ -49,6 +49,14 @@ fusion:
       mu: 4.2041772210435745e-05
       sd: 1.3685969107519123
     rotation_half_window: 4
+    multi_person:
+      enabled: true
+      visibility_weighted_rotation: true
+      master_occluded_logit_bias: 2.0
+      slave_occluded_logit_bias: 2.5
+      both_occluded_logit_bias: 0.5
+      anti_swap_gate: true
+      max_median_bone_angle_deg: 50.0
     sequence_stability:
       enabled: true
       temporal_stability:
@@ -100,6 +108,8 @@ fusion:
     minimum_cost_reduction: 1.0e-07
     trust_max_iter: 12
     trust_initial_radius: 0.25
+    temporal_alignment_fallback: true
+    max_cross_view_bone_angle_deg: 50.0
   selective_joint_fusion:
     enabled: false
     quality_margin_visible: 0.1
@@ -119,6 +129,10 @@ fusion:
   occlusion:
     enabled: true
     tau: 0.05
+    multi_person: true
+    inter_person_tau: 0.15
+    inter_person_radius_m: 0.045
+    inter_person_min_hits: 3
   uncertainty_gating:
     consensus_blend_strength: 0.5
     enabled: true

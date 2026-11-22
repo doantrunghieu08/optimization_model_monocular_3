@@ -163,11 +163,53 @@ def _trust_region_1d(cost, max_iter, initial_radius):
     return best_x, best_cost, evaluations
 
 
+PRIMARY_LIMB_JOINTS = frozenset({
+    "left_elbow", "right_elbow", "left_wrist", "right_wrist",
+    "left_knee", "right_knee", "left_ankle", "right_ankle",
+})
+
+
+def _median_cross_view_bone_angle(M, S, R21, bones, vis_m, vis_s):
+    vis_angles, all_angles = [], []
+    for child, parent in bones:
+        if child not in PRIMARY_LIMB_JOINTS:
+            continue
+        um = _unit(M[child] - M[parent])
+        us = _unit(R21 @ (S[child] - S[parent]))
+        if um is None or us is None:
+            continue
+        ang = float(np.degrees(np.arccos(np.clip(float(um @ us), -1.0, 1.0))))
+        all_angles.append(ang)
+        if vis_m.get(child, True) and vis_s.get(child, True):
+            vis_angles.append(ang)
+    sample = vis_angles if len(vis_angles) >= 3 else all_angles
+    return float(np.median(sample)) if sample else 0.0
+
+
+def _fallback_transform_from_prev(M, S, prev_transform, vis_m, vis_s):
+    """Reuse rotation from recent clean frame; refit translation from visible joints or pelvis."""
+    if not prev_transform or prev_transform[0] is None or prev_transform[1] is None:
+        return None, None
+    _, R12, _ = prev_transform[0]
+    R12 = np.asarray(R12, dtype=float)
+    if R12.shape != (3, 3) or not np.isfinite(R12).all():
+        return None, None
+    vis_pts = [j for j in M if vis_m.get(j, True) and vis_s.get(j, True)]
+    ref_pts = vis_pts if vis_pts else ([j for j in ("pelvis", "neck") if j in M] or list(M)[:3])
+    mu_m = np.mean([M[j] for j in ref_pts], axis=0)
+    mu_s = np.mean([S[j] for j in ref_pts], axis=0)
+    t12 = (1.0, R12, mu_s - R12 @ mu_m)
+    R21 = R12.T
+    t21 = (1.0, R21, -R21 @ t12[2])
+    return t12, t21
+
+
 def optimize_aotr(
     master, slave, observations_master=None, observations_slave=None,
     K_master=None, K_slave=None, vis_master=None, vis_slave=None,
     config=None, prev_master=None, prev_slave=None,
     prev_prev_master=None, prev_prev_slave=None,
+    prev_transform=None,
 ):
     """Return (master-frame fused pose, diagnostics).
 
@@ -211,30 +253,55 @@ def optimize_aotr(
                 master, slave, vis_master=vis_master, vis_slave=vis_slave,
                 config=cfg, prev_master=prev_master, prev_slave=prev_slave,
                 prev_prev_master=prev_prev_master, prev_prev_slave=prev_prev_slave,
+                prev_transform=prev_transform,
             )
         return fallback(reason)
     details["evidence_mode"] = "two_view_2d"
 
     anchors = [j for j in TORSO if j in M and valid_vis1.get(j, True) and valid_vis2.get(j, True)]
+    used_temporal_alignment = False
+    t12 = t21 = None
+    align_fail_reason = None
     if len(anchors) < 3:
-        return fallback("insufficient_torso_anchors")
-    centered = np.array([M[j] for j in anchors])
-    if np.linalg.matrix_rank(centered - centered.mean(axis=0), tol=1e-5) < 2:
-        return fallback("degenerate_torso_alignment")
-    t12, t21, inliers = estimate_bidirectional_similarity(
-        M, S, anchors, threshold=float(cfg.get("ransac_threshold_m", 0.06)),
-        max_combos=int(cfg.get("ransac_max_combos", 100)),
-    )
-    if len(inliers) < 3:
-        return fallback("insufficient_alignment_inliers")
-    errors = [float(np.linalg.norm(apply_similarity(M[j], t12) - S[j])) for j in anchors]
-    median, q75 = float(np.median(errors)), float(np.percentile(errors, 75))
-    details.update(alignment_median_m=median, alignment_q75_m=q75)
-    if median > float(cfg.get("alignment_median_max_m", 0.12)) or q75 > float(cfg.get("alignment_q75_max_m", 0.18)):
-        return fallback("unreliable_alignment")
+        align_fail_reason = "insufficient_torso_anchors"
+    else:
+        centered = np.array([M[j] for j in anchors])
+        if np.linalg.matrix_rank(centered - centered.mean(axis=0), tol=1e-5) < 2:
+            align_fail_reason = "degenerate_torso_alignment"
+        else:
+            t12, t21, inliers = estimate_bidirectional_similarity(
+                M, S, anchors, threshold=float(cfg.get("ransac_threshold_m", 0.06)),
+                max_combos=int(cfg.get("ransac_max_combos", 100)),
+            )
+            if len(inliers) < 3:
+                align_fail_reason = "insufficient_alignment_inliers"
+            else:
+                errors = [float(np.linalg.norm(apply_similarity(M[j], t12) - S[j])) for j in anchors]
+                median, q75 = float(np.median(errors)), float(np.percentile(errors, 75))
+                details.update(alignment_median_m=median, alignment_q75_m=q75)
+                if median > float(cfg.get("alignment_median_max_m", 0.12)) or q75 > float(cfg.get("alignment_q75_max_m", 0.18)):
+                    align_fail_reason = "unreliable_alignment"
+
+    if align_fail_reason is not None:
+        t12 = t21 = None
+        if bool(cfg.get("temporal_alignment_fallback", False)):
+            t12, t21 = _fallback_transform_from_prev(M, S, prev_transform, valid_vis1, valid_vis2)
+        if t12 is None:
+            return fallback(align_fail_reason)
+        used_temporal_alignment = True
+        details["alignment_source"] = "temporal_fallback"
+    else:
+        details["alignment_source"] = "torso_ransac"
+        details["_transform"] = (t12, t21)
 
     bones = _ordered_bones(M)
     R21 = t21[1]
+    max_cv_angle = cfg.get("max_cross_view_bone_angle_deg")
+    if max_cv_angle is not None:
+        med_ang = _median_cross_view_bone_angle(M, S, R21, bones, valid_vis1, valid_vis2)
+        details["median_cross_view_bone_angle_deg"] = med_ang
+        if med_ang > float(max_cv_angle):
+            return fallback("cross_view_pose_mismatch")
     directions = {}
     lengths = {}
     for child, parent in bones:

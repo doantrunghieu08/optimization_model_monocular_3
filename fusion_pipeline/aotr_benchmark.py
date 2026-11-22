@@ -81,6 +81,15 @@ def evaluation_protocol(config):
         "target_person": person,
         "person_height_m": height,
     }
+    occ_cfg = config.get("fusion", {}).get("occlusion", {})
+    if isinstance(occ_cfg, dict) and occ_cfg.get("multi_person", False):
+        settings["occlusion"] = {
+            "multi_person": True,
+            "tau": float(occ_cfg.get("tau", 0.05)),
+            "inter_person_tau": float(occ_cfg.get("inter_person_tau", 0.15)),
+            "inter_person_radius_m": float(occ_cfg.get("inter_person_radius_m", 0.045)),
+            "inter_person_min_hits": int(occ_cfg.get("inter_person_min_hits", 3)),
+        }
     method = fusion_method(config)
     revision = AOTR_REVISION
     if method == "partwise":

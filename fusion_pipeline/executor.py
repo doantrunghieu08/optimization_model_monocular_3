@@ -57,45 +57,50 @@ def _clean_output(output_dir: Path, pattern: str = "*.json", create_split_dirs: 
                     pass
 
 
-from compat import load_joblib_compat, resolve_person_payload
+from compat import load_joblib_compat, resolve_person_payload, resolve_target_track_ids
 
 
 def _extract_person_payload(wham_data):
     return resolve_person_payload(wham_data)
 
 
-def _extract_other_person_verts(wham_raw, target_person=None, pkl_path=None):
-    if not isinstance(wham_raw, dict):
-        return None
-    from compat import parse_person_mapping
-    target_str = str(target_person).strip().lower() if target_person else None
-    if target_str in ("aria1", "aria_1", "aria-1"):
-        target_str = "aria01"
-    elif target_str in ("aria2", "aria_2", "aria-2"):
-        target_str = "aria02"
-    mapping = parse_person_mapping(pkl_path) if pkl_path else {}
-    other_person = "aria02" if target_str == "aria01" else ("aria01" if target_str == "aria02" else None)
-    if other_person and mapping:
-        for k, v in wham_raw.items():
-            if mapping.get(str(k), mapping.get(k, "")) == other_person and isinstance(v, dict):
-                verts = v.get("verts_cam", v.get("verts"))
-                if verts is not None:
-                    return verts
-        return None
+def _extract_other_persons_by_frame(wham_raw, target_person=None, pkl_path=None):
+    """Map absolute video frame_id -> list of (V, 3) meshes for ALL non-target tracks.
+
+    Fixes 3 multi-person bugs: (1) indexes each other track by its OWN frame_ids instead of
+    target's row index, (2) supports N > 2 people/fragments, (3) works when only one camera
+    has extra people.
+    """
+    if not isinstance(wham_raw, dict) and "defaultdict" not in str(type(wham_raw)):
+        return {}
+    target_ids = resolve_target_track_ids(wham_raw, pkl_path=pkl_path, target_person=target_person)
+    by_frame = {}
     for k, v in wham_raw.items():
-        person_name = mapping.get(str(k), mapping.get(k, ""))
-        if target_str and person_name == target_str:
+        if k in target_ids or str(k) in target_ids or not isinstance(v, dict):
             continue
-        if isinstance(v, dict):
-            verts = v.get("verts_cam", v.get("verts"))
-            if verts is not None:
-                return verts
-    return None
+        verts = v.get("verts_cam", v.get("verts"))
+        if verts is None:
+            continue
+        verts = np.asarray(verts)
+        if verts.ndim != 3 or verts.shape[0] == 0:
+            continue
+        fids = v.get("frame_ids")
+        if fids is None and isinstance(v.get("tracking_results_for_reproj"), dict):
+            fids = v["tracking_results_for_reproj"].get("frame_id")
+        if fids is not None:
+            fids = np.asarray(fids).astype(int).reshape(-1)
+            if len(fids) != verts.shape[0]:
+                fids = np.arange(verts.shape[0], dtype=int)
+        else:
+            fids = np.arange(verts.shape[0], dtype=int)
+        for row, fid in enumerate(fids):
+            by_frame.setdefault(int(fid), []).append(verts[row])
+    return by_frame
 
 
 def _load_verts_if_available(paths: dict, occlusion_enabled: bool, target_person=None, include_other_person=False):
     if not occlusion_enabled:
-        return False, None, None, 0, 0, None, None, 0, 0
+        return False, None, None, 0, 0, {}, {}, {}, {}
 
     wham_path_1 = Path(paths["cam1_pkl"])
     wham_path_2 = Path(paths["cam2_pkl"])
@@ -114,10 +119,10 @@ def _load_verts_if_available(paths: dict, occlusion_enabled: bool, target_person
     if person_1 is None or person_2 is None or verts_cam1 is None or verts_cam2 is None:
         raise ValueError("Neither 'verts_cam' nor 'verts' found in WHAM PKL inputs; fusion.occlusion.enabled requires mesh vertices")
 
-    extra_1 = _extract_other_person_verts(raw_1, target_person=target_person, pkl_path=wham_path_1) if include_other_person else None
-    extra_2 = _extract_other_person_verts(raw_2, target_person=target_person, pkl_path=wham_path_2) if include_other_person else None
-    if extra_1 is not None and extra_2 is not None:
-        print(f"[Fusion] Loaded Person 2 3D mesh for multi-person occlusion ray-casting")
+    extra_1 = _extract_other_persons_by_frame(raw_1, target_person=target_person, pkl_path=wham_path_1) if include_other_person else {}
+    extra_2 = _extract_other_persons_by_frame(raw_2, target_person=target_person, pkl_path=wham_path_2) if include_other_person else {}
+    if extra_1 or extra_2:
+        print(f"[Fusion] Loaded multi-person 3D meshes by frame_id (cam1={len(extra_1)} frames, cam2={len(extra_2)} frames)")
 
     # ponytail: video timestamp offset for indexed mesh lookups
     frame_rows_1 = {int(frame_id): row for row, frame_id in enumerate(person_1.get("frame_ids", range(verts_cam1.shape[0])))}
@@ -369,6 +374,10 @@ def run_phase3_pipeline(
     prev_prev_raw=None,
     aotr_cfg=None,
     pair_mode="aggressive",
+    prev_transform=None,
+    inter_person_radius=0.045,
+    inter_person_min_hits=3,
+    inter_person_tau=0.15,
 ):
     cam1 = {k: as_xyz(v) for k, v in data_in["camera1"].items()}
     cam2 = {k: as_xyz(v) for k, v in data_in["camera2"].items()}
@@ -388,8 +397,16 @@ def run_phase3_pipeline(
             raise ValueError("intrinsics_by_cam is required when verts_by_cam is provided")
         extra1 = extra_verts_by_cam.get("camera1") if extra_verts_by_cam else None
         extra2 = extra_verts_by_cam.get("camera2") if extra_verts_by_cam else None
-        vis1 = compute_visibility_from_mesh_vertices(cam1, verts_by_cam["camera1"], intrinsics_by_cam["camera1"], occlusion_tau, extra_verts=extra1)
-        vis2 = compute_visibility_from_mesh_vertices(cam2, verts_by_cam["camera2"], intrinsics_by_cam["camera2"], occlusion_tau, extra_verts=extra2)
+        vis1 = compute_visibility_from_mesh_vertices(
+            cam1, verts_by_cam["camera1"], intrinsics_by_cam["camera1"], occlusion_tau,
+            extra_verts=extra1, inter_person_radius=inter_person_radius,
+            inter_person_min_hits=inter_person_min_hits, inter_person_tau=inter_person_tau,
+        )
+        vis2 = compute_visibility_from_mesh_vertices(
+            cam2, verts_by_cam["camera2"], intrinsics_by_cam["camera2"], occlusion_tau,
+            extra_verts=extra2, inter_person_radius=inter_person_radius,
+            inter_person_min_hits=inter_person_min_hits, inter_person_tau=inter_person_tau,
+        )
     else:
         vis1 = {n: True for n in names}
         vis2 = {n: True for n in names}
@@ -441,7 +458,9 @@ def run_phase3_pipeline(
             prev_slave=(prev_raw or {}).get("camera2"),
             prev_prev_master=(prev_prev_raw or {}).get("camera1"),
             prev_prev_slave=(prev_prev_raw or {}).get("camera2"),
+            prev_transform=prev_transform,
         )
+        clean_transform = diag.pop("_transform", None)
         changed = [j for j, mode in diag["joint_selection"].items() if mode != "KEEP"]
         return {
             "M": [], "M_after": [], "M_resolved": False,
@@ -457,6 +476,7 @@ def run_phase3_pipeline(
             "vis2": {j: bool(v) for j, v in vis2.items()},
             "joint_selection": diag["joint_selection"],
             "aotr": {k: v for k, v in diag.items() if k != "joint_selection"},
+            "_clean_transform": clean_transform,
             "fusion_mode": "aotr",
             "fusion_mode_stats": {
                 "evidence_mode": diag.get("evidence_mode", "unknown"),
@@ -1068,6 +1088,10 @@ def run_fusion(config: dict) -> None:
     print(f"[Fusion] Master Protection: should_protect={should_protect_master}, margin={effective_master_margin}")
 
     # --- THÊM TQDM Ở ĐÂY ---
+    inter_radius = float(occlusion_cfg.get("inter_person_radius_m", 0.045))
+    inter_min_hits = int(occlusion_cfg.get("inter_person_min_hits", 3))
+    inter_tau = float(occlusion_cfg.get("inter_person_tau", 0.15))
+    last_clean_transform = None
     for path in tqdm(file_paths, desc="[Fusion] Processing", unit="frame", dynamic_ncols=True):
         frame_idx = _frame_index(path)
         out_name = f"fused_data_{frame_idx}.json"
@@ -1081,10 +1105,9 @@ def run_fusion(config: dict) -> None:
             idx2 = frame_rows_2.get(cam2_frame)
             if idx1 is not None and idx2 is not None:
                 verts_input = {"camera1": verts_cam1[idx1], "camera2": verts_cam2[idx2]}
-                extra_input = None
-                if extra_1 is not None and extra_2 is not None:
-                    if 0 <= idx1 < len(extra_1) and 0 <= idx2 < len(extra_2):
-                        extra_input = {"camera1": extra_1[idx1], "camera2": extra_2[idx2]}
+                ex1 = extra_1.get(cam1_frame) if extra_1 else None
+                ex2 = extra_2.get(cam2_frame) if extra_2 else None
+                extra_input = {"camera1": ex1, "camera2": ex2} if (ex1 or ex2) else None
             else:
                 # Dùng tqdm.write thay cho print trong vòng lặp
                 tqdm.write(f"[Fusion] Frame {frame_idx}: WHAM frame out of range. Occlusion skipped.")
@@ -1123,7 +1146,16 @@ def run_fusion(config: dict) -> None:
                 prev_prev_raw=previous_previous_raw,
                 aotr_cfg=aotr_cfg,
                 pair_mode=pair_mode,
+                prev_transform=last_clean_transform,
+                inter_person_radius=inter_radius,
+                inter_person_min_hits=inter_min_hits,
+                inter_person_tau=inter_tau,
             )
+            clean_tf = result.pop("_clean_transform", None)
+            if clean_tf is not None:
+                med_err = result.get("aotr", {}).get("alignment_median_m")
+                if med_err is None or med_err <= 0.08:
+                    last_clean_transform = clean_tf
             # 1. Lấy dữ liệu an toàn
                 
             occluded_cam1 = sorted(name for name, visible in result.get("vis1", {}).items() if not visible)
@@ -1341,8 +1373,17 @@ def run_fusion(config: dict) -> None:
             pose = _load_pose_frame(p, metadata_dir)
             master_sequence.append(pose["camera1"])
             slave_sequence.append(pose["camera2"])
-        fused_sequence, partwise_diag = fuse_sequence(
-            master_sequence, slave_sequence, fusion_cfg.get(fusion_method, {}))
+        if fusion_method == "partwise":
+            fused_sequence, partwise_diag = fuse_sequence(
+                master_sequence,
+                slave_sequence,
+                fusion_cfg.get(fusion_method, {}),
+                vis_master=[r.get("vis1", {}) for r in frame_results],
+                vis_slave=[r.get("vis2", {}) for r in frame_results],
+            )
+        else:
+            fused_sequence, partwise_diag = fuse_sequence(
+                master_sequence, slave_sequence, fusion_cfg.get(fusion_method, {}))
         for p, fused_cam1 in zip(file_paths, fused_sequence):
             name = f"fused_data_{_frame_index(p)}.json"
             record = read_json(output_dir / "keypoints3d" / name)
