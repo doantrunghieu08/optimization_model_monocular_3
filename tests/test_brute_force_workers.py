@@ -134,6 +134,27 @@ class ParallelRunTests(unittest.TestCase):
         self.assertEqual(len(ranked["s"]), 2)
         self.assertFalse((self.tmp / bfr.WORKERS_DIR_NAME).exists())
 
+    def test_resolve_input_preserves_symlink_for_person_mapping(self):
+        from compat import parse_person_mapping
+        remote_dir = self.tmp / "drive_remote" / "cam01_wham"
+        local_dir = self.tmp / "local_stage" / "cam01_wham"
+        remote_dir.mkdir(parents=True)
+        local_dir.mkdir(parents=True)
+        remote_pkl = remote_dir / "wham_remote.pkl"
+        remote_pkl.write_bytes(b"stub")
+        local_pkl = local_dir / "wham_local.pkl"
+        try:
+            local_pkl.symlink_to(remote_pkl)
+        except OSError as exc:
+            self.skipTest(f"symlinks unavailable: {exc}")
+        (local_dir / "wham_local_person_mapping.txt").write_text("2 = aria01\n5 = aria02\n", encoding="utf-8")
+
+        resolved = bfr._resolve_local_or_drive_path(
+            self.tmp, {"pkl": str(local_pkl)}, "pkl", "pkl_local", description="cam01 PKL"
+        )
+        self.assertEqual(resolved, Path(os.path.abspath(str(local_pkl))))
+        self.assertEqual(parse_person_mapping(resolved), {"2": "aria01", "5": "aria02"})
+
 
 if __name__ == "__main__":
     unittest.main()

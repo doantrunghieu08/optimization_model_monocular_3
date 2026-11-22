@@ -245,7 +245,8 @@ def _resolve_local_or_drive_path(
 
         if local_path.exists():
             print(f"[Input] {description}: LOCAL -> {local_path}")
-            return local_path.resolve()
+            # ponytail: abspath (not resolve) keeps symlinks in their local dir alongside *_person_mapping.txt
+            return Path(os.path.abspath(str(local_path)))
 
     # 2. Thử đường dẫn gốc
     if remote_value:
@@ -263,7 +264,7 @@ def _resolve_local_or_drive_path(
 
             if remote_path.exists():
                 print(f"[Input] {description}: ORIGINAL -> {remote_path}")
-                return remote_path.resolve()
+                return Path(os.path.abspath(str(remote_path)))
 
     # 3. Không tìm thấy
     if not required:
@@ -818,7 +819,7 @@ def _setup_pipeline_config(
 
     cfg.setdefault("inputs", {})
     cfg["inputs"].update({
-        "ground_truth_dir": str(gt_path.resolve()),
+        "ground_truth_dir": os.path.abspath(str(gt_path)),
         "cam1_pkl": str(camA_inputs["pkl"]),
         "camera1_video": str(camA_inputs["video"]),
         "cam2_pkl": str(camB_inputs["pkl"]),
@@ -1296,7 +1297,14 @@ def _run_pairs_parallel(segments, existing, base_cfg, ws_dir, sh_name, ws_title,
                 print(f"{head}: LỖI worker {type(exc).__name__}: {exc}", flush=True)
                 continue
             if res is None:
-                print(f"{head} (w{slot:02d}, {seconds:.0f}s): không có kết quả, xem {log_path}", flush=True)
+                err_hint = ""
+                try:
+                    lines = [ln.strip() for ln in Path(log_path).read_text(encoding="utf-8", errors="ignore").splitlines() if ln.strip()]
+                    if lines:
+                        err_hint = f" | {lines[-1]}"
+                except Exception:
+                    pass
+                print(f"{head} (w{slot:02d}, {seconds:.0f}s): không có kết quả, xem {log_path}{err_hint}", flush=True)
                 continue
             results[seg_name].append(res)
             # flush: progress must show up even when stdout is redirected to a file
