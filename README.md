@@ -67,9 +67,29 @@ and the skeleton is rebuilt with the Master bone lengths, so MBLE equals the bas
 
 **`naive`: comparison baseline** (`fusion_pipeline/naive.py`). For each frame, the Slave is
 rigidly aligned to the Master with one Kabsch rotation about the pelvis, and the joint
-positions are averaged (`fusion.naive.master_weight`, fixed at 0.5). It has no learning, no
-temporal model and does not preserve bone lengths. It is the minimum that any proposed
-fusion must beat.
+positions are averaged (`fusion.naive.master_weight`, fixed at 0.5). It has no learning and
+does not preserve bone lengths. It is the minimum that any proposed fusion must beat.
+With `fusion.naive.use_aotr_stability: true` (the default in `configs/pipeline.yml`) the
+result goes through AOTR's sequence-stability pass (savgol + FK onto the Master bone
+lengths), so a comparison with AOTR does not mix in the smoothing gain. Set it to `false`
+for the raw baseline.
+
+**`adaptive_naive`: control for AOTR** (`fusion_pipeline/adaptive_naive.py`). It uses the
+same inputs and steps as AOTR (rigid torso RANSAC with the `fusion.aotr` thresholds and gates,
+FK with the Master bone lengths, the same sequence-stability pass), but replaces the
+optimisation (2D reprojection objective, observability prior, trust region) with a
+closed-form per-bone weight:
+
+    q = c^p · exp(−j / τ),   w_Slave = q_S / (q_M + q_S),
+    u = normalize((1 − w) · u_Master + w · R21 · u_Slave)
+
+* `c` is the bone's 2D detector confidence: the minimum over its endpoints that have a direct
+  2D keypoint, or `missing_confidence` when there is none.
+* `j` is the bone-direction jitter in that view: the second difference of the unit vector,
+  averaged over ±`jitter_half_window` frames and divided by the sequence median for that bone.
+* `p = confidence_power` and `τ = jitter_scale` are the only free numbers. `p = 0` with a very
+  large `τ` gives the fixed 0.5 blend. Fit them on a train split (see the grid example below),
+  then freeze them.
 
 ### Ground-truth use
 
@@ -77,6 +97,7 @@ fusion must beat.
 |---|---|
 | Fusion at inference (both methods) | **No** |
 | `partwise` depth-logit (4 numbers in `configs/pipeline.yml`) | **Yes, fitted once** on GT of a design split (Hugging, aria01, cam02/04/13/19) and then frozen. `partwise` is therefore *GT-free at inference, calibrated on design GT*, **not** zero-GT. |
+| `adaptive_naive` `confidence_power`, `jitter_scale` | Defaults 1 and 1 are set a priori, not fitted. If they are fitted (grid on a train split), report it like `partwise`: *GT-free at inference, calibrated on train GT*. |
 | `preprocessing_data.label_persons` | **Yes, 3D GT names tracks** (aria01 / aria02) when a dataset has no mapping file and no 2D boxes. One label per track, so tracker errors are kept. |
 | Identity mask (evaluation) | **Yes.** Frames where the input track follows the wrong person are excluded from scoring, identically for all methods. |
 
@@ -189,7 +210,7 @@ python brute_force_runner.py --config configs/pipeline.yml --brute-config config
 #    Never start two runners on the same report at once: the last one to write the CSV wins.
 python brute_force_runner.py --config configs/pipeline.yml --brute-config configs/001_mma5.yml --workers 6
 
-# 3) tests (167; test_method_comparison needs a working pandas)
+# 3) tests (185; test_method_comparison needs a working pandas)
 python -m pytest -q
 
 # 4) check a new (Harmony4D) sequence before running anything; prints the remaining steps
@@ -202,9 +223,23 @@ python run_method_comparison.py run --brute configs/brute_force.yml \
     --split design=aria01:cam02,cam04,cam13,cam19 --split heldout=aria02:cam03,cam05,cam17,cam20 \
     --out output/method_comparison/hugging_002 --worker 0 --n-workers 1
 python run_method_comparison.py summarize --out output/method_comparison/hugging_002
+
+# 6) AOTR vs naive vs adaptive_naive (no brute_force_runner run needed: each pair is exported,
+#    fused and scored from the local inputs; pkl_local / ground_truth_dir_local are used)
+python run_method_comparison.py run --brute configs/001_mma5.yml --segments 001_mma5_aria02 \
+    --split try=aria02:cam07,cam11,cam14 --methods aotr naive adaptive_naive \
+    --mask configs/identity_mask_001_mma5.json --out output/method_comparison/001_mma5_try
+#    grid for adaptive_naive on a train split: each variant is its own row and protocol
+python run_method_comparison.py run --brute configs/002_mma5.yml \
+    --methods adaptive_naive@confidence_power=0 adaptive_naive adaptive_naive@confidence_power=2 \
+              adaptive_naive@jitter_scale=0.5 adaptive_naive@jitter_scale=1000 \
+    --out output/method_comparison/002_mma5_grid
 ```
 
-Choose the method with `fusion.method: aotr | partwise | naive` in `configs/pipeline.yml`. Each
+`run_method_comparison.py` needs pandas; it must import with the pipeline's numpy (pandas 3.x
+needs numpy >= 2.0.2).
+
+Choose the method with `fusion.method: aotr | partwise | naive | adaptive_naive` in `configs/pipeline.yml`. Each
 method writes its own report (`output/brute_force_report_<method>_<hash>.csv`). The hash
 covers the method, its parameters and the identity mask, so cached results are never mixed.
 For the mask it covers the frames actually excluded (all mask files merged, cut at
