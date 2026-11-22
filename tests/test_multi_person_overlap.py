@@ -210,6 +210,29 @@ class MultiPersonOverlapTests(unittest.TestCase):
         self.assertEqual(diag["depth_outlier_frames"], 8)
         self.assertLess(err_new, err_old * 0.2)
 
+    def test_static_camera_orientation_fixes_master_yaw_flip_without_hurting_pa_or_mble(self):
+        # Clean sequence of 10 frames; Master suffers a 60 deg yaw error on frame 5 while Slave stays true.
+        gt = [_skeleton(depth=4.0) for _ in range(10)]
+        master = [p for p in gt]
+        master[5] = _rotate(gt[5], 60.0)
+        slave = [_rotate(p, 45.0, shift=(1.0, 0.0, 1.5)) for p in gt]
+        base_cfg = {"depth_logit": {"a": 0.0, "b": 1.7, "mu": 0.0, "sd": 1.4},
+                    "rotation_half_window": 2, "sequence_stability": {"enabled": False}}
+        cfg_no = {**base_cfg, "multi_person": {"enabled": True, "static_camera_orientation": False}}
+        cfg_yes = {**base_cfg, "multi_person": {"enabled": True, "static_camera_orientation": True, "orientation_smooth_half_window": 0}}
+        out_no, _ = fuse_partwise(master, slave, cfg_no)
+        out_yes, diag = fuse_partwise(master, slave, cfg_yes)
+        self.assertTrue(diag["static_camera_orientation"]["enabled"])
+        # On frame 5, global orientation error (distance to gt[5] without re-rotation) must drop sharply
+        err_no = np.mean([np.linalg.norm(np.asarray(out_no[5][k]) - gt[5][k]) for k in gt[5]])
+        err_yes = np.mean([np.linalg.norm(np.asarray(out_yes[5][k]) - gt[5][k]) for k in gt[5]])
+        self.assertLess(err_yes, err_no * 0.25)
+        # Bone lengths strictly preserved
+        for c, p in (("left_wrist", "left_elbow"), ("left_knee", "left_hip"), ("neck", "pelvis")):
+            l_ref = np.linalg.norm(master[5][c] - master[5][p])
+            l_out = np.linalg.norm(np.asarray(out_yes[5][c]) - np.asarray(out_yes[5][p]))
+            self.assertAlmostEqual(l_ref, l_out, places=8)
+
     def test_protocol_hash_changes_when_multi_person_occlusion_toggled(self):
         base = {"fusion": {"method": "aotr", "aotr": {"enabled": True}, "occlusion": {"enabled": True, "multi_person": False}},
                 "inputs": {"target_person": "aria01"}}

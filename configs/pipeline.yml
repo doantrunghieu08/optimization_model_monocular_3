@@ -57,6 +57,8 @@ fusion:
       both_occluded_logit_bias: 0.5
       anti_swap_gate: true
       max_median_bone_angle_deg: 50.0
+      static_camera_orientation: true
+      orientation_smooth_half_window: 2
     sequence_stability:
       enabled: true
       temporal_stability:

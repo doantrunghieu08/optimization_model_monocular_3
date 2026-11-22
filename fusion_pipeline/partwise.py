@@ -187,6 +187,106 @@ def blend_frame(master_pose, slave_dirs, w, bone_weights=None):
     return out
 
 
+def _geodesic_deg(R1, R2):
+    tr = float(np.trace(R1.T @ R2))
+    return float(np.degrees(np.arccos(np.clip((tr - 1.0) / 2.0, -1.0, 1.0))))
+
+
+def _torso_frame(pose):
+    return _orthonormalize(0.5 * (
+        part_frame(pose, "left_hip", "right_hip")
+        + part_frame(pose, "left_shoulder", "right_shoulder")
+    ))
+
+
+def estimate_static_camera_rotation(master, slave, vis_master=None, vis_slave=None,
+                                    frame_valid=None, inlier_deg=25.0):
+    """Zero-GT robust SO(3) medoid + inlier mean for ONE static camera rotation R_cam (Slave -> Master)."""
+    cands, weights = [], []
+    for t, (m, s) in enumerate(zip(master, slave)):
+        if frame_valid is not None and frame_valid[t] <= 0.0:
+            continue
+        vm = vis_master[t] if vis_master is not None else None
+        vs = vis_slave[t] if vis_slave is not None else None
+        wl = _part_vis_weight(vm, vs, LOWER_TORSO_JOINTS)
+        wu = _part_vis_weight(vm, vs, UPPER_TORSO_JOINTS)
+        if wl >= 0.5:
+            cands.append(part_frame(m, "left_hip", "right_hip") @ part_frame(s, "left_hip", "right_hip").T)
+            weights.append(wl)
+        if wu >= 0.5:
+            cands.append(part_frame(m, "left_shoulder", "right_shoulder") @ part_frame(s, "left_shoulder", "right_shoulder").T)
+            weights.append(wu)
+    if not cands:
+        for m, s in zip(master, slave):
+            cands.append(_torso_frame(m) @ _torso_frame(s).T)
+            weights.append(1.0)
+    step = max(1, len(cands) // 60)
+    best_R, best_med = cands[0], float("inf")
+    for idx in range(0, len(cands), step):
+        R0 = cands[idx]
+        med = float(np.median([_geodesic_deg(R0, R) for R in cands]))
+        if med < best_med:
+            best_med, best_R = med, R0
+    inliers = [(w, R) for w, R in zip(weights, cands) if _geodesic_deg(best_R, R) <= float(inlier_deg)]
+    if not inliers:
+        return _orthonormalize(best_R), best_med
+    w_sum = sum(w for w, _ in inliers)
+    return _orthonormalize(sum(w * R for w, R in inliers) / max(w_sum, 1e-9)), best_med
+
+
+def _apply_static_global_orientation(fused_lists, M, S, z_depth, vis_master=None, vis_slave=None,
+                                     frame_valid=None, smooth_hw=2):
+    """Decoupled global-orientation fusion for static cameras.
+
+    Applies ONE rigid rotation dR(t) per frame about pelvis so PA-MPJPE and MBLE are
+    mathematically invariant while sequence-aligned MPJPE gains from static R_cam.
+    """
+    R_cam, med_deg = estimate_static_camera_rotation(M, S, vis_master, vis_slave, frame_valid=frame_valid)
+    bm = [_torso_frame(m) for m in M]
+    bs = [R_cam @ _torso_frame(s) for s in S]
+    torso_j = ("pelvis", "neck", "left_hip", "right_hip", "left_shoulder", "right_shoulder")
+
+    targets = []
+    for t, zt in enumerate(z_depth):
+        vm = vis_master[t] if vis_master is not None else {}
+        vs = vis_slave[t] if vis_slave is not None else {}
+        occ_m = sum(not vm.get(j, True) for j in torso_j)
+        occ_s = sum(not vs.get(j, True) for j in torso_j)
+        zt_eff = float(zt) + 0.6 * (occ_s - occ_m)
+        ang = _geodesic_deg(bm[t], bs[t])
+        if ang > 45.0:
+            jm = _geodesic_deg(bm[t - 1], bm[t]) if t > 0 else 0.0
+            js = _geodesic_deg(bs[t - 1], bs[t]) if t > 0 else 0.0
+            if jm > max(15.0, 2.0 * js):
+                zt_eff = min(zt_eff, 0.0) - 3.0
+            elif js > max(15.0, 2.0 * jm):
+                zt_eff = max(zt_eff, 0.0) + 3.0
+        w_ori = float(_sigmoid(zt_eff))
+        if ang > 140.0:
+            B_tgt = bm[t] if w_ori >= 0.5 else bs[t]
+        else:
+            B_tgt = _orthonormalize(w_ori * bm[t] + (1.0 - w_ori) * bs[t])
+        targets.append(B_tgt)
+
+    # Smooth target orientation locally (skip averaging across >45 deg discontinuities)
+    n = len(targets)
+    out = []
+    for t, pose_dict in enumerate(fused_lists):
+        if smooth_hw > 0 and n > 2:
+            lo, hi = max(0, t - smooth_hw), min(n, t + smooth_hw + 1)
+            local = [targets[k] for k in range(lo, hi) if _geodesic_deg(targets[t], targets[k]) <= 45.0]
+            B_smooth = _orthonormalize(np.mean(local, axis=0)) if local else targets[t]
+        else:
+            B_smooth = targets[t]
+        pose_arr = {k: np.asarray(v, dtype=float) for k, v in pose_dict.items()}
+        # Rotate from the fused skeleton's ACTUAL torso frame to B_smooth (avoids double-rotating
+        # when windowed R_part already shifted hips/shoulders toward Slave).
+        dR = B_smooth @ _torso_frame(pose_arr).T
+        root = pose_arr["pelvis"]
+        out.append({k: (root + dR @ (v - root)).tolist() for k, v in pose_arr.items()})
+    return out, med_deg
+
+
 def fuse_partwise(master_frames, slave_frames, config, vis_master=None, vis_slave=None):
     """Return (camera1 frames as lists, diagnostics). Inputs: per-frame {joint: xyz}."""
     if len(master_frames) != len(slave_frames) or not master_frames:
@@ -324,4 +424,12 @@ def fuse_partwise(master_frames, slave_frames, config, vis_master=None, vis_slav
         as_lists, stab_diag = postprocess_aotr_3d(
             master_lists, as_lists, config=stab_cfg, editable_mask=[True] * len(as_lists))
         diag["sequence_stability"] = stab_diag
+    if mp_enabled and bool(mp_cfg.get("static_camera_orientation", False)):
+        as_lists, rcam_med = _apply_static_global_orientation(
+            as_lists, M, S, z_depth,
+            vis_master=vis_master, vis_slave=vis_slave,
+            frame_valid=frame_valid if anti_swap else None,
+            smooth_hw=int(mp_cfg.get("orientation_smooth_half_window", 2)),
+        )
+        diag["static_camera_orientation"] = {"enabled": True, "r_cam_median_deg": round(rcam_med, 2)}
     return as_lists, diag
