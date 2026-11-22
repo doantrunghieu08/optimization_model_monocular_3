@@ -242,6 +242,9 @@ def _apply_static_global_orientation(fused_lists, M, S, z_depth, vis_master=None
     mathematically invariant while sequence-aligned MPJPE gains from static R_cam.
     """
     R_cam, med_deg = estimate_static_camera_rotation(M, S, vis_master, vis_slave, frame_valid=frame_valid)
+    # ponytail: fail-closed when cross-view R_cam is noisy (e.g. broken Master on MMA/grappling)
+    if med_deg > 10.0:
+        return fused_lists, med_deg
     bm = [_torso_frame(m) for m in M]
     bs = [R_cam @ _torso_frame(s) for s in S]
     torso_j = ("pelvis", "neck", "left_hip", "right_hip", "left_shoulder", "right_shoulder")
