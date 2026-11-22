@@ -101,6 +101,125 @@ COCO17_NAMES = [
 ]
 
 
+def _qvec_to_rotmat(qvec) -> np.ndarray:
+    """COLMAP quaternion (qw, qx, qy, qz) -> world-to-camera rotation matrix R_w2c."""
+    q = np.asarray(qvec, dtype=float)
+    qw, qx, qy, qz = q / np.linalg.norm(q)
+    return np.array([
+        [1.0 - 2.0 * (qy * qy + qz * qz), 2.0 * (qx * qy - qz * qw), 2.0 * (qx * qz + qy * qw)],
+        [2.0 * (qx * qy + qz * qw), 1.0 - 2.0 * (qx * qx + qz * qz), 2.0 * (qy * qz - qx * qw)],
+        [2.0 * (qx * qz - qy * qw), 2.0 * (qy * qz + qx * qw), 1.0 - 2.0 * (qx * qx + qy * qy)],
+    ], dtype=float)
+
+
+def _cam_num_from_text(text: Optional[str]) -> Optional[int]:
+    if not text:
+        return None
+    matches = re.findall(r"cam(\d+)", str(text), re.IGNORECASE)
+    return int(matches[-1]) if matches else None
+
+
+def _find_colmap_images_txt(truth_dir: Path, extra_paths: tuple[Optional[str], ...] = ()) -> Optional[Path]:
+    """Locate Harmony4D colmap/workplace/images.txt (or sparse/0/images.txt) near GT/pkl inputs."""
+    roots = []
+    for raw in (truth_dir, *(Path(p) for p in extra_paths if p)):
+        cur = raw if raw.is_dir() else raw.parent
+        for _ in range(5):
+            if cur not in roots:
+                roots.append(cur)
+            if cur.parent == cur:
+                break
+            cur = cur.parent
+    for root in roots:
+        for rel in ("colmap/workplace/images.txt", "colmap/sparse/0/images.txt", "colmap/images.txt"):
+            cand = root / rel
+            if cand.is_file():
+                return cand
+    return None
+
+
+def _orthonormalize_rot(M: np.ndarray) -> np.ndarray:
+    U, _, Vt = np.linalg.svd(np.asarray(M, dtype=float))
+    D = np.eye(3)
+    D[2, 2] = np.sign(np.linalg.det(U @ Vt))
+    return U @ D @ Vt
+
+
+def _load_colmap_primary_rotation(workplace_dir: Path) -> np.ndarray:
+    """Official Harmony4D world->COLMAP rotation (ego_exo_scene.py): scale.npy or aria01 transform."""
+    import pickle
+    scale_npy = workplace_dir / "scale.npy"
+    if scale_npy.is_file():
+        return _orthonormalize_rot(np.linalg.inv(np.load(scale_npy))[:3, :3])
+    c_from_a = workplace_dir / "colmap_from_aria_transforms.pkl"
+    if c_from_a.is_file():
+        d = pickle.loads(c_from_a.read_bytes())
+        anchor = "aria01" if "aria01" in d else sorted(d)[0]
+        return _orthonormalize_rot(np.asarray(d[anchor], dtype=float)[:3, :3])
+    a_from_c = workplace_dir / "aria_from_colmap_transforms.pkl"
+    if a_from_c.is_file():
+        d = pickle.loads(a_from_c.read_bytes())
+        anchor = "aria01" if "aria01" in d else sorted(d)[0]
+        return _orthonormalize_rot(np.linalg.inv(np.asarray(d[anchor], dtype=float))[:3, :3])
+    return np.eye(3)
+
+
+def _load_colmap_cam_to_world_rotations(images_txt: Path) -> dict[int, np.ndarray]:
+    """Parse COLMAP images.txt (+ sibling primary transform) -> {cam_num: R_cam_to_world} (0% GT).
+
+    Matches Harmony4D ego_exo_scene.py: M_w2c = M_raw @ T_primary -> R_cam_to_world = (R_raw @ R_primary).T.
+    """
+    R_primary = _load_colmap_primary_rotation(images_txt.parent)
+    by_cam: dict[int, list[np.ndarray]] = {}
+    for raw in images_txt.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) < 10:
+            continue
+        cid = _cam_num_from_text(" ".join(parts[9:]))
+        if cid is None:
+            continue
+        try:
+            qvec = [float(x) for x in parts[1:5]]
+        except ValueError:
+            continue
+        if np.linalg.norm(qvec) < 1e-9:
+            continue
+        by_cam.setdefault(cid, []).append((_qvec_to_rotmat(qvec) @ R_primary).T)
+    return {
+        cid: (rots[0] if len(rots) == 1 else _orthonormalize_rot(np.mean(rots, axis=0)))
+        for cid, rots in by_cam.items()
+    }
+
+
+def _load_bundled_harmony4d_rotations(paths: tuple[Optional[str], ...]) -> tuple[dict[int, np.ndarray], Optional[str]]:
+    """Lookup official Harmony4D extrinsics (0% GT) from configs/harmony4d_extrinsics.json."""
+    db_path = Path(__file__).resolve().parents[1] / "configs" / "harmony4d_extrinsics.json"
+    if not db_path.is_file():
+        return {}, None
+    seqs = _load_json(db_path).get("sequences", {})
+    seq_name = None
+    for raw in paths:
+        if not raw:
+            continue
+        for m in reversed(re.findall(r"\d{3}_[a-z0-9]+", str(raw).lower())):
+            if m in seqs:
+                seq_name = m
+                break
+        if seq_name:
+            break
+    if not seq_name:
+        return {}, None
+    out = {}
+    for cname, mat in seqs[seq_name].get("cameras", {}).items():
+        cid = _cam_num_from_text(cname)
+        if cid is not None:
+            out[cid] = np.asarray(mat, dtype=float)
+    return out, seq_name
+
+
 def _sequence_rotation(frames: list[tuple[dict, dict, list[str]]]) -> np.ndarray:
     """Single rotation R (pred -> truth) over all frames of a sequence, root = hip midpoint."""
     P_all, T_all = [], []
@@ -188,12 +307,15 @@ def _compute_acceleration_error(
     pred_triplet: tuple[dict, dict, dict],
     truth_triplet: tuple[dict, dict, dict],
     keys: list[str],
+    rotation: Optional[np.ndarray] = None,
 ) -> tuple[float, dict]:
     pred_prev, pred_current, pred_next = pred_triplet
     truth_prev, truth_current, truth_next = truth_triplet
     details = {}
     for key in keys:
         pred_accel = pred_next[key] - 2.0 * pred_current[key] + pred_prev[key]
+        if rotation is not None:
+            pred_accel = rotation @ pred_accel
         truth_accel = truth_next[key] - 2.0 * truth_current[key] + truth_prev[key]
         details[key] = {
             "pred_accel_mm_frame2": float(np.linalg.norm(pred_accel) * 1000.0),
@@ -708,12 +830,44 @@ def run_evaluation(config: dict) -> None:
                     results["PCK"][cam][frame][mod]["occ_mm"] = float(np.mean(occ_errs)) if occ_errs else float("nan")
                     results["PCK"][cam][frame][mod]["vis_mm"] = float(np.mean(vis_errs)) if vis_errs else float("nan")
 
+    colmap_path = Path(inputs["colmap_images_txt"]) if inputs.get("colmap_images_txt") else _find_colmap_images_txt(
+        truth_dir, (inputs.get("cam1_pkl"), inputs.get("cam2_pkl"))
+    )
+    extrinsics_source = None
+    colmap_rotations = {}
+    if colmap_path and colmap_path.is_file():
+        colmap_rotations = _load_colmap_cam_to_world_rotations(colmap_path)
+        extrinsics_source = str(colmap_path)
+    if not colmap_rotations:
+        colmap_rotations, bundled_seq = _load_bundled_harmony4d_rotations(
+            (str(truth_dir), inputs.get("cam1_pkl"), inputs.get("cam2_pkl"))
+        )
+        if bundled_seq:
+            extrinsics_source = f"configs/harmony4d_extrinsics.json:{bundled_seq}"
+    cam_rotations = {}
+    for cam in CAMERAS:
+        pkl_key, vid_key = ("cam1_pkl", "camera1_video") if cam == "camera1" else ("cam2_pkl", "camera2_video")
+        cid = _cam_num_from_text(inputs.get(pkl_key))
+        if cid is None:
+            cid = _cam_num_from_text(inputs.get(vid_key))
+        if cid is not None and cid in colmap_rotations:
+            cam_rotations[cam] = colmap_rotations[cid]
+    if cam_rotations:
+        print(f"[Evaluation] Using Harmony4D COLMAP extrinsics (0% GT) from {extrinsics_source} for {sorted(cam_rotations)}")
+
     if metric_enabled["MPJPE"] and mpjpe_alignment == "sequence":
-        # One rigid rotation per (camera, module) for the whole sequence, standing in for the
-        # static camera extrinsics; per-frame orientation errors are therefore counted.
+        # Prefer true COLMAP camera extrinsics (0% GT). Only if images.txt is missing for a camera,
+        # fall back to one shared rotation estimated on baseline `posed` (never re-fit per module).
         for cam in CAMERAS:
+            R = cam_rotations.get(cam)
+            if R is None:
+                ref_mod = "posed" if "posed" in mpjpe_cache[cam] else next(iter(mpjpe_cache[cam]), None)
+                if ref_mod is None:
+                    continue
+                R = _sequence_rotation([(p, t, k1) for p, t, k1, *_ in mpjpe_cache[cam][ref_mod].values()])
+                cam_rotations[cam] = R
+                print(f"[Evaluation] WARNING: no COLMAP images.txt extrinsics for {cam}; falling back to shared posed R")
             for mod, frames_data in mpjpe_cache[cam].items():
-                R = _sequence_rotation([(p, t, k1) for p, t, k1, *_ in frames_data.values()])
                 for frame, (p, t, k1, k2, occ_keys, vis_keys) in frames_data.items():
                     entry = results["MPJPE"][cam][frame][mod]
                     m1, d1 = _compute_mpjpe_fixed_rotation(p, t, k1, R)
@@ -747,6 +901,18 @@ def run_evaluation(config: dict) -> None:
     accel_results = {cam: {} for cam in CAMERAS}
     if accel_enabled:
         for cam in CAMERAS:
+            R_cam = cam_rotations.get(cam)
+            if R_cam is None and "posed" in module_names:
+                ref_frames = [
+                    (sequences[cam][f]["posed"], sequences[cam][f]["truth"],
+                     [k for k in joint_names if k in sequences[cam][f]["posed"] and k in sequences[cam][f]["truth"]])
+                    for f in evaluated_frames
+                    if f in sequences[cam] and "posed" in sequences[cam][f]
+                    and "left_hip" in sequences[cam][f]["posed"] and "right_hip" in sequences[cam][f]["posed"]
+                    and "left_hip" in sequences[cam][f]["truth"] and "right_hip" in sequences[cam][f]["truth"]
+                ]
+                if ref_frames and ref_frames[0][2]:
+                    R_cam = _sequence_rotation(ref_frames)
             for previous_frame, frame, next_frame in zip(evaluated_frames, evaluated_frames[1:], evaluated_frames[2:]):
                 if source_frame_ids[cam][frame] - source_frame_ids[cam][previous_frame] != 1:
                     continue
@@ -760,7 +926,9 @@ def run_evaluation(config: dict) -> None:
                         key for key in joint_names
                         if all(key in joints for joints in (*pred_triplet, *truth_triplet))
                     ]
-                    mean_accel, joint_details = _compute_acceleration_error(pred_triplet, truth_triplet, keys)
+                    mean_accel, joint_details = _compute_acceleration_error(
+                        pred_triplet, truth_triplet, keys, rotation=R_cam
+                    )
                     accel_results[cam].setdefault(frame, {})[mod] = {
                         "mean_mm_frame2": mean_accel,
                         "details": joint_details,

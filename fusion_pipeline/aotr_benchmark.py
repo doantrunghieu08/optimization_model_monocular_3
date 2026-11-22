@@ -114,7 +114,8 @@ def evaluation_protocol(config):
     ev = config.get("evaluation", {})
     if ev.get("joint_set", "priority1") != "priority1" or ev.get("mpjpe_alignment", "frame") != "frame":
         settings["scoring"] = {"joint_set": ev.get("joint_set", "priority1"),
-                               "mpjpe_alignment": ev.get("mpjpe_alignment", "frame")}
+                               "mpjpe_alignment": ev.get("mpjpe_alignment", "frame"),
+                               "harmony4d_colmap_extrinsics_v1": True}
     payload = json.dumps(settings, sort_keys=True, separators=(",", ":"), default=str)
     digest = hashlib.sha256((revision + ":" + payload).encode("utf-8")).hexdigest()[:12]
     return f"{LEGACY_PROTOCOL}__{revision}__{digest}"
