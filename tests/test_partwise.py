@@ -127,5 +127,45 @@ class PartwiseBenchmarkIdentityTests(unittest.TestCase):
             self.assertEqual(verify_aotr_execution(cfg)["mode"], "partwise")
 
 
+class PerformanceOptimizationTests(unittest.TestCase):
+    def test_joblib_cache_invalidates_on_file_update(self):
+        import joblib
+        from compat import load_joblib_compat
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "x.pkl"
+            joblib.dump({"v": 1}, p)
+            self.assertEqual(load_joblib_compat(p)["v"], 1)
+            joblib.dump({"v": 2, "extra": "changed_size"}, p)
+            self.assertEqual(load_joblib_compat(p)["v"], 2)
+
+    def test_offset_estimation_skips_smpl_when_frame_ids_present(self):
+        from unittest.mock import patch
+        import joblib
+        from preprocess_pipeline.offset_paper import compute_offset_from_pkls
+        with tempfile.TemporaryDirectory() as tmp:
+            p1, p2 = Path(tmp) / "c1.pkl", Path(tmp) / "c2.pkl"
+            payload = {0: {"pose": np.zeros((4, 72)), "betas": np.zeros((4, 10)), "frame_ids": np.arange(4)}}
+            joblib.dump(payload, p1)
+            joblib.dump(payload, p2)
+            with patch("preprocess_pipeline.offset_paper.smplx.create", side_effect=AssertionError("should skip SMPL")):
+                self.assertEqual(compute_offset_from_pkls(p1, p2, "unused", "unused", "unused"), 0)
+
+    def test_skip_aotr_opt_preserves_visibility_without_running_aotr(self):
+        from unittest.mock import patch
+        from fusion_pipeline.executor import run_phase3_pipeline
+        from keypoints_map import load_keypoints3d_map
+        names = [k["name"] for k in load_keypoints3d_map("configs/keypoints3D_map.yml")["keypoints"]]
+        pose = {k: [float(i) * 0.1, 0.2, 3.0] for i, k in enumerate(names)}
+        with patch("fusion_pipeline.executor.optimize_aotr", side_effect=AssertionError("should skip optimize_aotr")):
+            res = run_phase3_pipeline(
+                {"camera1": pose, "camera2": pose}, "configs/keypoints3D_map.yml",
+                0.05, 0.05, 100, 0.001, 0.8,
+                confidence2d_by_cam={"camera1": {"left_wrist": [0.0, 0.0, 0.1]}, "camera2": {}},
+                aotr_cfg={"enabled": True}, skip_aotr_opt=True,
+            )
+        self.assertFalse(res["vis1"]["left_wrist"])
+        self.assertTrue(res["vis2"]["left_wrist"])
+
+
 if __name__ == "__main__":
     unittest.main()

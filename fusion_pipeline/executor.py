@@ -378,6 +378,7 @@ def run_phase3_pipeline(
     inter_person_radius=0.045,
     inter_person_min_hits=3,
     inter_person_tau=0.15,
+    skip_aotr_opt=False,
 ):
     cam1 = {k: as_xyz(v) for k, v in data_in["camera1"].items()}
     cam2 = {k: as_xyz(v) for k, v in data_in["camera2"].items()}
@@ -423,6 +424,29 @@ def run_phase3_pipeline(
     # Experimental AOTR is a SEPARATE optimization-only path; legacy belief,
     # selective gating and downstream global postprocessors must never overwrite it.
     if bool((aotr_cfg or {}).get("enabled", False)):
+        if skip_aotr_opt:
+            # ponytail: partwise/naive replace camera1 after the loop; only vis1/vis2 are needed here
+            return {
+                "M": [], "M_after": [], "M_resolved": False,
+                "K1": [], "K2": [], "A_new": [], "F": [],
+                "before_stats": (0., 0., 0., 0., 0.),
+                "after_stats": (0., 0., 0., 0., 0.),
+                "optimized": {
+                    "camera1": {j: v.tolist() for j, v in cam1.items()},
+                    "camera2": {j: v.tolist() for j, v in cam2.items()},
+                },
+                "joint_confidence": {"camera1": {}, "camera2": {}},
+                "vis1": {j: bool(v) for j, v in vis1.items()},
+                "vis2": {j: bool(v) for j, v in vis2.items()},
+                "joint_selection": {j: "SEQUENCE" for j in cam1},
+                "aotr": {
+                    "status": "delegated", "reason": "sequence_method",
+                    "accepted_bones": [], "evidence_mode": "sequence_method",
+                    "alignment_median_m": None, "cost_before": None, "cost_after": None,
+                },
+                "fusion_mode": "aotr",
+                "fusion_mode_stats": {"evidence_mode": "sequence_method", "accepted_bones": 0, "alignment_median_m": None},
+            }
         if pair_mode == "posed_fallback":
             diag = {
                 "status": "fallback", "reason": "pair_mode_posed_fallback",
@@ -1055,15 +1079,15 @@ def run_fusion(config: dict) -> None:
     )
     previous_raw, previous_previous_raw = None, None
 
-    # ponytail: zero-GT skeletal distortion and acceleration select the safe anchor.
+    # ponytail: zero-GT skeletal distortion and acceleration select the safe anchor (legacy path only).
     master_is_distorted = False
     slave_is_noisy = False
     pair_quality = None
-    if wham_loaded and verts_cam1 is not None and verts_cam2 is not None and n_frames_1 > 2 and n_frames_2 > 2:
+    if not aotr_enabled and wham_loaded and verts_cam1 is not None and verts_cam2 is not None and n_frames_1 > 2 and n_frames_2 > 2:
         q1, quality_names = _quality_joints_from_vertices(verts_cam1, paths["j_regressor_3d"], paths["keypoints3d_map"])
         q2, _ = _quality_joints_from_vertices(verts_cam2, paths["j_regressor_3d"], paths["keypoints3d_map"])
         pair_quality = detect_camera_pair_quality(q1, q2, quality_names)
-    else:
+    elif not aotr_enabled:
         d1_pts, d2_pts = [], []
         quality_names = None
         for p in file_paths:
@@ -1150,6 +1174,7 @@ def run_fusion(config: dict) -> None:
                 inter_person_radius=inter_radius,
                 inter_person_min_hits=inter_min_hits,
                 inter_person_tau=inter_tau,
+                skip_aotr_opt=(fusion_method in ("partwise", "naive")),
             )
             clean_tf = result.pop("_clean_transform", None)
             if clean_tf is not None:

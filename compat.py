@@ -19,12 +19,22 @@ def configure_stdout_encoding():
     if hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(encoding='utf-8')
 
+from functools import lru_cache
+import os
 from pathlib import Path
 
 
-def load_joblib_compat(filepath):
-    with open(filepath, 'rb') as f:
+@lru_cache(maxsize=4)
+def _load_joblib_cached(abs_path, mtime_ns, size):
+    # ponytail: cache 4 hot pkl/pth files per process (each pair loads same pkls ~5x); keyed by mtime+size
+    with open(abs_path, 'rb') as f:
         return joblib.load(f)
+
+
+def load_joblib_compat(filepath):
+    abs_path = os.path.abspath(str(filepath))
+    st = os.stat(abs_path)
+    return _load_joblib_cached(abs_path, st.st_mtime_ns, st.st_size)
 
 
 def normalize_person_name(target_person):

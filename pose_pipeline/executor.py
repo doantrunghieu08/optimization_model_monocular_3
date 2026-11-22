@@ -6,7 +6,11 @@ from tqdm import tqdm  # Thêm thư viện tqdm tạo progress bar
 
 from pose_pipeline.smpl_runner import create_smpl_model
 from config_loader import resolve_inputs
-from pose_pipeline.smpl_runner import get_3d_joints_for_frame, get_face_points_for_frame
+from pose_pipeline.smpl_runner import (
+    get_3d_joints_and_face_sequence,
+    get_3d_joints_for_frame,
+    get_face_points_for_frame,
+)
 from json_io import write_json
 from compat import load_joblib_compat, resolve_person_payload
 from preprocess_pipeline.calib import resolve_selected_offset_from_camera_profile
@@ -184,18 +188,27 @@ def run_pose_export(config: dict) -> None:
             camera_data["betas"] = np.repeat(shared_betas[None, :], min_frames, axis=0)
 
     use_world = bool(pose_cfg.get("use_world_coords", False))
+    export_face = bool(pose_cfg.get("export_face", True))
 
-    # Sử dụng tqdm bọc quanh range() để tạo progress bar
+    cam1_joints, cam1_faces = get_3d_joints_and_face_sequence(
+        model, cam1_export_data, j_regressor_path, paths["keypoints3d_map"],
+        use_world=use_world, export_face=export_face,
+    )
+    cam2_joints, cam2_faces = get_3d_joints_and_face_sequence(
+        model, cam2_export_data, j_regressor_path, paths["keypoints3d_map"],
+        use_world=use_world, export_face=export_face,
+    )
+
     for i in tqdm(range(min_frames), desc="[Pose] Exporting JSONs", unit="frame"):
         out_frame_id = i + 1
         keypoints3d_data = {
-            "camera1": get_3d_joints_for_frame(model, cam1_export_data, i, j_regressor_path, paths["keypoints3d_map"], use_world=use_world),
-            "camera2": get_3d_joints_for_frame(model, cam2_export_data, i, j_regressor_path, paths["keypoints3d_map"], use_world=use_world),
+            "camera1": cam1_joints[i],
+            "camera2": cam2_joints[i],
         }
-        if bool(pose_cfg.get("export_face", True)):
+        if export_face:
             # COCO face keypoints kept outside the 21-joint skeleton (evaluation only).
-            keypoints3d_data["camera1_face"] = get_face_points_for_frame(model, cam1_export_data, i, use_world=use_world)
-            keypoints3d_data["camera2_face"] = get_face_points_for_frame(model, cam2_export_data, i, use_world=use_world)
+            keypoints3d_data["camera1_face"] = cam1_faces[i]
+            keypoints3d_data["camera2_face"] = cam2_faces[i]
         metadata_data = {
             "metadata": {
                 "camera_sync": sync_result,

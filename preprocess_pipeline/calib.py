@@ -1,3 +1,5 @@
+from functools import lru_cache
+import os
 from pathlib import Path
 import joblib
 import numpy as np
@@ -30,6 +32,16 @@ def _mean_shape_over_frames(shape_value) -> list[list[float]]:
     return shape.mean(axis=0, keepdims=True).astype(np.float32).tolist()
 
 
+@lru_cache(maxsize=64)
+def _probe_video_wh(abs_path: str) -> tuple[float, float]:
+    # ponytail: cache W/H per worker so symlinked Drive mp4s aren't reopened every pair
+    cap = cv2.VideoCapture(abs_path)
+    w = float(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h = float(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.release()
+    return w, h
+
+
 def _estimate_intrinsics(video_path: Path) -> list[list[float]]:
     calib_path = video_path.parent / "calib.txt"
     if calib_path.exists():
@@ -43,10 +55,7 @@ def _estimate_intrinsics(video_path: Path) -> list[list[float]]:
 
     w, h = 0.0, 0.0
     if video_path.is_file() and video_path.suffix.lower() in [".mp4", ".avi", ".mov"]:
-        cap = cv2.VideoCapture(str(video_path))
-        w = float(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        h = float(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        cap.release()
+        w, h = _probe_video_wh(os.path.abspath(str(video_path)))
 
     if w <= 0 or h <= 0:
         img_dir = video_path if video_path.is_dir() else (video_path.parent / "images" if (video_path.parent / "images").exists() else video_path.parent)

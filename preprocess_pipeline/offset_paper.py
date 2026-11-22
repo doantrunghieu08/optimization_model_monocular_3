@@ -7,7 +7,7 @@ import numpy as np
 import smplx
 import torch
 from scipy.spatial.distance import cdist
-from compat import load_joblib_compat, resolve_person_payload
+from compat import _payload_frame_ids, load_joblib_compat, resolve_person_payload
 from keypoints_map import load_keypoints3d_map
 
 
@@ -104,6 +104,9 @@ def compute_offset_from_pkls(
 ):
     cam1_data = load_pkl_data(str(pkl1_path), target_person=target_person)
     cam2_data = load_pkl_data(str(pkl2_path), target_person=target_person)
+    # ponytail: pose_pipeline sets offset=0 and aligns by frame_ids when both tracks provide them; skip SMPL+DTW
+    if _payload_frame_ids(cam1_data) is not None and _payload_frame_ids(cam2_data) is not None:
+        return 0
     t = min(len(cam1_data["pose"]), len(cam2_data["pose"]))
     if max_frames is not None:
         t = min(t, int(max_frames))

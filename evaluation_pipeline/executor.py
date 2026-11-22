@@ -1,4 +1,5 @@
 import csv
+from functools import lru_cache
 import json
 import os 
 import re
@@ -379,6 +380,41 @@ HUGGING_SMPL_INDICES = {
 }
 
 
+@lru_cache(maxsize=4)
+def _load_npy_gt_cached(search_dir_abs: str, person_key: str, sig: tuple):
+    # ponytail: cache parsed Harmony4D .npy GT per worker (each pair loaded 300-600 .npy files x2)
+    npy_files = [Path(search_dir_abs) / name for name, _ in sig]
+    gt_map = {}
+    for idx, p in enumerate(npy_files):
+        fid = int(p.stem) - 1 if p.stem.isdigit() else idx
+        try:
+            d = np.load(p, allow_pickle=True).item()
+        except Exception:
+            continue
+        matched_person = next((k for k in d.keys() if str(k).lower() == person_key), None)
+        if matched_person is None and not person_key:
+            matched_person = next(iter(d.keys())) if d else None
+        if matched_person and matched_person in d:
+            pdata = d[matched_person]
+            if isinstance(pdata, dict) and "joints" in pdata:
+                raw_j = pdata["joints"]
+                joints = {k: np.array(raw_j[i], dtype=float) for k, i in HUGGING_SMPL_INDICES.items() if i < len(raw_j)}
+                gt_map[fid] = {"joints": joints, "frame_id": fid}
+            elif isinstance(pdata, np.ndarray) and pdata.ndim == 2:
+                coco_map = {
+                    "nose": 0, "left_eye": 1, "right_eye": 2, "left_ear": 3, "right_ear": 4,
+                    "left_shoulder": 5, "right_shoulder": 6,
+                    "left_elbow": 7, "right_elbow": 8,
+                    "left_wrist": 9, "right_wrist": 10,
+                    "left_hip": 11, "right_hip": 12,
+                    "left_knee": 13, "right_knee": 14,
+                    "left_ankle": 15, "right_ankle": 16,
+                }
+                joints = {k: np.array(pdata[i, :3], dtype=float) for k, i in coco_map.items() if i < len(pdata)}
+                gt_map[fid] = {"joints": joints, "frame_id": fid}
+    return gt_map
+
+
 def _load_ground_truth(path: Path, truth_dir: Path = None, target_person: str = "aria01") -> dict:
     if path.exists():
         with path.open("r", encoding="utf-8") as f:
@@ -405,71 +441,15 @@ def _load_ground_truth(path: Path, truth_dir: Path = None, target_person: str = 
         npy_files = [p for p in npy_files if p.stem.isdigit()]
 
     if npy_files:
-        gt_map = {}
         person_key = str(target_person or "aria01").lower()
         if person_key in ("aria1", "aria_1", "aria-1"):
             person_key = "aria01"
         elif person_key in ("aria2", "aria_2", "aria-2"):
             person_key = "aria02"
-        for idx, p in enumerate(npy_files):
-            fid = int(p.stem) - 1 if p.stem.isdigit() else idx
-            try:
-                d = np.load(p, allow_pickle=True).item()
-            except Exception:
-                continue
-            matched_person = next((k for k in d.keys() if str(k).lower() == person_key), None)
-            if matched_person is None and not target_person:
-                matched_person = next(iter(d.keys())) if d else None
-            if matched_person and matched_person in d:
-                pdata = d[matched_person]
-                if isinstance(pdata, dict) and "joints" in pdata:
-                    raw_j = pdata["joints"]
-                    joints = {k: np.array(raw_j[i], dtype=float) for k, i in HUGGING_SMPL_INDICES.items() if i < len(raw_j)}
-                    gt_map[fid] = {"joints": joints, "frame_id": fid}
-                elif isinstance(pdata, np.ndarray) and pdata.ndim == 2:
-                    coco_map = {
-                        "nose": 0, "left_eye": 1, "right_eye": 2, "left_ear": 3, "right_ear": 4,
-                        "left_shoulder": 5, "right_shoulder": 6,
-                        "left_elbow": 7, "right_elbow": 8,
-                        "left_wrist": 9, "right_wrist": 10,
-                        "left_hip": 11, "right_hip": 12,
-                        "left_knee": 13, "right_knee": 14,
-                        "left_ankle": 15, "right_ankle": 16,
-                    }
-                    joints = {k: np.array(pdata[i, :3], dtype=float) for k, i in coco_map.items() if i < len(pdata)}
-                    gt_map[fid] = {"joints": joints, "frame_id": fid}
-                    # #region agent log
-                    if idx == 0:
-                        sample = np.array(pdata[:, :3], dtype=float)
-                        _agent_dbg("H1", "evaluation_pipeline/executor.py:_load_ground_truth", "loaded pose3d ndarray GT", {
-                            "file": str(p), "shape": list(pdata.shape), "person": matched_person,
-                            "coord_abs_mean": float(np.nanmean(np.abs(sample))),
-                            "coord_abs_max": float(np.nanmax(np.abs(sample))),
-                            "derived_joints": False,
-                            "joint_names": sorted(joints.keys()),
-                        })
-                    # #endregion
-                # #region agent log
-                if idx == 0 and isinstance(pdata, dict) and "joints" in pdata:
-                    raw_j = np.array(pdata["joints"], dtype=float)
-                    _agent_dbg("H1", "evaluation_pipeline/executor.py:_load_ground_truth", "loaded SMPL dict joints GT", {
-                        "file": str(p), "joints_shape": list(raw_j.shape), "person": matched_person,
-                        "coord_abs_mean": float(np.nanmean(np.abs(raw_j))),
-                        "coord_abs_max": float(np.nanmax(np.abs(raw_j))),
-                        "mapped_names": sorted(joints.keys()) if "joints" in locals() else [],
-                    })
-                # #endregion
+        resolved_dir = os.path.abspath(str(npy_files[0].parent))
+        sig = tuple((p.name, p.stat().st_mtime_ns) for p in npy_files)
+        gt_map = _load_npy_gt_cached(resolved_dir, person_key, sig)
         if gt_map:
-            # #region agent log
-            sample_item = next(iter(gt_map.values()))
-            sample_joints = sample_item.get("joints", {})
-            _agent_dbg("H3", "evaluation_pipeline/executor.py:_load_ground_truth", "gt_map summary", {
-                "search_dir": str(search_dir), "n_frames": len(gt_map),
-                "target_person": person_key, "sample_joint_count": len(sample_joints),
-                "has_neck": "neck" in sample_joints, "has_head": "head" in sample_joints,
-                "has_hands": "left_hand" in sample_joints,
-            })
-            # #endregion
             return gt_map
 
     raise FileNotFoundError(f"GT file not found: {path} and no .npy GT in {search_dir}")
