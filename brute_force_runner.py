@@ -1378,14 +1378,13 @@ def run_brute_force(base_cfg=None, brute_cfg=None, *, local_report_dir=None, wor
             all_res[seg["name"]] = sorted_res
 
     generate_spreadsheet_report_safe(all_res, sh_name, ws_title, silent=False, is_final=True)
-    return all_res
-
     # Dọn dẹp PKL và video sau khi đã hoàn tất báo cáo.
     _cleanup_local_input_files(
         brute_cfg=brute_cfg,
         workspace=WS_DIR,
         timeout=10
     )
+    return all_res
 
 if __name__ == "__main__":
     import argparse
