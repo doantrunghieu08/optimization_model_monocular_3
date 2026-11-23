@@ -10,6 +10,9 @@ from typing import Optional
 import numpy as np
 from scipy.spatial import procrustes
 from keypoints_map import load_keypoints3d_map
+from evaluation_pipeline.extrinsics import (camera_name_from_path, ext_enabled, extrinsic_from_config,
+                                           find_colmap_workplace, load_world_to_camera,
+                                           transform_truth_map)
 
 # #region agent log
 _DEBUG_LOG_PATH = Path(__file__).resolve().parents[1] / "debug-0e35fc.log"
@@ -66,15 +69,18 @@ def _resolve_root_joint(joints: dict) -> np.ndarray:
         return (np.asarray(joints["left_hip"], dtype=float) + np.asarray(joints["right_hip"], dtype=float)) / 2.0
     raise ValueError("Missing left_hip or right_hip for root alignment")
 
-def _align_camera_to_world_rigid(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], keys: list[str]) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+def _align_camera_to_world_rigid(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], keys: list[str], rotate: bool = True) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
     """Align camera-frame root-centered predicted pose to world-frame root-centered truth pose.
 
     Applies pure 3D rotation R in SO(3) without changing scale (scale=1.0) or limb lengths.
+    rotate=False (EXT=1: truth already in the camera frame) only root-centres both poses.
     """
     pred_root = _resolve_root_joint(pred)
     truth_root = _resolve_root_joint(truth)
     P = np.array([np.asarray(pred[k], dtype=float) - pred_root for k in keys])
     T = np.array([np.asarray(truth[k], dtype=float) - truth_root for k in keys])
+    if not rotate:
+        return ({k: P[i] for i, k in enumerate(keys)}, {k: T[i] for i, k in enumerate(keys)})
     H = np.dot(T.T, P)
     U, _, Vt = np.linalg.svd(H)
     corr = np.eye(3)
@@ -85,8 +91,8 @@ def _align_camera_to_world_rigid(pred: dict[str, np.ndarray], truth: dict[str, n
     t_dict = {k: T[i] for i, k in enumerate(keys)}
     return p_dict, t_dict
 
-def _compute_mpjpe(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], keys: list[str]) -> tuple[float, dict[str, float]]:
-    p_dict, t_dict = _align_camera_to_world_rigid(pred, truth, keys)
+def _compute_mpjpe(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], keys: list[str], rotate: bool = True) -> tuple[float, dict[str, float]]:
+    p_dict, t_dict = _align_camera_to_world_rigid(pred, truth, keys, rotate=rotate)
     errors = []
     errors_dict = {}
     for k in keys:
@@ -94,6 +100,13 @@ def _compute_mpjpe(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], ke
         errors.append(err)
         errors_dict[k] = err
     return float(np.mean(errors)), errors_dict
+
+def mpjpe_alignment_requested(eval_cfg: dict) -> str:
+    value = str(eval_cfg.get("mpjpe_alignment", "frame")).lower()
+    if value not in ("frame", "sequence"):
+        raise ValueError(f"evaluation.mpjpe_alignment must be 'frame' or 'sequence', got {value!r}")
+    return value
+
 
 COCO17_NAMES = [
     "nose", "left_eye", "right_eye", "left_ear", "right_ear",
@@ -276,8 +289,8 @@ def _compute_pa_mpjpe(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray],
         
     return float(np.mean(errors)), errors_dict
 
-def _compute_pck(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], keys: list[str], threshold_mm: float) -> tuple[float, dict[str, float]]:
-    p_dict, t_dict = _align_camera_to_world_rigid(pred, truth, keys)
+def _compute_pck(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], keys: list[str], threshold_mm: float, rotate: bool = True) -> tuple[float, dict[str, float]]:
+    p_dict, t_dict = _align_camera_to_world_rigid(pred, truth, keys, rotate=rotate)
     correct = []
     correct_dict = {}
     for k in keys:
@@ -633,6 +646,52 @@ def run_evaluation(config: dict) -> None:
     gt_cam1_data = _load_ground_truth(cam1_gt_path, truth_dir=truth_dir, target_person=target_person)
     gt_cam2_data = _load_ground_truth(cam2_gt_path, truth_dir=truth_dir, target_person=target_person)
     gt_cam_data = {"camera1": gt_cam1_data, "camera2": gt_cam2_data}
+
+    # EXT=1: move the world-frame GT into each camera frame with the real COLMAP extrinsics, so
+    # MPJPE/PCK need no fitted rotation (root-centred only) and PA-MPJPE sees camera-frame GT.
+    use_ext = ext_enabled()
+    ext_info = {}
+    if use_ext:
+        ext_cfg = eval_cfg.get("extrinsics") or {}
+        if config.get("pose", {}).get("use_world_coords", False):
+            raise ValueError("EXT=1 compares against camera-frame GT, but pose.use_world_coords=true "
+                             "produces WHAM world-frame predictions; set it to false.")
+        # Source per camera: the camera's own YAML `extrinsic` block (inputs.<cam>_extrinsic, set by
+        # the runners) wins; otherwise colmap/workplace images.txt (+ scale.npy).
+        workplace = None
+        for cam, idx in (("camera1", "1"), ("camera2", "2")):
+            cam_name = (ext_cfg.get(f"{cam}_name")
+                        or camera_name_from_path(inputs.get(f"cam{idx}_pkl"), inputs.get(f"{cam}_video")))
+            block = inputs.get(f"{cam}_extrinsic")
+            if block:
+                R_ext, t_ext = extrinsic_from_config(block, cam_name or cam)
+                source = "yaml"
+            else:
+                if not cam_name:
+                    raise ValueError(f"EXT=1: cannot infer the COLMAP camera name of {cam}; "
+                                     f"set evaluation.extrinsics.{cam}_name (e.g. cam03)")
+                if workplace is None:
+                    workplace = find_colmap_workplace(truth_dir, inputs.get("cam1_pkl"),
+                                                      inputs.get("camera1_video"),
+                                                      explicit=ext_cfg.get("colmap_dir"))
+                R_ext, t_ext = load_world_to_camera(str(workplace), cam_name)
+                source = str(workplace)
+            gt_cam_data[cam] = transform_truth_map(gt_cam_data[cam], R_ext, t_ext)
+            ext_info[cam] = {"camera": cam_name, "source": source}
+            print(f"[Evaluation] EXT=1: {cam} <- {cam_name} extrinsics from {source} "
+                  f"(|t|={np.linalg.norm(t_ext):.2f} m)")
+        if mpjpe_alignment_requested(eval_cfg) == "sequence":
+            print("[Evaluation] EXT=1: evaluation.mpjpe_alignment=sequence ignored "
+                  "(MPJPE uses the real extrinsics, root-centred, no fitted rotation)")
+    gt_cam1_data, gt_cam2_data = gt_cam_data["camera1"], gt_cam_data["camera2"]
+    with (out_dir / "evaluation_protocol.json").open("w", encoding="utf-8") as f:
+        json.dump({
+            "ext": use_ext,
+            "truth_frame": "camera (real extrinsics)" if use_ext else "world (raw GT)",
+            "mpjpe_alignment": "root-centred, real extrinsics" if use_ext
+                               else mpjpe_alignment_requested(eval_cfg),
+            "colmap_cameras": ext_info,
+        }, f, indent=2)
     # #region agent log
     _agent_dbg("H4", "evaluation_pipeline/executor.py:run_evaluation", "evaluation GT config", {
         "truth_dir": str(truth_dir), "target_person": target_person,
@@ -671,9 +730,9 @@ def run_evaluation(config: dict) -> None:
     source_frame_ids = {cam: {} for cam in CAMERAS}
     evaluated_frames = []
 
-    mpjpe_alignment = str(eval_cfg.get("mpjpe_alignment", "frame")).lower()
-    if mpjpe_alignment not in ("frame", "sequence"):
-        raise ValueError(f"evaluation.mpjpe_alignment must be 'frame' or 'sequence', got {mpjpe_alignment!r}")
+    mpjpe_alignment = mpjpe_alignment_requested(eval_cfg)
+    if use_ext:
+        mpjpe_alignment = "extrinsics"
     mpjpe_cache = {cam: {} for cam in CAMERAS}
 
     id_mask_cfg = eval_cfg.get("identity_mask")
@@ -764,11 +823,11 @@ def run_evaluation(config: dict) -> None:
                 # MPJPE
                 if metric_enabled["MPJPE"]:
                     results["MPJPE"][cam][frame].setdefault(mod, {})
-                    mean_p1, dict_p1 = _compute_mpjpe(pred_joints, truth_joints, valid_priority1) if valid_priority1 else (0.0, {})
+                    mean_p1, dict_p1 = _compute_mpjpe(pred_joints, truth_joints, valid_priority1, rotate=not use_ext) if valid_priority1 else (0.0, {})
                     results["MPJPE"][cam][frame][mod]["priority1_mm"] = mean_p1
                     results["MPJPE"][cam][frame][mod]["priority1_details"] = dict_p1
                     
-                    mean_p2, dict_p2 = _compute_mpjpe(pred_joints, truth_joints, valid_priority2) if valid_priority2 else (0.0, {})
+                    mean_p2, dict_p2 = _compute_mpjpe(pred_joints, truth_joints, valid_priority2, rotate=not use_ext) if valid_priority2 else (0.0, {})
                     results["MPJPE"][cam][frame][mod]["priority2_mm"] = mean_p2
                     results["MPJPE"][cam][frame][mod]["priority2_details"] = dict_p2
 
@@ -797,11 +856,11 @@ def run_evaluation(config: dict) -> None:
 
                 if metric_enabled["PCK"]:
                     results["PCK"][cam][frame].setdefault(mod, {})
-                    mean_p1, dict_p1 = _compute_pck(pred_joints, truth_joints, valid_priority1, pck_threshold_mm) if valid_priority1 else (0.0, {})
+                    mean_p1, dict_p1 = _compute_pck(pred_joints, truth_joints, valid_priority1, pck_threshold_mm, rotate=not use_ext) if valid_priority1 else (0.0, {})
                     results["PCK"][cam][frame][mod]["priority1_mm"] = mean_p1
                     results["PCK"][cam][frame][mod]["priority1_details"] = dict_p1
                     
-                    mean_p2, dict_p2 = _compute_pck(pred_joints, truth_joints, valid_priority2, pck_threshold_mm) if valid_priority2 else (0.0, {})
+                    mean_p2, dict_p2 = _compute_pck(pred_joints, truth_joints, valid_priority2, pck_threshold_mm, rotate=not use_ext) if valid_priority2 else (0.0, {})
                     results["PCK"][cam][frame][mod]["priority2_mm"] = mean_p2
                     results["PCK"][cam][frame][mod]["priority2_details"] = dict_p2
 
