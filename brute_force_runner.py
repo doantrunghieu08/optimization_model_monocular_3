@@ -826,6 +826,11 @@ def _setup_pipeline_config(
         "camera2_video": str(camB_inputs["video"]),
     })
 
+    for cam, entry in (("camera1", camA), ("camera2", camB)):  # YAML extrinsic (used only under EXT=1)
+        cfg["inputs"].pop(f"{cam}_extrinsic", None)
+        if entry.get("extrinsic"):
+            cfg["inputs"][f"{cam}_extrinsic"] = entry["extrinsic"]
+
     if target_person is not None:
         cfg["inputs"]["target_person"] = target_person
 
