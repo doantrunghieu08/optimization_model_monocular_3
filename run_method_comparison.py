@@ -20,11 +20,20 @@ from the segment's target_person (or --persons).
 
 Summarize (means, win counts, paired Wilcoxon, bootstrap CI):
   python run_method_comparison.py summarize --out output/method_comparison/hugging_002
+
+A method may carry parameter overrides for fusion.<method>, which is how a grid is run
+on a train split (each variant is its own row label and its own protocol hash):
+  --methods aotr adaptive_naive adaptive_naive@confidence_power=2,jitter_scale=0.5
+
+Cameras and GT are read from pkl_local / video_local / ground_truth_dir_local when those
+exist on disk (current brute configs keep Drive file IDs in pkl / video / ground_truth_dir);
+nothing is downloaded. --segments restricts a brute config with one segment per person.
 """
 import argparse
 import copy
 import itertools
 import json
+import re
 import shutil
 import subprocess
 import time
@@ -47,9 +56,32 @@ def parse_split(text):
     return name.strip(), person.strip().lower(), [c.strip() for c in cams.split(",") if c.strip()]
 
 
-def build_units(brute_cfg, splits=None, persons=None):
+def parse_method(spec):
+    """'adaptive_naive@confidence_power=2,jitter_scale=0.5' -> ('adaptive_naive', {...})."""
+    base, _, rest = spec.partition("@")
+    overrides = {}
+    for item in filter(None, (x.strip() for x in rest.split(","))):
+        key, sep, value = item.partition("=")
+        if not sep or not key.strip():
+            raise ValueError(f"bad method override {item!r} in {spec!r}; use key=value")
+        overrides[key.strip()] = yaml.safe_load(value.strip())
+    return base.strip().lower(), overrides
+
+
+def _local_or(entry, key):
+    """entry[key + '_local'] when that path exists, else entry[key]."""
+    local = entry.get(f"{key}_local")
+    if local and Path(str(local)).expanduser().exists():
+        return str(Path(str(local)).expanduser())
+    return entry.get(key)
+
+
+def build_units(brute_cfg, splits=None, persons=None, segments=None):
     units = []
     for seg in brute_cfg["segments"]:
+        if segments and seg["name"] not in segments:
+            continue
+        gt_dir = _local_or(seg, "ground_truth_dir")
         cams = {c["id"]: c for c in seg["cameras"]}
         if splits:
             plan = [(name, person, ids) for name, person, ids in splits]
@@ -61,9 +93,11 @@ def build_units(brute_cfg, splits=None, persons=None):
             if missing:
                 raise ValueError(f"split {split}: cameras {missing} not in segment {seg['name']}")
             for a, b in itertools.permutations(ids, 2):
-                units.append({"segment": seg["name"], "sequence": sequence_name(seg["ground_truth_dir"]),
+                units.append({"segment": seg["name"], "sequence": sequence_name(gt_dir),
                               "split": split, "person": person,
-                              "gt_dir": seg["ground_truth_dir"], "A": cams[a], "B": cams[b]})
+                              "gt_dir": gt_dir, "A": cams[a], "B": cams[b]})
+    if segments and not units:
+        raise ValueError(f"no units: segments {segments} not in the brute config")
     return units
 
 
@@ -121,7 +155,8 @@ def cmd_run(a):
 
     brute = yaml.safe_load(Path(a.brute).read_text(encoding="utf-8"))
     splits = [parse_split(s) for s in a.split] if a.split else None
-    units = build_units(brute, splits, a.persons)
+    units = build_units(brute, splits, a.persons, a.segments)
+    methods = [(spec, *parse_method(spec)) for spec in a.methods]
     mine = units[a.worker::a.n_workers]
     out_dir = Path(a.out)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -133,7 +168,15 @@ def cmd_run(a):
     base_cfg = load_config(Path(a.config))
     mask = {"path": a.mask, "margin_mm": a.mask_margin} if a.mask else None
     commit = _git_commit()
-    meta = {"commit": commit, "config": a.config, "brute": a.brute, "mask": a.mask,
+    from evaluation_pipeline.extrinsics import ext_enabled
+    ext = ext_enabled()
+    meta_path = out_dir / "run_meta.json"
+    if rows and meta_path.exists():
+        prev_ext = bool(json.loads(meta_path.read_text(encoding="utf-8")).get("ext", False))
+        if prev_ext != ext:
+            raise SystemExit(f"{out_dir} holds results with EXT={int(prev_ext)}, this run has EXT={int(ext)}: "
+                             "use another --out so the two scorings are not mixed")
+    meta = {"commit": commit, "ext": ext, "config": a.config, "brute": a.brute, "mask": a.mask,
             "mask_margin_mm": a.mask_margin, "splits": a.split, "methods": a.methods,
             "use_pair_modes": a.use_pair_modes, "units_total": len(units)}
     (out_dir / "run_meta.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
@@ -146,10 +189,14 @@ def cmd_run(a):
         A, B = u["A"], u["B"]
         work = out_dir / "runs" / "_".join(unit_key(u))
         cfg = copy.deepcopy(base_cfg)
-        cfg["inputs"].update({"cam1_pkl": A["pkl"], "camera1_video": A.get("video"),
-                              "cam2_pkl": B["pkl"], "camera2_video": B.get("video"),
+        cfg["inputs"].update({"cam1_pkl": _local_or(A, "pkl"), "camera1_video": _local_or(A, "video"),
+                              "cam2_pkl": _local_or(B, "pkl"), "camera2_video": _local_or(B, "video"),
                               "ground_truth_dir": u["gt_dir"], "target_person": u["person"]})
         cfg["inputs"].pop("person_heights", None)
+        for cam, entry in (("camera1", A), ("camera2", B)):  # YAML extrinsic (used only under EXT=1)
+            cfg["inputs"].pop(f"{cam}_extrinsic", None)
+            if entry.get("extrinsic"):
+                cfg["inputs"][f"{cam}_extrinsic"] = entry["extrinsic"]
         cfg["runtime"].update({"clean_output": True, "stage": "visualization"})
         cfg["visualization"]["enabled"] = False
         if a.use_pair_modes:  # reproduce brute_force_runner (hand-picked Hugging pairs)
@@ -162,7 +209,7 @@ def cmd_run(a):
             cfg["paths"][k] = str(work / k)
         cfg = absolutize_config_paths(cfg, ROOT)
         rec_base = {"segment": u["segment"], "sequence": u["sequence"], "split": u["split"], "person": u["person"],
-                    "master": A["id"], "slave": B["id"], "commit": commit}
+                    "master": A["id"], "slave": B["id"], "commit": commit, "ext": ext}
         new_rows = []
         try:
             synced, reason = check_cameras_synchronized(cfg)
@@ -172,10 +219,13 @@ def cmd_run(a):
                 continue
             run_preprocess(cfg, extract_frames=False)
             run_pose_export(cfg)
-            for method in a.methods:
+            for method, base_method, overrides in methods:
                 vc = copy.deepcopy(cfg)
-                vc["fusion"]["method"] = method
-                vc["paths"]["fused_output_dir"] = str(work / method / "fused")
+                vc["fusion"]["method"] = base_method
+                if overrides:
+                    vc["fusion"].setdefault(base_method, {}).update(overrides)
+                method_dir = work / re.sub(r"[^A-Za-z0-9_.-]+", "_", method)
+                vc["paths"]["fused_output_dir"] = str(method_dir / "fused")
                 run_fusion(vc)
                 verify_aotr_execution(vc)
                 for tag, m in (("masked", mask), ("unmasked", None)):
@@ -183,7 +233,7 @@ def cmd_run(a):
                         continue
                     ec = copy.deepcopy(vc)
                     ec["evaluation"]["identity_mask"] = copy.deepcopy(m)
-                    ec["paths"]["evaluation_output_dir"] = str(work / method / f"eval_{tag}")
+                    ec["paths"]["evaluation_output_dir"] = str(method_dir / f"eval_{tag}")
                     run_evaluation(ec)
                     s = score_eval_dir(ec["paths"]["evaluation_output_dir"])
                     rec = {**rec_base, "method": method, "mask": tag, "frames": s["frames"],
@@ -192,11 +242,11 @@ def cmd_run(a):
                         rec[f"{k}_mono"], rec[k] = s[k]
                     new_rows.append(rec)
                     if a.keep_per_frame:
-                        keep = out_dir / "per_frame" / f"{'_'.join(unit_key(u))}_{method}_{tag}"
+                        keep = out_dir / "per_frame" / f"{'_'.join(unit_key(u))}_{method_dir.name}_{tag}"
                         keep.mkdir(parents=True, exist_ok=True)
                         for f in Path(ec["paths"]["evaluation_output_dir"]).glob("*_cam1.csv"):
                             shutil.copy(f, keep / f.name)
-                shutil.rmtree(work / method, ignore_errors=True)
+                shutil.rmtree(method_dir, ignore_errors=True)
             secs = round(time.time() - t0, 1)
             for r in new_rows:
                 r.update({"status": "ok", "seconds": secs})
@@ -342,6 +392,7 @@ def main():
     r.add_argument("--out", required=True)
     r.add_argument("--split", action="append", help="NAME=PERSON:camA,camB,... (repeatable)")
     r.add_argument("--persons", nargs="+", help="persons when no --split (default: segment target_person)")
+    r.add_argument("--segments", nargs="+", help="only these segment names from --brute")
     r.add_argument("--methods", nargs="+", default=["aotr", "partwise", "naive"])
     r.add_argument("--mask", nargs="+", help="identity-mask JSON(s); omit for unmasked only")
     r.add_argument("--mask-margin", type=float, default=10.0)
