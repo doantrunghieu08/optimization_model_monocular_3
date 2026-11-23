@@ -12,6 +12,11 @@ w is a fixed Master weight (default 0.5 = plain average). Bone lengths are NOT p
 (averaging positions shortens bent limbs), which is part of what the baseline shows.
 Pelvis stays at the Master position, so root-centred metrics are comparable. Only
 camera1 (Master) is modified.
+
+With fusion.naive.use_aotr_stability=true the executor passes AOTR's sequence-stability
+block, and the result goes through the same pass as AOTR (savgol + FK projection onto
+the Master bone lengths, pelvis and neck at the Master). This removes the smoothing
+advantage from comparisons with AOTR; bone lengths then equal the Master's.
 """
 import numpy as np
 
@@ -58,5 +63,14 @@ def fuse_naive(master_frames, slave_frames, config=None):
     if not 0.0 <= w <= 1.0:
         raise ValueError(f"fusion.naive.master_weight must be in [0, 1], got {w}")
     fused = [fuse_frame(m, s, w) for m, s in zip(master_frames, slave_frames)]
-    diag = {"mode": "naive", "frames": len(fused), "master_weight": w}
-    return [{k: v.tolist() for k, v in p.items()} for p in fused], diag
+    diag = {"mode": "naive", "frames": len(fused), "master_weight": w,
+            "sequence_stability": {"status": "disabled"}}
+    as_lists = [{k: v.tolist() for k, v in p.items()} for p in fused]
+    stab_cfg = dict(config.get("sequence_stability") or {})
+    if stab_cfg.get("enabled", False):
+        from fusion_pipeline.aotr_stability import postprocess_aotr_3d
+        master_lists = [{k: [float(x) for x in v] for k, v in m.items()} for m in master_frames]
+        as_lists, stab_diag = postprocess_aotr_3d(
+            master_lists, as_lists, config=stab_cfg, editable_mask=[True] * len(as_lists))
+        diag["sequence_stability"] = stab_diag
+    return as_lists, diag
