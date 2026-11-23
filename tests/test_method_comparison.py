@@ -4,7 +4,10 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from run_method_comparison import build_units, parse_split, summarize
+import tempfile
+from pathlib import Path
+
+from run_method_comparison import build_units, parse_method, parse_split, summarize
 
 BRUTE = {"segments": [{
     "name": "seq", "ground_truth_dir": "gt", "target_person": "aria01",
@@ -31,6 +34,35 @@ class UnitTests(unittest.TestCase):
     def test_unknown_camera_in_split_is_an_error(self):
         with self.assertRaises(ValueError):
             build_units(BRUTE, [("d", "aria01", ["cam01", "cam99"])])
+
+
+class ComparisonHelperTests(unittest.TestCase):
+    def test_parse_method_overrides(self):
+        self.assertEqual(parse_method("aotr"), ("aotr", {}))
+        self.assertEqual(parse_method("Adaptive_Naive@confidence_power=2, jitter_scale=0.5"),
+                         ("adaptive_naive", {"confidence_power": 2, "jitter_scale": 0.5}))
+        with self.assertRaises(ValueError):
+            parse_method("adaptive_naive@confidence_power")
+
+    def test_local_inputs_are_preferred_and_segments_filter(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            gt = Path(tmp) / "001_mma5" / "processed_data" / "poses3d"
+            gt.mkdir(parents=True)
+            cams = [{"id": c, "pkl": "DRIVEID" + c, "pkl_local": str(Path(tmp) / f"{c}.pkl")} for c in ("cam01", "cam02")]
+            brute = {"segments": [
+                {"name": "s_a1", "target_person": "aria01", "ground_truth_dir": "DRIVE_GT",
+                 "ground_truth_dir_local": str(gt), "cameras": cams},
+                {"name": "s_a2", "target_person": "aria02", "ground_truth_dir": "DRIVE_GT",
+                 "ground_truth_dir_local": str(Path(tmp) / "missing"), "cameras": cams}]}
+            units = build_units(brute, segments=["s_a1"])
+            self.assertEqual(len(units), 2)
+            self.assertEqual(units[0]["gt_dir"], str(gt))
+            self.assertEqual(units[0]["sequence"], "001_mma5")
+            # A local GT path that does not exist falls back to the original value.
+            self.assertEqual(build_units(brute, segments=["s_a2"])[0]["gt_dir"], "DRIVE_GT")
+            with self.assertRaises(ValueError):
+                build_units(brute, segments=["nope"])
+
 
 
 def _results(n=8, seed=0):

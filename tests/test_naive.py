@@ -74,7 +74,8 @@ class NaiveFusionTests(unittest.TestCase):
     def test_sequence_interface_and_validation(self):
         seq = [skeleton() for _ in range(4)]
         out, diag = fuse_naive(seq, seq, {"master_weight": 0.5})
-        self.assertEqual(diag, {"mode": "naive", "frames": 4, "master_weight": 0.5})
+        self.assertEqual(diag, {"mode": "naive", "frames": 4, "master_weight": 0.5,
+                                "sequence_stability": {"status": "disabled"}})
         self.assertIsInstance(out[0]["pelvis"], list)
         with self.assertRaises(ValueError):
             fuse_naive(seq, seq[:3], {})
