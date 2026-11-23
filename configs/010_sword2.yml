@@ -8,71 +8,197 @@ segments:
         pkl: "1KU3mUQEW5EF6HX27GGXurKv0-pzSvPBc"
         video: "1EsMYVrPbD9_6DKqq7qJAYiNDL1PnxPrD"
         tracking_result: "1X9220GYF86e9koDBrCkythGhCC9lcAEi"
+        extrinsic:
+          world: "gt"
+          unit: "m"
+          R: [[-0.8094728605, 0.5864600212, -0.0286064986], [0.0644065866, 0.0402610946, -0.9971112455], [-0.5836141532, -0.808976939, -0.0703621516]]
+          t: [-1.2393391331, 0.0968200827, 7.6403637248]
+          C: [3.4495771611, 6.9038028307, 0.5986796707]
+          qvec_wxyz: [0.2002661246, 0.2348553792, 0.6928376626, -0.6516996268]
       - id: "cam02"
         pkl: "1IWSuUVjYzOb1ySwPZlFl5Yr_E_5_2M97"
         video: "1ladokBZif-bRXoBiU5XpFrR7xxN9pJk_"
         tracking_result: "1fyojMSx_3AmQqgEy2-aMuc09xhnciy2V"
+        extrinsic:
+          world: "gt"
+          unit: "m"
+          R: [[0.5585266605, -0.8294694964, 0.0053220305], [0.0155961639, 0.0040863884, -0.9998700221], [0.8293399358, 0.5585370677, 0.0152188991]]
+          t: [2.6940488233, 0.5681837381, 1.2034798235]
+          C: [-2.5116534589, 1.5601214097, 0.5354564388]
+          qvec_wxyz: [0.6280589041, 0.6203268036, -0.3280018402, 0.3363799378]
       - id: "cam03"
         pkl: "1PtaY2-PN-9vyyu5t7tz4FT_LTIpjYKJK"
         video: "1LdnIfLZt7odSDxJ1lsoETA1TZMlfPHmJ"
         tracking_result: "11RHAB14VXzToAC6ths5jXIuw1VOq2gJf"
+        extrinsic:
+          world: "gt"
+          unit: "m"
+          R: [[0.285008216, -0.958522948, -0.0020186285], [-0.0196388651, -0.0037338832, -0.9998001666], [0.9583238658, 0.2849909054, -0.0198884902]]
+          t: [3.7213849473, 0.4750340141, 2.3470904093]
+          C: [-3.3005689106, 2.8999071712, 0.529131265]
+          qvec_wxyz: [0.5615571749, 0.571976964, -0.427535493, 0.417982409]
       - id: "cam04"
         pkl: "1dLsHsAFEGCuuJd_X3JlDYvz7L6-zwHdV"
         video: "1Wxoghe_9_5MA0ieN4G98o7BM27V2v_jv"
         tracking_result: "1LMa3mx7ZcyHEOPOsfIzfoUSuKBquO1hq"
+        extrinsic:
+          world: "gt"
+          unit: "m"
+          R: [[0.4071423718, 0.9132538071, -0.014232809], [0.176112883, -0.0937851382, -0.9798921371], [-0.8962250507, 0.3964490278, -0.1990196645]]
+          t: [-3.8428572616, 0.0308064412, 3.2466364472]
+          C: [4.4688815234, 2.2252673475, 0.6216368326]
+          qvec_wxyz: [0.5278109437, 0.6519101116, 0.4177595464, -0.3491500758]
       - id: "cam05"
         pkl: "1inyo2mh6rPaOeuBc679Wxh4VLylgT-eS"
         video: "1JbUpU-jrJTVVsO1Elp0FPwAGylULyLp4"
         tracking_result: "1dExBjBMQ-E-an-_s2Hp5uJ3BkoN9fHeE"
+        extrinsic:
+          world: "gt"
+          unit: "m"
+          R: [[-0.981188294, -0.1910304926, -0.0278726145], [0.0089397554, 0.0992629777, -0.9950210762], [0.1928460851, -0.9765522066, -0.0956879058]]
+          t: [1.4359033317, -0.2442927004, 7.5778043402]
+          C: [-0.0502744433, 7.6986720911, 0.5220502224]
+          qvec_wxyz: [0.0748110584, 0.0617183809, -0.7375871436, 0.6682509653]
       - id: "cam06"
         pkl: "1ak31BbnW56CtivZ2V430RKHfTCh3--WN"
         video: "1OrmFZZtogKvfoRktr9q5QR0Ts4gHcB1w"
         tracking_result: "1e3OKbgE-X1XLeRfCs9ItDaSdbHWa88fC"
+        extrinsic:
+          world: "gt"
+          unit: "m"
+          R: [[-0.6622812336, -0.7491312259, 0.0136372298], [0.0270186251, -0.0420675337, -0.9987493762], [0.7487680292, -0.6610845097, 0.0481010338]]
+          t: [3.5568568677, 0.8558882787, 5.9054905171]
+          C: [-2.0893278663, 6.6045859578, 0.5222520109]
+          qvec_wxyz: [0.2931519514, 0.2879606163, -0.6269195854, 0.6619006347]
       - id: "cam07"
         pkl: "1PP9l22RKwAlPkmOB4cCg-2-N9Y2RybR6"
         video: "1pkLdaJyD1bH5hIBWeNf3QoTMLaGB93aj"
         tracking_result: "1dnJcp0iiTiVgf1ZkwRn5Np2slxoD_GyR"
+        extrinsic:
+          world: "gt"
+          unit: "m"
+          R: [[-0.2153440964, -0.9765330282, -0.0031882528], [-0.0303701211, 0.0099603904, -0.9994890927], [0.9760658666, -0.2151372479, -0.0318023376]]
+          t: [3.5160963023, 0.3476427725, 4.2257354438]
+          C: [-3.3568675935, 4.3392346056, 0.4930636284]
+          qvec_wxyz: [0.4366961061, 0.449026127, -0.5606038763, 0.5416598029]
       - id: "cam08"
         pkl: "1OAjyRmh8tVxjHFrVeb8kD3XtHLcWZaQ0"
         video: "1m6Xg0iDcRviDOE-8EBmIfLtMA_MceIw1"
         tracking_result: "1fA3RhW8X3y4yIBxJSsHIyWcmBEho6py8"
+        extrinsic:
+          world: "gt"
+          unit: "m"
+          R: [[0.8565370242, 0.5158529324, 0.0154944626], [0.0935098981, -0.1256004589, -0.9876641249], [-0.5075433235, 0.8474197761, -0.1558187984]]
+          t: [-2.733340033, 0.390879172, 1.1347288673]
+          C: [2.8805799269, 0.497504392, 0.6052210589]
+          qvec_wxyz: [0.6275184792, 0.7310875942, 0.2083754516, -0.168259202]
       - id: "cam09"
         pkl: "136ZnvpBJ-5X09BxbEcw416FxyoGl_W7y"
         video: "1_AsodtKKbGxEZDMp9Rsn3-UTXClfGRMe"
         tracking_result: "1EuyP98f0brsCuYoYzhDrc3UY3aAulXhl"
+        extrinsic:
+          world: "gt"
+          unit: "m"
+          R: [[-0.2978880428, -0.9545826736, -0.0058849995], [-0.0159776424, 0.0111498263, -0.9998101801], [0.9544670916, -0.2977374693, -0.0185733805]]
+          t: [4.3728839804, 0.3778683806, 4.4042431088]
+          C: [-2.8950378147, 5.481374312, 0.4853327567]
+          qvec_wxyz: [0.4167398478, 0.4211696545, -0.5761100697, 0.5630641251]
       - id: "cam10"
         pkl: "1mPxdDntBi0eZzhR4L7ZJc-2sQoerXz5H"
         video: "1Yz0N9FPykGqe4pUfZ6cz0YsaRn07ULc2"
         tracking_result: "1ejXV5zZEokuBqWdvNN4Gp8ylmE9uulvy"
+        extrinsic:
+          world: "gt"
+          unit: "m"
+          R: [[0.9989734835, 0.0112685018, -0.0438748235], [-0.0438733556, -0.0003775509, -0.9990370294], [-0.0112742155, 0.9999364371, 0.0001172237]]
+          t: [-1.0812172277, 0.6340933684, 0.0921426909]
+          C: [1.1089659807, -0.0797137333, 0.5860337388]
+          qvec_wxyz: [0.7068792606, 0.7069713238, -0.0115297653, -0.0195018656]
       - id: "cam11"
         pkl: "1oLt_MS7XYyhldsQbF_bsxZu2N9Hw37PF"
         video: "1KTmTDdzV9Bp4noqC-PUV2CSbIkIn4xrK"
         tracking_result: "1i4xPewPGSG6hp7qWi3pFw51li-q-MgeU"
+        extrinsic:
+          world: "gt"
+          unit: "m"
+          R: [[-0.8991009246, -0.4368118835, -0.0285115025], [-0.0067703905, 0.0790019659, -0.996851469], [0.4376890324, -0.8960770435, -0.0739881277]]
+          t: [2.0841988067, -0.0943993736, 7.1991105102]
+          C: [-1.27770576, 7.368818204, 0.4979701928]
+          qvec_wxyz: [0.1627213213, 0.1548267072, -0.7162560677, 0.6607024351]
       - id: "cam12"
         pkl: "1JSj2tPBINECNPdC6qFaBpJ_ebsUWUv6X"
         video: "19VaGI-m1eetlDsqQRDqTClCLzXnEGF-l"
         tracking_result: "1ygsbcNBtLAuZTWr8qKTVmirARng0Mxtv"
+        extrinsic:
+          world: "gt"
+          unit: "m"
+          R: [[-0.2622284508, 0.9647104498, -0.023874414], [0.0317101842, -0.0161126007, -0.999367224], [-0.964484683, -0.262819581, -0.0263659637]]
+          t: [-3.3400213053, 0.5299525455, 5.9807514683]
+          C: [4.8756896786, 4.8025509646, 0.6075644294]
+          qvec_wxyz: [0.416921151, 0.4416588371, 0.5640216782, -0.5594584631]
       - id: "cam14"
         pkl: "1-g2pF-WtzY0zTt3hJOdLxLy8YhCDy7Ea"
         video: "1Tc6C7YxtjsHrXbWH89ImBI947B6uXOoy"
         tracking_result: "1Iys-nROLVS81OqfEjapoz_wazRsave5G"
+        extrinsic:
+          world: "gt"
+          unit: "m"
+          R: [[-0.8988993935, 0.4380181366, -0.010954104], [0.0465604093, 0.0706324366, -0.9964151681], [-0.4356742002, -0.8961870178, -0.0838857582]]
+          t: [-1.0362376381, -0.0605836626, 7.742027882]
+          C: [2.4443492209, 7.3964749304, 0.5777283436]
+          qvec_wxyz: [0.1481952133, 0.1690812882, 0.7164875415, -0.6603751204]
       - id: "cam15"
         pkl: "1vWZYlmuZ--WKmb12LiRZf9T8TqLop1RO"
         video: "1bvVnm8BY_-MIHek3qNPoU2QoU-HXbtYQ"
         tracking_result: "1kSjGqBuQS5stW_XiIVNyHLM9tLOLSxio"
+        extrinsic:
+          world: "gt"
+          unit: "m"
+          R: [[-0.4996659564, 0.8661617866, 0.0098838993], [0.0036211974, 0.0134990058, -0.9999023271], [-0.8662106089, -0.4995813611, -0.0098815365]]
+          t: [-3.0073422589, 0.5196402697, 6.8382090865]
+          C: [4.4187809903, 6.0140721194, 0.6168857954]
+          qvec_wxyz: [0.354947712, 0.3523906122, 0.6170588503, -0.6075124308]
       - id: "cam16"
         pkl: "1F00GKlYCbJVRB1a4lmCUb4Oiz5BCOsat"
         video: "1K5gJgQsbsElWl-IpeRhGzflgWT837-um"
         tracking_result: "16SjqPGI1V8nIjH2NPtD6rbhumWcsX-Hf"
+        extrinsic:
+          world: "gt"
+          unit: "m"
+          R: [[0.9623869429, -0.2711694201, -0.0166888483], [-0.0471647354, -0.1062621493, -0.9932189302], [0.2675572084, 0.956648055, -0.115054939]]
+          t: [0.0537677597, 0.6032371598, 0.0016152726]
+          C: [-0.0237260468, 0.077136202, 0.6002297336]
+          qvec_wxyz: [0.6597480304, 0.7388680585, -0.1077100816, 0.0848826652]
       - id: "cam17"
         pkl: "1ZkCo0uVxpYshQogdcKbvHqcux9CG28xO"
         video: "1IuDxxRiVkK1SYWuE1YBvYQX-5M7o8-Wx"
         tracking_result: "13V2t6Tf6TnNUq_zfTJLYRHStBJyP1cZa"
+        extrinsic:
+          world: "gt"
+          unit: "m"
+          R: [[0.8533986688, -0.5206292706, 0.0256100504], [-0.0008597743, -0.0505370094, -0.9987218189], [0.5212580674, 0.8522858519, -0.0435758402]]
+          t: [1.5102598641, 0.6020045363, 0.2534314666]
+          C: [-1.4204393661, 0.600712947, 0.5736007233]
+          qvec_wxyz: [0.6631903609, 0.6977663503, -0.1868422878, 0.1959352574]
       - id: "cam18"
         pkl: "10kmFGCdLM9PptByCvIVKNAmfra44hreg"
         video: "1ssHyop4bFW2-tpbLtgxHGnqWeM8XqR-M"
         tracking_result: "1DmKyIIjQM5cKzwrXzrZQ2kIw77WzOr9e"
+        extrinsic:
+          world: "gt"
+          unit: "m"
+          R: [[0.1970794269, 0.9798782154, -0.0315971911], [0.1315956211, -0.0583774944, -0.9895830742], [-0.9715154615, 0.1908684131, -0.1404526855]]
+          t: [-4.2029766659, 0.19782456, 4.0814492252]
+          C: [4.7674784145, 3.35093404, 0.6362120838]
+          qvec_wxyz: [0.49956212, 0.5907430928, 0.4703710674, -0.4245130687]
       - id: "cam19"
         pkl: "1NdwbAaMDlc7IniWknXH3tzCHMexeHJtb"
         video: "1gLFm4REx1VrwLcIsFAKXrFMCpqswNMw9"
         tracking_result: "1AKNimS26sRV1uPyTftbWReK-azXpGfQM"
+        extrinsic:
+          world: "gt"
+          unit: "m"
+          R: [[0.6543702712, 0.7551230364, 0.0398591024], [0.1576734189, -0.0847032115, -0.9838518481], [-0.7395530009, 0.6500881216, -0.1744900943]]
+          t: [-3.4332914038, 0.1178971093, 2.1878421872]
+          C: [3.8460798417, 1.1802534759, 0.6345979922]
+          qvec_wxyz: [0.5905880471, 0.6916580761, 0.3299305274, -0.2529045502]

@@ -30,16 +30,31 @@ paths:
   evaluation_output_dir: output/evaluation_results
 fusion:
   enabled: true
-  # Phương pháp dung hợp (cả hai đều cần aotr.enabled=true):
+  # Phương pháp dung hợp (tất cả đều cần aotr.enabled=true):
   # - aotr    : trust-region lấy Master làm gốc (mặc định).
   # - partwise: trộn đối xứng hướng xương, căn Slave theo từng phần thân (hông/vai),
   #             trọng số theo độ sâu, giữ chiều dài xương Master. Xem MODEL_CHANGES.md.
   # - naive   : BASELINE so sánh. Mỗi frame: căn Slave vào Master bằng một phép xoay Kabsch
-  #             (tâm hông), rồi lấy trung bình vị trí khớp. Không học, không làm mượt.
+  #             (tâm hông), rồi lấy trung bình vị trí khớp. Không học.
+  # - adaptive_naive: ĐỐI CHỨNG cho AOTR. Cùng phép căn RANSAC thân, cùng ngưỡng và cùng bước
+  #             làm mượt với AOTR (lấy từ fusion.aotr), nhưng thay bộ tối ưu bằng trọng số đóng
+  #             cho từng xương: q = c^p * exp(-j/tau), w_Slave = q_S / (q_M + q_S),
+  #             u = normalize((1-w) u_M + w R21 u_S), dựng lại bằng FK với chiều dài xương Master.
+  #             c = confidence 2D của xương (min hai đầu mút có keypoint 2D trực tiếp);
+  #             j = độ rung hướng xương (sai phân bậc hai, trung bình ±h frame) / trung vị của xương đó.
+  #             Không dùng GT. Chỉ p và tau là tham số tự do: fit trên split train rồi đóng băng.
   method: aotr
   naive:
     # Trọng số Master cố định; 0.5 = trung bình thuần. Không được tinh chỉnh (là baseline).
     master_weight: 0.5
+    # true: qua cùng bước làm mượt của AOTR (fusion.aotr.sequence_stability: savgol + FK theo
+    # chiều dài xương Master), để so sánh không lẫn lợi ích làm mượt. false = baseline thô cũ.
+    use_aotr_stability: true
+  adaptive_naive:
+    confidence_power: 1.0     # p; 0 = bỏ confidence 2D
+    jitter_scale: 1.0         # tau, đơn vị trung vị độ rung; rất lớn = bỏ độ rung
+    jitter_half_window: 3     # h (frame)
+    missing_confidence: 0.5   # c khi xương/frame không có điểm 2D
   partwise:
     # Tham số logistic học MỘT LẦN trên split design (aria01, cam02/04/13/19) và đóng băng.
     # w_Master = sigmoid(a + b * ((depth_M - depth_S) - mu) / sd), depth = z của tâm hông (m).

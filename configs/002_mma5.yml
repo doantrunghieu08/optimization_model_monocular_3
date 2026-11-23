@@ -8,55 +8,212 @@ segments:
         pkl: "1TBXP08tfi6xu8g-pv76eGGxwMCCWdUSz"
         video: "1vTfjMjSz3srUgp4x5Z3taraNW7-X_Q0Q"
         tracking_result: "1NpyxQH_3YzG2H6ttiDOHTBD3E1OXhvT0"
+        extrinsic:
+          world: "gt"
+          unit: "m"
+          R: [[-0.6929215588, -0.7206806899, -0.0218873608], [-0.0852549193, 0.1120389817, -0.9900398302], [0.7159548255, -0.6841539372, -0.1390757999]]
+          t: [-2.7690318273, 0.5761898438, 0.7480044045]
+          C: [-2.4051361943, -1.5483933326, 0.6138734073]
+          qvec_wxyz: [0.2645947954, 0.2890135202, -0.6971435183, 0.6003762939]
       - id: "cam02"
         pkl: "1nczRRnYMEEHXZkFLhJCh6Sc1uMCycAGZ"
         video: "11GWTrKhGvSjipxuxpLzCsvQ5jdziCiBE"
         tracking_result: "1yA0Qfp79MKogBClMk7i08N3Tc9lZh5-B"
+        extrinsic:
+          world: "gt"
+          unit: "m"
+          R: [[-0.8830505431, -0.4691640282, 0.0103369752], [-0.0460759253, 0.0647600715, -0.9968365675], [0.4670104362, -0.8807333579, -0.078803583]]
+          t: [0.0209309051, 0.5783980908, 0.0784608496]
+          C: [0.0084912387, 0.0414660136, 0.5825350013]
+          qvec_wxyz: [0.1603947828, 0.1809647538, -0.7117960027, 0.6594480435]
       - id: "cam03"
         pkl: "1SYiJ_I3RJgrawJxp1eyokkRhDRMw7-eA"
         video: "1yYVVSH5kK1k2A9CXviFYfSnDiVQSljax"
         tracking_result: "1W_SeQVWCq8TGWxI5H52ZuPowFSFeqpNc"
+        extrinsic:
+          world: "gt"
+          unit: "m"
+          R: [[-0.9922794226, -0.1212620649, 0.0260203576], [-0.038056924, 0.0980274214, -0.9944557784], [0.1180390526, -0.9877682604, -0.1018854543]]
+          t: [1.6493132423, 0.5006353466, 0.9611228046]
+          C: [1.5421822078, 1.1002897381, 0.5528684265]
+          qvec_wxyz: [0.0310746861, 0.0538019755, -0.7403026912, 0.669396472]
       - id: "cam04"
         pkl: "1lRjHAzf71xWdz066ozvq72vafl9n-Ygl"
         video: "1-qGBQduordTJxyti-56EQ2yJ3lckRMkV"
         tracking_result: "1oGVlPDeWZh7UIuCEF82joChFT4fmTAJk"
+        extrinsic:
+          world: "gt"
+          unit: "m"
+          R: [[-0.5996705156, 0.7998443449, -0.0253829985], [0.1273468902, 0.0640654806, -0.9897870396], [-0.7900493923, -0.5967785503, -0.1402758698]]
+          t: [3.1235178237, -0.1274690095, 4.4129550287]
+          C: [5.3757667645, 0.1433952005, 0.5721481796]
+          qvec_wxyz: [0.2846572919, 0.3451593377, 0.6715675443, -0.5906202598]
       - id: "cam05"
         pkl: "1o6SdnkZ_hetOsBGzIQ006GZoj8VkJT8y"
         video: "17ow0RwYoMKnVQ3cLxa8cGvu9gKtmkWaW"
         tracking_result: "1KfvYGNTOzyqmN3nYtNW0B2Z-Rnp08pC6"
+        extrinsic:
+          world: "gt"
+          unit: "m"
+          R: [[-0.9884058465, -0.1397890127, -0.0592698446], [0.0371973068, 0.1555276885, -0.9871309429], [0.1472081618, -0.9778906739, -0.1485247018]]
+          t: [3.3784134731, 0.1588452483, 1.2420960627]
+          C: [3.1504883351, 1.6621944054, 0.5415210485]
+          qvec_wxyz: [0.0681856659, 0.0338790746, -0.7570433007, 0.6489132177]
       - id: "cam06"
         pkl: "1J-qMx9_KU-I1B68e7YWm_pr7nzUp7GBj"
         video: "1Cf1iI6CoDpHAOHbBHvPUoi0tIo2PlYdZ"
         tracking_result: "1yIbQW2aSWIkAYJpfQM8eXGd7jx0uASDq"
+        extrinsic:
+          world: "gt"
+          unit: "m"
+          R: [[-0.3441803359, -0.9388881145, -0.0053856036], [-0.1080043505, 0.045289225, -0.9931182942], [0.9326708726, -0.3412301195, -0.1169916617]]
+          t: [-3.4116025859, 0.3814352074, 2.2522984731]
+          C: [-3.2336630446, -2.4518359472, 0.6239368846]
+          qvec_wxyz: [0.3821378113, 0.4264745305, -0.61368991, 0.543575995]
       - id: "cam07"
         pkl: "1DzrWdPc0fwxPh_huukMlOJcLfIXdzgNx"
         video: "1mqvXxGE6INXmD2YqeKHD6gm1_aIw5kYu"
         tracking_result: "15P2LggsZnVevh1GxIj_3b6RGWvppyNMP"
+        extrinsic:
+          world: "gt"
+          unit: "m"
+          R: [[0.9071496631, 0.4206991018, 0.0095788559], [0.0734810464, -0.1359511431, -0.9879867522], [-0.4143428829, 0.8969557137, -0.1542414439]]
+          t: [0.4854766938, -0.6036846309, 8.4908468562]
+          C: [3.1220813235, -7.9022248269, 0.7085577495]
+          qvec_wxyz: [0.6357981354, 0.7411717497, 0.1666888101, -0.1365284184]
       - id: "cam08"
         pkl: "16bhVq24L_zRFhISp4PpSR3t9FTvvsT55"
         video: "1PUGlx27qzbivJ-dsJmBwpEVnNi_Ypj1m"
         tracking_result: "13gD-6sbmLOjsJYA1o9-cWImZ6oORXlda"
+        extrinsic:
+          world: "gt"
+          unit: "m"
+          R: [[0.8034747751, 0.5953137183, -0.0054646683], [0.1041806149, -0.1496346545, -0.9832374432], [-0.586152442, 0.789437171, -0.1822478196]]
+          t: [0.6738897758, -0.8118689795, 8.2899449776]
+          C: [4.4022990663, -7.0670502733, 0.7162470016]
+          qvec_wxyz: [0.6065460207, 0.7306430813, 0.2393420095, -0.2024302718]
       - id: "cam09"
         pkl: "1JAl66QGLQtAn0H16P5Qjk3iCz9y3G-kF"
         video: "13RjaWyHl1KEnpN51A76DPvifkObcGNGw"
         tracking_result: "1SDIHW7bNTj2tNMy72-313bV0uUZXDQBF"
+        extrinsic:
+          world: "gt"
+          unit: "m"
+          R: [[0.1067041543, 0.994152465, -0.0165861311], [0.199593875, -0.0377586164, -0.9791509444], [-0.9740515944, 0.1011689833, -0.202455744]]
+          t: [3.6140684354, -0.9074954572, 7.344117399]
+          C: [6.9490436805, -4.3701977073, 0.6582271311]
+          qvec_wxyz: [0.4654271678, 0.5802840931, 0.514293927, -0.4267899712]
       - id: "cam10"
         pkl: "1j_W3IggXGA0sJN2v4klvM6pZK0Z8YwDw"
         video: "1yz52y_Jc_rE7fTwW0n5LwEDpvZHZgsLy"
         tracking_result: "19sDEV6vvdYqvPr1yYHbGLk-dqedv7gxV"
+        extrinsic:
+          world: "gt"
+          unit: "m"
+          R: [[-0.0790400354, -0.9968549911, 0.005727088], [0.013581491, -0.0068213612, -0.9998844994], [0.9967789203, -0.0789531238, 0.0140779377]]
+          t: [-3.7885693092, 0.6639394132, 3.0325510794]
+          C: [-3.33124893, -3.5326958736, 0.6428681323]
+          qvec_wxyz: [0.481719976, 0.4779391667, -0.5143298398, 0.5243899633]
       - id: "cam11"
         pkl: "1tSwb7siOqa5FVTnvxcxK7V7v2c4jnE1l"
         video: "1xD54nsR4_rxW9o4gg2fow5QX_HYl8GPK"
         tracking_result: "1uO3UPoMLkN84FizQ1khX6gNfKzuT8yk8"
+        extrinsic:
+          world: "gt"
+          unit: "m"
+          R: [[0.6340537274, 0.7724678243, -0.0356276739], [0.2088229695, -0.2154025231, -0.9539364342], [-0.7445594927, 0.5974070752, -0.2978857976]]
+          t: [0.7807725974, -1.9047159372, 8.2384241015]
+          C: [6.0366935319, -5.9350951746, 0.6649487164]
+          qvec_wxyz: [0.5293310417, 0.7326905977, 0.3348244118, -0.2662062162]
       - id: "cam12"
         pkl: "1Kky1Iko5j9QERfdnqArtp_mNcW6i37xZ"
         video: "1JoNn2zhdnLBAxfLe5SmKNX9fjxCOuY9z"
         tracking_result: "1lJzxmNyr7uu31syCVUqG1F6AgM2wTZG7"
+        extrinsic:
+          world: "gt"
+          unit: "m"
+          R: [[0.3560057965, -0.9342954295, 0.0187596185], [-0.1075220948, -0.0608954428, -0.9923360037], [0.928277368, 0.3512602959, -0.1221365324]]
+          t: [-3.4824766962, 0.0355364851, 4.6561038739]
+          C: [-3.078553002, -4.8870024751, 0.6692744494]
+          qvec_wxyz: [0.5415195798, 0.6202898056, -0.4198914422, 0.3816913393]
+      - id: "cam13"
+        pkl: "1iECx7byN4I-heZ__teiCExHxfanEWp5C"
+        video: "1TzILUnT-9qAh1QDcb-dPmYYAa4Ek8obR"
+        tracking_result: "1PThXVFWY9QQrQJFy9krosl9Bpg6GTyGo"
+        extrinsic:
+          world: "gt"
+          unit: "m"
+          R: [[0.9656634164, -0.2597955178, -0.0006746386], [-0.0275726359, -0.0999050347, -0.9946148671], [0.2583290846, 0.9604817921, -0.1036378844]]
+          t: [-2.3738138444, -0.1007135296, 8.0191681695]
+          C: [0.2179438767, -8.3290330002, 0.7293169834]
+          qvec_wxyz: [0.663724434, 0.7364112872, -0.0975569491, 0.0874696146]
+      - id: "cam14"
+        pkl: "1CknRVMuoBozq8pvahqbK2EA5QE5m8w-B"
+        video: "1OlzH2fy49RdbKSUM3Ircw_CHfHcdl8OT"
+        tracking_result: "13s5qBB7W60yhE68nIAPLqscDL5kGJVPd"
+        extrinsic:
+          world: "gt"
+          unit: "m"
+          R: [[0.6360471043, -0.771500489, -0.0152012061], [-0.0889835584, -0.0537639372, -0.9945809999], [0.7665024511, 0.6339530224, -0.1028472554]]
+          t: [-3.2784802429, 0.1456883634, 5.8174281607]
+          C: [-2.3608412102, -6.2094924953, 0.6933685441]
+          qvec_wxyz: [0.6081603225, 0.6694509498, -0.3213394677, 0.2805662032]
+      - id: "cam15"
+        pkl: "1EMbNrqZYBHl_igD-QjDgnHexnLdGqrc3"
+        video: "1-PKb1pWx4zW_7RIBH0vvHEU3UCHvhPta"
+        tracking_result: "1DQ4lR4Lj4OVlrFus1AK1Q4IieWKYH0AC"
+      - id: "cam16"
+        pkl: "1TTdFh76s9Re7qcWugUZpF_LfisvVAlta"
+        video: "1N03nAhaMi8xUsYnq7Xa0cwUstPSH6W-4"
+        tracking_result: "1WsQuF_Mh6Eh--dbyY-NJNTbIF1Ql1QId"
+        extrinsic:
+          world: "gt"
+          unit: "m"
+          R: [[-0.5670170537, 0.8227378098, -0.0399268975], [0.1144646643, 0.0306998047, -0.9929528501], [-0.8157141052, -0.5675914185, -0.11158172]]
+          t: [4.4950693228, -0.0726997992, 4.3902045214]
+          C: [6.1382542746, -1.2041892078, 0.5971532709]
+          qvec_wxyz: [0.2966905083, 0.35842184, 0.6537007302, -0.5968114294]
+      - id: "cam17"
+        pkl: "1DsQZ7C2ibKBb37SPR1pdLeIW3k1Zx3v4"
+        video: "1hMzgXlX3wZShAkRaI8Pk7e_KR1x2IbLg"
+        tracking_result: "16Hv-QHd6A7HuctotNzgVxA99KCTBNZdF"
+        extrinsic:
+          world: "gt"
+          unit: "m"
+          R: [[-0.1367783908, 0.9905199201, -0.0127263347], [0.1765643193, 0.011735939, -0.9842191366], [-0.9747393051, -0.1368669263, -0.1764956983]]
+          t: [3.610154411, -0.5865134558, 6.5276864282]
+          C: [6.9601409931, -2.6756221952, 0.6207948403]
+          qvec_wxyz: [0.4178701503, 0.5069470802, 0.5755453996, -0.4869668247]
+      - id: "cam18"
+        pkl: "1CFZQylhqJRgypU2QuIZ5pdMPZgh6tX0d"
+        video: "1pbxAPNJWdome98R_S7t8g3nYxasfG-4f"
+        tracking_result: "15CgwgRh0f-NfRmRMSGqtzYjvMK_VVZMd"
+        extrinsic:
+          world: "gt"
+          unit: "m"
+          R: [[0.6803798093, -0.7328516628, -0.0034286134], [-0.1183591077, -0.1052652565, -0.9873754845], [0.7232388518, 0.6721961515, -0.158360024]]
+          t: [-4.4943999544, -0.2203116596, 6.0400698166]
+          C: [-1.3365900663, -7.3770313288, 0.7235657096]
+          qvec_wxyz: [0.5951374902, 0.6971379149, -0.305251928, 0.2581305015]
       - id: "cam19"
         pkl: "1DQLQ6qXgqPraSNnXM3fu_nNxY3LyFONd"
         video: "13eyH3rygi41PxZTGHNRuAkRseJWDN_fe"
         tracking_result: "1PVkirjn5y-gIm7aZEaZkSnxh_4pPjZrZ"
+        extrinsic:
+          world: "gt"
+          unit: "m"
+          R: [[-0.9202807803, 0.3908570116, -0.0177223532], [0.08186478, 0.148063662, -0.9855837406], [-0.3825982791, -0.9084646105, -0.1682575657]]
+          t: [3.607861066, -0.0281598346, 2.980774213]
+          C: [4.46298958, 1.3019395379, 0.537723726]
+          qvec_wxyz: [0.1219890528, 0.158045186, 0.7477636672, -0.6332376238]
       - id: "cam20"
         pkl: "1_4FhmpoTfym63-G_Vx-kjtZ0ESbtFNbg"
         video: "1Wf5yyuoD4qXR1e3OBIwMPQ6ioGqyVvl6"
         tracking_result: "1Bevik971ONledRGWEPtUSPwiejSuYWXb"
+        extrinsic:
+          world: "gt"
+          unit: "m"
+          R: [[-0.6703600668, -0.7413243397, 0.032490063], [-0.201046198, 0.1393049272, -0.9696259916], [0.7142813221, -0.6565305481, -0.2424249002]]
+          t: [-1.3818229135, 0.4346975243, 0.57111977]
+          C: [-1.2468648005, -0.7099768902, 0.6048431848]
+          qvec_wxyz: [0.2379705655, 0.3289224476, -0.7162558716, 0.5675892528]

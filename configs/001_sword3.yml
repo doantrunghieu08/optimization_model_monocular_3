@@ -8,79 +8,219 @@ segments:
         pkl: "1WYloUOJpDFwTnnUmBXOhgOdInjEX6INl"
         video: "1m-qoX68TcB8qa_UJcm6dqtE0YnunKavF"
         tracking_result: "1ys10jU7Z6V0qTS3ybQn8Z-MrFyAF7cmh"
+        extrinsic:
+          world: "colmap"
+          unit: "colmap"
+          R: [[-0.9312502748, 0.004124302, 0.3643568522], [0.06606984, 0.9852721584, 0.1577135064], [-0.3583402041, 0.1709437451, -0.9178074603]]
+          t: [0.4508380655, -0.2719670367, 3.628989653]
+          C: [1.738224784, -0.3542509253, 3.2093407134]
+          qvec_wxyz: [0.1845361911, 0.0179236369, 0.9790722514, 0.0839205817]
       - id: "cam02"
         pkl: "1-NlmXHfDMEInl6J-903JuFmoisUZ1wgF"
         video: "1555R_kDRqHXW0jRpsQFUJZCmkanVMb_B"
         tracking_result: "1_9doTQiHVgxsuvpPXVJ1gIWAybniivqA"
+        extrinsic:
+          world: "colmap"
+          unit: "colmap"
+          R: [[0.7426071471, 0.0579243107, -0.6672176552], [0.0292715088, 0.9924935886, 0.1187419697], [0.6690872917, -0.1077091028, 0.7353373003]]
+          t: [-0.1432165239, -0.0091451559, 3.7267662787]
+          C: [-2.3869106495, 0.4187788794, -2.8349009337]
+          qvec_wxyz: [0.9314555862, -0.0607788165, -0.3586604039, -0.0076903296]
       - id: "cam03"
         pkl: "1U-ajCeHYHKSznyN-gK0ztUso4zBigYCv"
         video: "1HAcKP20Rt_EGlYp82pCCneQwkoPZ-_9R"
         tracking_result: "1G2YaivvDI-YAoAFHa4SiUbpB_f_1_51A"
+        extrinsic:
+          world: "colmap"
+          unit: "colmap"
+          R: [[0.5092398901, 0.0904528453, -0.855858059], [-0.0043406736, 0.9947188069, 0.1025458618], [0.8606136722, -0.0485054429, 0.5069431222]]
+          t: [0.1314548622, -0.1503038747, 3.716517432]
+          C: [-3.2660801948, 0.3178909489, -1.7561432072]
+          qvec_wxyz: [0.8675975189, -0.0435257425, -0.4946048409, -0.0273149464]
       - id: "cam04"
         pkl: "1_qJs5umWGmtjss2ykxkoSWd-bZl9lK-W"
         video: "15IgfGRxHZSMigD8wbY1NCzTSJC95HSEg"
         tracking_result: "1w6wI-KfbzuY6kmIYRZx89-NT3iORpX8l"
+        extrinsic:
+          world: "colmap"
+          unit: "colmap"
+          R: [[0.2282405037, -0.0939510873, 0.9690611259], [0.0730457268, 0.9941803213, 0.0791821347], [-0.9708607492, 0.052713204, 0.2337749427]]
+          t: [-0.2366806633, -0.2352818959, 3.8183534032]
+          C: [3.7782958965, 0.0103985834, -0.6446471953]
+          qvec_wxyz: [0.78361275, -0.0084445189, 0.6189032386, 0.0532778512]
       - id: "cam05"
         pkl: "1xm9ByIDH5qLAxpQmrVhIMAd2sRlV6gat"
         video: "1_Nkx7-6XX9Jpf1r8XwOBXImnzGv0HlKv"
         tracking_result: "1fZUsnr1h0S9NGrdEbtAp0WLozyFso0zq"
+        extrinsic:
+          world: "colmap"
+          unit: "colmap"
+          R: [[-0.9008763154, 0.0880307103, -0.4250558297], [-0.0012314548, 0.9786978739, 0.2053021071], [0.4340741271, 0.1854752429, -0.8815773287]]
+          t: [-0.0647126763, -0.4029828626, 3.3323756154]
+          C: [-1.505292409, -0.2179780029, 2.9929735238]
+          qvec_wxyz: [0.221497308, -0.0223782226, -0.9696844226, -0.1007485891]
       - id: "cam06"
         pkl: "1QufefHyUG8VJ33yuvEVVRx95MUFm7geM"
         video: "14qctj0jdCpbYt9NxeBOVSdGmGzuVG7Id"
         tracking_result: "1UNRrf1d1hTUt03XPuAMNbmmICTOXBWl3"
+        extrinsic:
+          world: "colmap"
+          unit: "colmap"
+          R: [[-0.4562892898, 0.0811432724, -0.8861240621], [0.0571130969, 0.9964508461, 0.061836926], [0.8879967219, -0.0223937624, -0.4593041925]]
+          t: [0.1017144742, 0.0670902119, 3.601348916]
+          C: [-3.1554065366, 0.0055422082, 1.7400976462]
+          qvec_wxyz: [0.519821451, -0.0405094327, -0.8532356545, -0.0115569372]
       - id: "cam07"
         pkl: "13wIh8WzJLZoC4ClpLPVtDVbxM3xFGPL5"
         video: "1D2rJ8bO9hDDEJRSWM1fpew52olK4Otnf"
         tracking_result: "1riDSM6CqRP7ObXNDrF_9BO3GjPYxE5u9"
+        extrinsic:
+          world: "colmap"
+          unit: "colmap"
+          R: [[0.0329262721, 0.1067767993, -0.9937376795], [-0.0170147392, 0.9941925888, 0.1062619168], [0.9993129436, 0.0134093787, 0.0345518351]]
+          t: [-0.4332802352, -0.2279515953, 3.6360074319]
+          C: [-3.6231215237, 0.2241354628, -0.5319750511]
+          qvec_wxyz: [0.717925953, -0.0323336055, -0.6940307057, -0.043107349]
       - id: "cam08"
         pkl: "1lUNmJR_OPSRmD34NqFqDgNzsY2x_wW6R"
         video: "1xio8kjNB8UBBW8rGPlBvoJHZlR00VlQb"
         tracking_result: "1z8U6gJ5oQG3-cd5h1DKjGweIwLPawQz4"
+        extrinsic:
+          world: "colmap"
+          unit: "colmap"
+          R: [[0.6925800275, -0.094746276, 0.7150916365], [0.1380893583, 0.9904165767, -0.0025166695], [-0.7080001657, 0.1004895402, 0.6990261924]]
+          t: [-0.053220622, -0.612760209, 3.6770779343]
+          C: [2.7248469906, 0.2323375418, -2.533858281]
+          qvec_wxyz: [0.9195138385, 0.028005617, 0.3869141884, 0.0633040049]
       - id: "cam09"
         pkl: "1zGTRsozaqfzR-vIPNE9quSnP15ugP5Tn"
         video: "1XdOLUwfXqTvJcrHxS1KUrap-As--hsjb"
         tracking_result: "1R1xseQZI2f68SaBSJXhep5xwxqZExTFD"
+        extrinsic:
+          world: "colmap"
+          unit: "colmap"
+          R: [[-0.0545854074, 0.1118786389, -0.9922215496], [-0.0033038726, 0.9936773797, 0.1122245491], [0.9985036393, 0.0094039963, -0.0538706518]]
+          t: [0.3491217007, -0.1850336194, 3.5118900517]
+          C: [-3.4881893747, 0.1117786604, 0.5563591955]
+          qvec_wxyz: [0.6865168098, -0.0374428387, -0.7249367971, -0.0419445343]
       - id: "cam10"
         pkl: "1gc2rCryCIPFdpCNZZrs4sR-WZrF1eRv7"
         video: "1WoVj2EFjv4aJnOy0QED8CX8-hUM3a2Fj"
         tracking_result: "1MGXtpCtxzWZkxeXrf44JaZVJQ7xNvbMl"
+        extrinsic:
+          world: "colmap"
+          unit: "colmap"
+          R: [[0.966798463, 0.0036084832, 0.2555145999], [-0.0294707589, 0.994802968, 0.0974603982], [-0.2538349982, -0.1017547723, 0.9618803252]]
+          t: [-0.3170642023, -0.0008048847, 3.6579611071]
+          C: [1.2350320139, 0.3741598222, -3.4374278421]
+          qvec_wxyz: [0.9903890342, -0.0502871002, 0.1285731113, -0.0083500627]
       - id: "cam11"
         pkl: "1Xocvp6ty82b7p2ePlnJA9Edg1IN0ukxm"
         video: "1RqAUkRPfpzSWLWIyOVbJ8wVDx1WUy-h8"
         tracking_result: "1mHsoIdwlnbrzf_u5BCTBRwarFATAdtwT"
+        extrinsic:
+          world: "colmap"
+          unit: "colmap"
+          R: [[-0.7632937025, 0.1064573529, -0.6372201783], [0.0003476147, 0.9863976296, 0.1643763835], [0.6460515481, 0.1252459512, -0.752948105]]
+          t: [-0.2554964021, -0.2851238635, 3.3560535545]
+          C: [-2.363103276, -0.111887146, 2.4109943309]
+          qvec_wxyz: [0.3428395478, -0.0285340712, -0.9357669899, -0.0773756549]
       - id: "cam12"
         pkl: "1Y0D84lyJ2xfNYzGw6I74h2G8HmbA-Ktx"
         video: "15GPidxULrjEyMfG7IPOBn_aEeuAk8dGl"
         tracking_result: "1jQwytLKnS_jKl7dWhISVHg4l7PH83mxh"
+        extrinsic:
+          world: "colmap"
+          unit: "colmap"
+          R: [[-0.5424874924, -0.0498306025, 0.8385846598], [0.048915252, 0.9946717325, 0.0907493397], [-0.8386385507, 0.0902499616, -0.5371594975]]
+          t: [0.4355589397, -0.1000959933, 3.8228142823]
+          C: [3.447140927, -0.2237420228, 1.6972915988]
+          qvec_wxyz: [0.4782846283, -0.0002610255, 0.8766867631, 0.0516145871]
       - id: "cam13"
         pkl: "1dJbnWrEqKZBksPmpw9fp22110ZMWw5B1"
         video: "1T9mRNmCDFp8vfrTlNIczNy5hPntQ5bB4"
         tracking_result: "1qOLlKRx4YPB4pkd9-90N4DnImRw5dm50"
+        extrinsic:
+          world: "colmap"
+          unit: "colmap"
+          R: [[0.8707139944, -0.0578173929, 0.4883792471], [-0.001557019, 0.9927360879, 0.1203022672], [-0.4917872666, -0.1055092834, 0.8642991817]]
+          t: [-0.2501588262, 0.0854569803, 3.7121805845]
+          C: [2.0435529919, 0.2923697539, -3.0965429308]
+          qvec_wxyz: [0.9653690051, -0.0584780404, 0.2538320861, 0.0145696551]
       - id: "cam14"
         pkl: "1D1Pp5czfWDas1x-XNDIW8zlRT_3VeS27"
         video: "1Ky4V99zPnYNcS6CHjqTz3yP5eg-8YSD2"
         tracking_result: "1eVeiZkaRAzA9_OtmiC80JhhODG84MvuB"
+        extrinsic:
+          world: "colmap"
+          unit: "colmap"
+          R: [[-0.97971386, 0.0107264988, 0.2001142041], [0.0477513636, 0.9822998058, 0.181126748], [-0.194629288, 0.1870081115, -0.9628849394]]
+          t: [0.0767532716, -0.3207605847, 3.4001239056]
+          C: [0.7522766941, -0.3215909844, 3.3166670024]
+          qvec_wxyz: [0.0996255569, 0.0147586717, 0.9905678429, 0.0929100571]
       - id: "cam15"
         pkl: "1NhvKJGoKbkYY7cg2ZwOXSyaicXq8MWcr"
         video: "1HGyqUUMK4A-q2d1aNtqLyO2RIteR7B5A"
         tracking_result: "1RHNYDtwxMZN2WXLpBT_nY73-BE-nBAY5"
+        extrinsic:
+          world: "colmap"
+          unit: "colmap"
+          R: [[-0.7034414996, -0.0641581843, 0.7078515268], [0.0139409214, 0.9944804559, 0.1039916991], [-0.7106164277, 0.0830201792, -0.698664399]]
+          t: [0.0624049246, 0.0085391748, 3.8781693465]
+          C: [2.7996700169, -0.32645457, 2.6644774314]
+          qvec_wxyz: [0.3848293639, -0.0136239083, 0.9214915022, 0.0507361918]
       - id: "cam16"
         pkl: "1F1j1lOZoagsFa579l7X8m53sL_ClbFX9"
         video: "1XdcsNECvdnfNCd22cnqHs7JtiDZVgFQ_"
         tracking_result: "1D2Z4qnk_iHbGA9d-NpZIlRd9QcWkU7KY"
+        extrinsic:
+          world: "colmap"
+          unit: "colmap"
+          R: [[0.9995951974, 0.0044635724, -0.0280983621], [-0.0047366004, 0.9999421439, -0.0096578202], [0.028053628, 0.0097870014, 0.9995585068]]
+          t: [-0.2975824571, -0.4185889695, 3.5319490635]
+          C: [0.1963953211, 0.385325842, -3.5427939687]
+          qvec_wxyz: [0.9998869746, 0.0048617549, -0.0140395843, -0.0023003032]
       - id: "cam17"
         pkl: "1Gg5bBVGLLsWaEY1Opsz_vPzN1snj5iBq"
         video: "1O6-4YSpZtdl8p6b5dk6c30DYnq8rCK5D"
         tracking_result: "1-0NvNfOeKApvY4rTkGfKcS1CP5Xmomy3"
+        extrinsic:
+          world: "colmap"
+          unit: "colmap"
+          R: [[0.95488954, -0.0003539257, -0.2969610093], [0.018599442, 0.9981072246, 0.058617651], [0.2963781825, -0.0614966909, 0.9530887314]]
+          t: [0.138884521, -0.1978328047, 3.5713802283]
+          C: [-1.1874189778, 0.4171355724, -3.3510024693]
+          qvec_wxyz: [0.9881909603, -0.0303874319, -0.1501074225, 0.0047949659]
       - id: "cam18"
         pkl: "1GYet9MTNt9NA-4xsnZ4TAGKfmGpcuaRa"
         video: "1TcKtnkgTPz2EgjMPuUDaJyoWip3E0bMu"
         tracking_result: "1RyeuSmwJWLnHzPwh9ZTgE-Sk4SOxWosi"
+        extrinsic:
+          world: "colmap"
+          unit: "colmap"
+          R: [[-0.0637372482, -0.0702899043, 0.9954882684], [0.159446793, 0.9839851576, 0.0796864463], [-0.9851468334, 0.1638064067, -0.0515090064]]
+          t: [-0.2087668286, -0.4999579617, 3.7091441749]
+          C: [3.720462109, -0.1303045659, 0.4387191329]
+          qvec_wxyz: [0.6835091263, 0.03076768, 0.7244362312, 0.0840283943]
       - id: "cam19"
         pkl: "1NJlK8mt45W_G6qQp1iWOU53WaisOHVXX"
         video: "17smgKP3if-XdVMU3VRIv0DhsIqMI1pKK"
         tracking_result: "19pa8gMaFFwF2dDdBPTMsdVWLAbyvkwXm"
+        extrinsic:
+          world: "colmap"
+          unit: "colmap"
+          R: [[0.4428545418, -0.1369757287, 0.8860685665], [0.1821077299, 0.9814034419, 0.0606964498], [-0.8779046813, 0.1344802367, 0.4595633106]]
+          t: [0.0357949346, -0.6232710951, 3.7715661546]
+          C: [3.408726118, 0.1093823259, -1.7271598518]
+          qvec_wxyz: [0.8490908806, 0.0217243491, 0.5193711557, 0.093948559]
       - id: "cam20"
         pkl: "1_j-XUSq0LcVEachYTtAGmxKyxyxeNhVb"
         video: "13hyCeyYdBrk-KN3R1bTDMlWdiyf9KeoM"
         tracking_result: "1z8qDr27ku36lbBSQuvCKiR-O3I72eYPh"
+        extrinsic:
+          world: "colmap"
+          unit: "colmap"
+          R: [[-0.9972289636, 0.0436002061, -0.0602778255], [0.0320750478, 0.9830654297, 0.1804260297], [0.0671236586, 0.1779926485, -0.9817397983]]
+          t: [-0.1347815269, -0.2932195619, 3.2148451851]
+          C: [-0.3407951814, -0.2780882919, 3.2009215676]
+          qvec_wxyz: [0.0320026087, -0.0190092412, -0.9952429592, -0.09003296]

@@ -8,27 +8,76 @@ segments:
         pkl: "1-YLUt9UZNVuwUw3si1aLFENMIw-qAXY1"
         video: "1zdEIZ_iFxlEIaB8IDqLqV2up6Jhs_UBD"
         tracking_result: "11UA_hyjVFjNwh_3Vi1aHqxHs_Hcb0qe1"
+        extrinsic:
+          world: "colmap"
+          unit: "colmap"
+          R: [[-0.9312502748, 0.004124302, 0.3643568522], [0.06606984, 0.9852721584, 0.1577135064], [-0.3583402041, 0.1709437451, -0.9178074603]]
+          t: [0.4508380655, -0.2719670367, 3.628989653]
+          C: [1.738224784, -0.3542509253, 3.2093407134]
+          qvec_wxyz: [0.1845361911, 0.0179236369, 0.9790722514, 0.0839205817]
       - id: "cam02"
         pkl: "1HzDcIK6Ha3Q0VzVvHwS0fyQBc2vL9UMS"
         video: "1VH-XjyfSzKiyaN6Hp8jA9Y26X9pskgmM"
         tracking_result: "1FXOSx1WlJYxomeMAS5pxYwacNJGFfD3S"
+        extrinsic:
+          world: "colmap"
+          unit: "colmap"
+          R: [[0.7426071471, 0.0579243107, -0.6672176552], [0.0292715088, 0.9924935886, 0.1187419697], [0.6690872917, -0.1077091028, 0.7353373003]]
+          t: [-0.1432165239, -0.0091451559, 3.7267662787]
+          C: [-2.3869106495, 0.4187788794, -2.8349009337]
+          qvec_wxyz: [0.9314555862, -0.0607788165, -0.3586604039, -0.0076903296]
       - id: "cam03"
         pkl: "1Rz0R4Xk7Rr0s7A09l_vrjH8drn1kCUdJ"
         video: "1wSxENZBPrQpVbYClvn_onwL181jMe0Ig"
         tracking_result: "1L3a3vuoftbfBkS9dNopjHB-iNbEUpIn6"
+        extrinsic:
+          world: "colmap"
+          unit: "colmap"
+          R: [[0.5092398901, 0.0904528453, -0.855858059], [-0.0043406736, 0.9947188069, 0.1025458618], [0.8606136722, -0.0485054429, 0.5069431222]]
+          t: [0.1314548622, -0.1503038747, 3.716517432]
+          C: [-3.2660801948, 0.3178909489, -1.7561432072]
+          qvec_wxyz: [0.8675975189, -0.0435257425, -0.4946048409, -0.0273149464]
       - id: "cam04"
         pkl: "1pS1LctU3EqgHUCxCNcU4JKE4fq-sHp17"
         video: "1OzfDal6nVzu9nOH1nQs8Zr5MLg-f7Ss1"
         tracking_result: "1spzaml2gYskCDPcUxRuUje-uPNv4DNBL"
+        extrinsic:
+          world: "colmap"
+          unit: "colmap"
+          R: [[0.2282405037, -0.0939510873, 0.9690611259], [0.0730457268, 0.9941803213, 0.0791821347], [-0.9708607492, 0.052713204, 0.2337749427]]
+          t: [-0.2366806633, -0.2352818959, 3.8183534032]
+          C: [3.7782958965, 0.0103985834, -0.6446471953]
+          qvec_wxyz: [0.78361275, -0.0084445189, 0.6189032386, 0.0532778512]
       - id: "cam05"
         pkl: "1HRZ6B1IDdTbpZN7equjXWN8f7tX5OkYk"
         video: "1xxJeGVPJacR34oO2NhoYz9gn4H1EylWf"
         tracking_result: "1VIDrNtz1MtF4LnClBmrWO7nCHGmbMghP"
+        extrinsic:
+          world: "colmap"
+          unit: "colmap"
+          R: [[-0.9008763154, 0.0880307103, -0.4250558297], [-0.0012314548, 0.9786978739, 0.2053021071], [0.4340741271, 0.1854752429, -0.8815773287]]
+          t: [-0.0647126763, -0.4029828626, 3.3323756154]
+          C: [-1.505292409, -0.2179780029, 2.9929735238]
+          qvec_wxyz: [0.221497308, -0.0223782226, -0.9696844226, -0.1007485891]
       - id: "cam06"
         pkl: "1MnivkAsAvhcT_Yv1Ci7sPa91lbVKSYG-"
         video: "1mCtGcoodzlORk2w7EZrQnc-enkRsxao6"
         tracking_result: "10meIFBg6RTZ-D-kbc2FLCDs4TPaQgpSs"
+        extrinsic:
+          world: "colmap"
+          unit: "colmap"
+          R: [[-0.4562892898, 0.0811432724, -0.8861240621], [0.0571130969, 0.9964508461, 0.061836926], [0.8879967219, -0.0223937624, -0.4593041925]]
+          t: [0.1017144742, 0.0670902119, 3.601348916]
+          C: [-3.1554065366, 0.0055422082, 1.7400976462]
+          qvec_wxyz: [0.519821451, -0.0405094327, -0.8532356545, -0.0115569372]
       - id: "cam10"
         pkl: "1zAb0pFyl4hu2LUkOElOtF3W9_pe5y7ZP"
         video: "10U6gDH8UqdXsTUgX3kT2127wF2-0aiPc"
         tracking_result: "1vsusRG8ltU_T2wEw0NZOQtIaCkhZr1KO"
+        extrinsic:
+          world: "colmap"
+          unit: "colmap"
+          R: [[0.966798463, 0.0036084832, 0.2555145999], [-0.0294707589, 0.994802968, 0.0974603982], [-0.2538349982, -0.1017547723, 0.9618803252]]
+          t: [-0.3170642023, -0.0008048847, 3.6579611071]
+          C: [1.2350320139, 0.3741598222, -3.4374278421]
+          qvec_wxyz: [0.9903890342, -0.0502871002, 0.1285731113, -0.0083500627]
