@@ -13,7 +13,8 @@ LEGACY_PROTOCOL = "no_gt_v10_master_only_postopt"
 AOTR_REVISION = "aotr_fk_trustregion_v3_all_evidence_stable"
 PARTWISE_REVISION = "partwise_depth_logit_v1"
 NAIVE_REVISION = "naive_kabsch_average_v1"
-SEQUENCE_METHODS = ("partwise", "naive")  # replace camera1 after the per-frame AOTR pass
+ADAPTIVE_NAIVE_REVISION = "adaptive_naive_conf_jitter_v1"
+SEQUENCE_METHODS = ("partwise", "naive", "adaptive_naive")  # replace camera1 after the per-frame AOTR pass
 
 
 ROOT = Path(__file__).resolve().parents[1]  # relative mask paths: same base as evaluation_pipeline
@@ -97,7 +98,13 @@ def evaluation_protocol(config):
         settings["partwise"] = config["fusion"].get("partwise", {})
     elif method == "naive":
         revision = NAIVE_REVISION
-        settings["naive"] = {"master_weight": float(config["fusion"].get("naive", {}).get("master_weight", 0.5))}
+        naive_cfg = config["fusion"].get("naive", {})
+        settings["naive"] = {"master_weight": float(naive_cfg.get("master_weight", 0.5))}
+        if naive_cfg.get("use_aotr_stability", False):  # absent when off: old caches stay valid
+            settings["naive"]["use_aotr_stability"] = True
+    elif method == "adaptive_naive":
+        revision = ADAPTIVE_NAIVE_REVISION
+        settings["adaptive_naive"] = config["fusion"].get("adaptive_naive", {})
     # Excluding identity-swapped frames changes the metrics: never reuse unmasked caches.
     id_mask = config.get("evaluation", {}).get("identity_mask")
     if id_mask and id_mask.get("path"):
@@ -116,6 +123,10 @@ def evaluation_protocol(config):
         settings["scoring"] = {"joint_set": ev.get("joint_set", "priority1"),
                                "mpjpe_alignment": ev.get("mpjpe_alignment", "frame"),
                                "harmony4d_colmap_extrinsics_v1": True}
+    from evaluation_pipeline.extrinsics import ext_enabled
+    if ext_enabled():  # EXT=1: GT moved into the camera frame with COLMAP extrinsics
+        settings.setdefault("scoring", {"joint_set": ev.get("joint_set", "priority1")})
+        settings["scoring"]["mpjpe_alignment"] = "colmap_extrinsics"
     payload = json.dumps(settings, sort_keys=True, separators=(",", ":"), default=str)
     digest = hashlib.sha256((revision + ":" + payload).encode("utf-8")).hexdigest()[:12]
     return f"{LEGACY_PROTOCOL}__{revision}__{digest}"
@@ -152,6 +163,8 @@ def verify_aotr_execution(config):
         return _verify_partwise(config, summary)
     if fusion_method(config) == "naive":
         return _verify_naive(config, summary)
+    if fusion_method(config) == "adaptive_naive":
+        return _verify_adaptive_naive(config, summary)
     frames = int(summary.get("frames", 0))
     corrected = int(summary.get("corrected_frames", 0))
     fallbacks = int(summary.get("fallback_frames", 0))
@@ -198,4 +211,25 @@ def _verify_naive(config, summary):
     diag = json.loads(report.read_text(encoding="utf-8"))
     if int(diag.get("frames", 0)) <= 0 or int(diag["frames"]) != int(summary.get("frames", -1)):
         raise RuntimeError("Naive diagnostics do not cover the current pair: " + str(diag))
+    status = diag.get("sequence_stability", {}).get("status")
+    if config["fusion"].get("naive", {}).get("use_aotr_stability", False) and status not in {"applied", "unchanged"}:
+        raise RuntimeError("Naive use_aotr_stability was set but the stability pass did not run: " + str(diag))
+    return summary
+
+
+def _verify_adaptive_naive(config, summary):
+    """adaptive_naive replaces camera1; it must cover the pair, align some frames and run AOTR's stability."""
+    report = Path(config["paths"]["fused_output_dir"]) / "adaptive_naive_diagnostics.json"
+    if summary.get("mode") != "adaptive_naive" or not report.is_file():
+        raise RuntimeError("fusion.method=adaptive_naive but its diagnostics are missing: " + str(summary))
+    diag = json.loads(report.read_text(encoding="utf-8"))
+    frames = int(diag.get("frames", 0))
+    if frames <= 0 or frames != int(summary.get("frames", -1)):
+        raise RuntimeError("adaptive_naive diagnostics do not cover the current pair: " + str(diag))
+    if int(diag.get("fallback_frames", frames)) >= frames:
+        raise RuntimeError("All adaptive_naive frames fell back to Master: " + str(diag.get("reason_counts")))
+    stab_enabled = bool(config["fusion"]["aotr"].get("sequence_stability", {}).get("enabled", False))
+    status = diag.get("sequence_stability", {}).get("status")
+    if stab_enabled and status not in {"applied", "unchanged"}:
+        raise RuntimeError("adaptive_naive sequence stability did not run: " + str(diag))
     return summary
