@@ -32,6 +32,14 @@ from fusion_pipeline.config import DEFAULT_MASTER_MAX_DISPLACEMENT
 from fusion_pipeline.config import DEFAULT_MASTER_MIN_CONFIDENCE
 from fusion_pipeline.config import HEIGHT, RIGID_BONES_RATIO
 
+# Methods that run the per-frame AOTR pass (visibility/metadata) and then replace camera1.
+SEQUENCE_FUSION_METHODS = ("partwise", "naive", "adaptive_naive")
+# adaptive_naive must align exactly like AOTR, so these keys always come from fusion.aotr.
+ADAPTIVE_NAIVE_SHARED_AOTR_KEYS = (
+    "ransac_threshold_m", "ransac_max_combos", "alignment_median_max_m",
+    "alignment_q75_max_m", "min_bone_direction_cos",
+)
+
 def _frame_index(path: Path) -> int:
     match = re.search(r"\d+", path.name)
     if not match:
@@ -1063,9 +1071,10 @@ def run_fusion(config: dict) -> None:
     if aotr_enabled and selective_enabled:
         raise ValueError("fusion.aotr and fusion.selective_joint_fusion cannot both be enabled")
     fusion_method = str(fusion_cfg.get("method", "aotr")).strip().lower()
-    if fusion_method not in ("aotr", "partwise", "naive"):
-        raise ValueError(f"Unsupported fusion.method={fusion_method!r}; use 'aotr', 'partwise' or 'naive'")
-    if fusion_method in ("partwise", "naive"):
+    if fusion_method not in ("aotr", *SEQUENCE_FUSION_METHODS):
+        raise ValueError(f"Unsupported fusion.method={fusion_method!r}; use 'aotr', 'partwise', 'naive' "
+                         "or 'adaptive_naive'")
+    if fusion_method in SEQUENCE_FUSION_METHODS:
         if not aotr_enabled:
             raise ValueError(f"fusion.method={fusion_method} runs on the AOTR per-frame path; set fusion.aotr.enabled=true")
         if bool(config.get("pose_export", {}).get("use_world_coords", False)):
@@ -1386,29 +1395,41 @@ def run_fusion(config: dict) -> None:
             print("[Fusion] WARNING: selective mode fell back to raw Master in some frames.")
 
     partwise_diag = {}
-    if aotr_enabled and fusion_method in ("partwise", "naive"):
-        if fusion_method == "partwise":
-            from fusion_pipeline.partwise import fuse_partwise as fuse_sequence
-        else:
-            from fusion_pipeline.naive import fuse_naive as fuse_sequence
+    if aotr_enabled and fusion_method in SEQUENCE_FUSION_METHODS:
         diag_path = output_dir / f"{fusion_method}_diagnostics.json"
         diag_path.unlink(missing_ok=True)
         master_sequence, slave_sequence = [], []
-        for p in file_paths:
+        conf_master, conf_slave, vis_master, vis_slave = [], [], [], []
+        for p, result in zip(file_paths, frame_results):
             pose = _load_pose_frame(p, metadata_dir)
             master_sequence.append(pose["camera1"])
             slave_sequence.append(pose["camera2"])
+            conf = _confidence2d_for_frame(pose, _frame_index(p), confidence2d_profiles)
+            conf_master.append(conf["camera1"])
+            conf_slave.append(conf["camera2"])
+            vis_master.append(result.get("vis1"))
+            vis_slave.append(result.get("vis2"))
+        method_cfg = dict(fusion_cfg.get(fusion_method, {}))
         if fusion_method == "partwise":
-            fused_sequence, partwise_diag = fuse_sequence(
-                master_sequence,
-                slave_sequence,
-                fusion_cfg.get(fusion_method, {}),
-                vis_master=[r.get("vis1", {}) for r in frame_results],
-                vis_slave=[r.get("vis2", {}) for r in frame_results],
-            )
+            from fusion_pipeline.partwise import fuse_partwise
+            fused_sequence, partwise_diag = fuse_partwise(
+                master_sequence, slave_sequence, method_cfg,
+                vis_master=[v or {} for v in vis_master], vis_slave=[v or {} for v in vis_slave])
+        elif fusion_method == "naive":
+            from fusion_pipeline.naive import fuse_naive
+            if method_cfg.get("use_aotr_stability", False):
+                method_cfg["sequence_stability"] = aotr_cfg.get("sequence_stability", {})
+            fused_sequence, partwise_diag = fuse_naive(master_sequence, slave_sequence, method_cfg)
         else:
-            fused_sequence, partwise_diag = fuse_sequence(
-                master_sequence, slave_sequence, fusion_cfg.get(fusion_method, {}))
+            from fusion_pipeline.adaptive_naive import fuse_adaptive_naive
+            # Same alignment gates and the same stability pass as AOTR, by construction.
+            for key in ADAPTIVE_NAIVE_SHARED_AOTR_KEYS:
+                if key in aotr_cfg:
+                    method_cfg[key] = aotr_cfg[key]
+            method_cfg["sequence_stability"] = aotr_cfg.get("sequence_stability", {})
+            fused_sequence, partwise_diag = fuse_adaptive_naive(
+                master_sequence, slave_sequence, method_cfg, conf_master=conf_master, conf_slave=conf_slave,
+                vis_master=vis_master, vis_slave=vis_slave)
         for p, fused_cam1 in zip(file_paths, fused_sequence):
             name = f"fused_data_{_frame_index(p)}.json"
             record = read_json(output_dir / "keypoints3d" / name)
@@ -1447,7 +1468,7 @@ def run_fusion(config: dict) -> None:
             "reason_counts": dict(Counter(d.get("reason", "pipeline_exception") for d in diagnostics)),
             "evidence_counts": dict(Counter(d.get("evidence_mode", "pipeline_exception") for d in diagnostics)),
             "sequence_stability": (partwise_diag.get("sequence_stability", {"status": "disabled"})
-                                   if fusion_method in ("partwise", "naive") else aotr_postprocessing),
+                                   if fusion_method in SEQUENCE_FUSION_METHODS else aotr_postprocessing),
         }
         write_json(output_dir / "aotr_diagnostics.json", summary)
         print(f"[Fusion] AOTR diagnostics: {summary}")
