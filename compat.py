@@ -51,12 +51,22 @@ def normalize_person_name(target_person):
 def parse_person_mapping(pkl_path):
     if pkl_path is None:
         return {}
+    #track id -> person for one WHAM pkl, from its own folder only.
+
+    """`<pkl stem>_person_mapping.txt` wins; otherwise the folder's single *person_mapping.txt.
+    Several mappings and none named after this pkl -> error. Parent folders are never searched:
+    that used to hand one camera's labels to every pkl of a shared folder (wrong identity)."""
     pkl_path = Path(pkl_path)
-    # ponytail: match exact stem first, then sorted same-dir mappings; never glob sibling camera dirs
-    stem_matches = sorted(pkl_path.parent.glob(f"{pkl_path.stem}*person_mapping.txt"))
-    candidates = stem_matches or sorted(pkl_path.parent.glob("*person_mapping.txt"))
-    if not candidates and pkl_path.parent.parent.exists():
-        candidates = sorted(pkl_path.parent.parent.glob("*person_mapping.txt"))
+    own = pkl_path.parent / f"{pkl_path.stem}_person_mapping.txt"
+    if own.is_file():
+        candidates = [own]
+    else:
+        candidates = sorted(pkl_path.parent.glob("*person_mapping.txt"))
+        if len(candidates) > 1:
+            raise ValueError(
+                f"{len(candidates)} person mappings next to {pkl_path.name} and none is "
+                f"{own.name}: {[c.name for c in candidates]}. Keep one WHAM pkl per folder "
+                "(exo/<cam>/<seq>_<cam>_wham/) or name the mapping after the pkl.")
     mapping = {}
     if candidates:
         for line in candidates[0].read_text(encoding="utf-8").splitlines():
