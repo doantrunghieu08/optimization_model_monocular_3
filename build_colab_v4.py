@@ -43,8 +43,14 @@ for name, text in SNAPSHOTS.items():
     path = REPO_DIR/name
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
-subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests",
-                "-p", "test_train_v4.py", "-v"], cwd=REPO_DIR, check=True)
+test_result = subprocess.run(
+    [sys.executable, "-m", "unittest", "discover", "-s", "tests",
+     "-p", "test_train_v4.py", "-v"], cwd=REPO_DIR,
+    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    encoding="utf-8", errors="replace")
+print(test_result.stdout, flush=True)
+if test_result.returncode:
+    raise RuntimeError("Trainer tests failed:\\n" + test_result.stdout)
 """)
 code("""# 3. Đăng nhập và nơi lưu checkpoint
 from google.colab import auth, drive
