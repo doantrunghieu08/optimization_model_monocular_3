@@ -152,10 +152,10 @@ def run_preprocess(config: dict, extract_frames: bool = True) -> tuple[int, str]
     j_regressor_path = paths.get("j_regressor_3d", "optimization_model_monocular/models/J_regressor_body25_plus_palm27.npy")
     cam1_pkl = inputs["cam1_pkl"]
     cam2_pkl = inputs["cam2_pkl"]
-    cam1_video = inputs["camera1_video"]
-    cam2_video = inputs["camera2_video"]
+    # Videos are optional (only the frame size is used, see calib.resolve_intrinsics).
+    videos = [v for v in (inputs.get("camera1_video"), inputs.get("camera2_video")) if v]
     if config["runtime"]["clean_output"]:
-        _clean_preprocess_output(output_dir, [cam1_video, cam2_video], clean_images=extract_frames)
+        _clean_preprocess_output(output_dir, videos, clean_images=extract_frames)
 
     log_module_start(output_dir=output_dir)
     if extract_frames and config["runtime"]["clean_output"]:
@@ -177,7 +177,7 @@ def run_preprocess(config: dict, extract_frames: bool = True) -> tuple[int, str]
 
     if extract_frames:
         extract_images(
-            video_paths=[cam1_video, cam2_video],
+            video_paths=videos,
             output_folder=output_dir,
             ffmpeg="ffmpeg",
             ffprobe="ffprobe",

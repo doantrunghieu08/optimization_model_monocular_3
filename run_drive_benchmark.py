@@ -23,8 +23,10 @@ DRIVE_ID = re.compile(r"[A-Za-z0-9_-]{25,}")
 
 
 def is_drive_segment(segment):
+    # video is optional: absent/commented -> not downloaded (only the frame size is ever used)
     return DRIVE_ID.fullmatch(segment["ground_truth_dir"]) and all(
-        DRIVE_ID.fullmatch(camera[key]) for camera in segment["cameras"] for key in ("pkl", "video")
+        DRIVE_ID.fullmatch(str(camera.get("pkl", ""))) and (not camera.get("video") or DRIVE_ID.fullmatch(str(camera["video"])))
+        for camera in segment["cameras"]
     )
 
 
@@ -84,8 +86,10 @@ def prepare_segment_inputs(segment, dataset_dir, *, local_only=False):
         stem = f"harmony4D_{name}_{camera['id']}"
         pkl = cam_dir / f"{stem}_wham" / f"wham_{stem}_ffmpeg.pkl"
         video = cam_dir / "images" / f"{stem}_ffmpeg.mp4"
-        downloads.extend(((camera["pkl"], pkl), (camera["video"], video)))
-        cameras.append({"id": camera["id"], "pkl": str(pkl), "video": str(video)})
+        downloads.append((camera["pkl"], pkl))
+        if camera.get("video"):
+            downloads.append((camera["video"], video))
+        cameras.append({"id": camera["id"], "pkl": str(pkl), "video": str(video) if camera.get("video") else None})
 
     if local_only:
         required = [archive, *(path for _, path in downloads)]
