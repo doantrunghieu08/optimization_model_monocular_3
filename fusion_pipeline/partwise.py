@@ -20,9 +20,13 @@ by forward kinematics with the Master bone lengths (so MBLE equals the Master/ba
 
 Pelvis and neck stay at the Master positions. Only camera1 (Master) is modified.
 """
+import json
+from pathlib import Path
 import numpy as np
 
+from fusion_pipeline.adaptive_naive import bone_confidence, bone_jitter
 from fusion_pipeline.aotr import _ordered_bones
+from fusion_pipeline.detector import compute_bone_distortion_score
 
 LOWER_PART = frozenset({
     "left_hip", "right_hip", "left_knee", "right_knee", "left_ankle", "right_ankle",
@@ -290,7 +294,97 @@ def _apply_static_global_orientation(fused_lists, M, S, z_depth, vis_master=None
     return out, med_deg
 
 
-def fuse_partwise(master_frames, slave_frames, config, vis_master=None, vis_slave=None):
+FEATURE_NAMES = (
+    "d_depth", "d_occ_joint", "d_occ_torso", "d_conf2d",
+    "d_bone_jit", "d_cam_accel", "d_bone_distort", "d_facing",
+)
+
+
+def _facing_abs_cos(pose):
+    """|cos(angle)| between torso normal and camera optical ray -> 1 = frontal, 0 = side profile."""
+    x = pose["left_shoulder"] - pose["right_shoulder"]
+    y = pose["neck"] - pose["pelvis"]
+    normal = np.cross(x, y)
+    nn = float(np.linalg.norm(normal))
+    ray = 0.5 * (pose["left_hip"] + pose["right_hip"])
+    rn = float(np.linalg.norm(ray))
+    if nn <= 1e-9 or rn <= 1e-9:
+        return 0.5
+    return float(abs((normal / nn) @ (ray / rn)))
+
+
+def _seq_median_accel_mm(poses):
+    if len(poses) < 3:
+        return 0.0
+    keys = sorted(poses[0])
+    arr = np.array([[p[k] for k in keys] for p in poses], dtype=float)
+    acc = np.linalg.norm(arr[2:] - 2.0 * arr[1:-1] + arr[:-2], axis=-1)
+    return float(np.median(acc[5:] if len(acc) > 8 else acc) * 1000.0)
+
+
+def extract_pair_features(M, S, vis_master=None, vis_slave=None, conf_master=None, conf_slave=None):
+    """Return (features[T, B, 8], bone_children) with antisymmetric features phi(M, S) = -phi(S, M)."""
+    n = len(M)
+    bones = _ordered_bones(M[0])
+    b_children = [c for c, _ in bones]
+    d_depth = np.clip(np.array([root_depth(m) - root_depth(s) for m, s in zip(M, S)], dtype=float), -3.0, 3.0)
+    jm, js = bone_jitter(M, bones, 3), bone_jitter(S, bones, 3)
+    j_med = {}
+    for c in b_children:
+        pooled = np.concatenate([jm[c], js[c]])
+        pooled = pooled[np.isfinite(pooled)]
+        j_med[c] = float(np.median(pooled)) if pooled.size and float(np.median(pooled)) > 1e-12 else 1.0
+    acc_m, acc_s = _seq_median_accel_mm(M), _seq_median_accel_mm(S)
+    d_cam_acc = float(np.clip(np.log((acc_s + 1.0) / (acc_m + 1.0)), -3.0, 3.0))
+
+    feats = np.zeros((n, len(bones), len(FEATURE_NAMES)), dtype=np.float32)
+    for t in range(n):
+        vm = (vis_master[t] if vis_master else None) or {}
+        vs = (vis_slave[t] if vis_slave else None) or {}
+        cm_t = conf_master[t] if conf_master else None
+        cs_t = conf_slave[t] if conf_slave else None
+        occ_m = float(sum(not vm.get(j, True) for j in M[t])) / max(len(M[t]), 1)
+        occ_s = float(sum(not vs.get(j, True) for j in S[t])) / max(len(S[t]), 1)
+        d_occ_torso = occ_s - occ_m
+        d_distort = float(np.clip(compute_bone_distortion_score(S[t]) - compute_bone_distortion_score(M[t]), -1.0, 1.0))
+        d_face = _facing_abs_cos(M[t]) - _facing_abs_cos(S[t])
+        for bi, (child, parent) in enumerate(bones):
+            d_occ_j = float(bool(vm.get(child, True))) - float(bool(vs.get(child, True)))
+            c_m = bone_confidence(cm_t, child, parent, 0.5)
+            c_s = bone_confidence(cs_t, child, parent, 0.5)
+            d_c2d = float(np.log((c_m + 0.05) / (c_s + 0.05)))
+            nj_m = float(jm[child][t] / j_med[child]) if np.isfinite(jm[child][t]) else 0.0
+            nj_s = float(js[child][t] / j_med[child]) if np.isfinite(js[child][t]) else 0.0
+            d_jit = float(np.clip(np.log((nj_s + 0.1) / (nj_m + 0.1)), -3.0, 3.0))
+            feats[t, bi] = (d_depth[t], d_occ_j, d_occ_torso, d_c2d, d_jit, d_cam_acc, d_distort, d_face)
+    return feats, b_children
+
+
+def eval_weight_model(feats, wm_cfg):
+    """Evaluate learned antisymmetric weight model -> w_Master[T, B] in (0, 1)."""
+    if isinstance(wm_cfg.get("path"), str) and wm_cfg["path"].strip():
+        p = Path(wm_cfg["path"])
+        if not p.is_absolute():
+            p = Path(__file__).resolve().parents[1] / p
+        wm_cfg = {**json.loads(p.read_text(encoding="utf-8")), **wm_cfg}
+    mean = np.asarray(wm_cfg.get("mean", [0.0] * feats.shape[-1]), dtype=float)
+    std = np.maximum(np.asarray(wm_cfg.get("std", [1.0] * feats.shape[-1]), dtype=float), 1e-6)
+    # Center-only or symmetric scale: to preserve phi(M,S) = -phi(S,M), mean must be 0!
+    x = (feats - mean) / std
+    kind = str(wm_cfg.get("type", "linear")).lower()
+    if kind == "sym_mlp":
+        W1 = np.asarray(wm_cfg["W1"], dtype=float)
+        b1 = np.asarray(wm_cfg["b1"], dtype=float)
+        W2 = np.asarray(wm_cfg["W2"], dtype=float).reshape(-1)
+        logits = 0.5 * (np.tanh(x @ W1 + b1) @ W2 - np.tanh((-x) @ W1 + b1) @ W2)
+    else:
+        w_vec = np.asarray(wm_cfg["weights"], dtype=float).reshape(-1)
+        logits = x @ w_vec
+    return _sigmoid(logits)
+
+
+def fuse_partwise(master_frames, slave_frames, config, vis_master=None, vis_slave=None,
+                  conf_master=None, conf_slave=None):
     """Return (camera1 frames as lists, diagnostics). Inputs: per-frame {joint: xyz}."""
     if len(master_frames) != len(slave_frames) or not master_frames:
         raise ValueError("partwise fusion needs equally long, non-empty Master/Slave sequences")
@@ -313,7 +407,49 @@ def fuse_partwise(master_frames, slave_frames, config, vis_master=None, vis_slav
     occ_slave_bones = 0
     disagreements = []
 
-    if mp_enabled:
+    wm_cfg = config.get("weight_model")
+    use_wm = isinstance(wm_cfg, dict) and bool(wm_cfg.get("enabled", True))
+    if use_wm:
+        feats, b_children = extract_pair_features(M, S, vis_master, vis_slave, conf_master, conf_slave)
+        w_mat = eval_weight_model(feats, wm_cfg)
+        use_vis_rot = bool(mp_cfg.get("visibility_weighted_rotation", True)) if mp_enabled else False
+        anti_swap = bool(mp_cfg.get("anti_swap_gate", True)) if mp_enabled else False
+        max_ang = float(mp_cfg.get("max_median_bone_angle_deg", 50.0))
+        dirs_init = slave_directions(
+            M, S, hw,
+            vis_master=vis_master if use_vis_rot else None,
+            vis_slave=vis_slave if use_vis_rot else None,
+        )
+        frame_valid = np.ones(len(M), dtype=float)
+        frame_gate_keep = [False] * len(M)
+        for t in range(len(M)):
+            vm = (vis_master[t] if vis_master is not None else None) or {}
+            vs = (vis_slave[t] if vis_slave is not None else None) or {}
+            ang = _median_bone_disagreement_deg(M[t], dirs_init[t], vm, vs)
+            disagreements.append(ang)
+            if anti_swap and ang > max_ang:
+                frame_valid[t] = 0.0
+                jump_m = _frame_bone_jump_deg(M[t - 1] if t > 0 else None, M[t])
+                jump_s = _frame_bone_jump_deg(S[t - 1] if t > 0 else None, S[t])
+                occ_m_ratio = float(sum(not vm.get(j, True) for j in M[t])) / max(len(M[t]), 1)
+                if not (occ_m_ratio >= 0.35 and jump_m > max(15.0, 2.0 * jump_s)):
+                    frame_gate_keep[t] = True
+                    swap_gated += 1
+        dirs = slave_directions(
+            M, S, hw,
+            vis_master=vis_master if use_vis_rot else None,
+            vis_slave=vis_slave if use_vis_rot else None,
+            frame_weights=frame_valid if anti_swap else None,
+        ) if anti_swap and np.any(frame_valid == 0.0) else dirs_init
+        fused = []
+        for t, (m, d) in enumerate(zip(M, dirs)):
+            if frame_gate_keep[t]:
+                fused.append({k: v.copy() for k, v in m.items()})
+            else:
+                bw = {child: float(w_mat[t, bi]) for bi, child in enumerate(b_children)}
+                fused.append(blend_frame(m, d, float(np.mean(w_mat[t])), bone_weights=bw))
+        w = np.mean(w_mat, axis=1)
+    elif mp_enabled:
         # ponytail: guard against occlusion-induced bbox-collapse depth explosion (z -> 2x normal)
         # In monocular HMR, partial occlusion shrinks bbox -> z spikes to 12-20m -> raw depth_logit
         # would falsely assign w=0.0 to a clean Master and 100% to the collapsed Slave.

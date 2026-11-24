@@ -1414,7 +1414,8 @@ def run_fusion(config: dict) -> None:
             from fusion_pipeline.partwise import fuse_partwise
             fused_sequence, partwise_diag = fuse_partwise(
                 master_sequence, slave_sequence, method_cfg,
-                vis_master=[v or {} for v in vis_master], vis_slave=[v or {} for v in vis_slave])
+                vis_master=[v or {} for v in vis_master], vis_slave=[v or {} for v in vis_slave],
+                conf_master=conf_master, conf_slave=conf_slave)
         elif fusion_method == "naive":
             from fusion_pipeline.naive import fuse_naive
             if method_cfg.get("use_aotr_stability", False):

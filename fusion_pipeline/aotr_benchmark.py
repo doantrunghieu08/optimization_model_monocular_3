@@ -95,7 +95,13 @@ def evaluation_protocol(config):
     revision = AOTR_REVISION
     if method == "partwise":
         revision = PARTWISE_REVISION
-        settings["partwise"] = config["fusion"].get("partwise", {})
+        pw_cfg = dict(config["fusion"].get("partwise", {}))
+        wm = pw_cfg.get("weight_model")
+        if isinstance(wm, dict) and isinstance(wm.get("path"), str) and wm["path"].strip():
+            wm_path = Path(wm["path"]) if Path(wm["path"]).is_absolute() else ROOT / wm["path"]
+            wm_sha = hashlib.sha256(wm_path.read_bytes()).hexdigest()[:16] if wm_path.is_file() else "missing"
+            pw_cfg["weight_model"] = {**wm, "_file_sha256": wm_sha}
+        settings["partwise"] = pw_cfg
     elif method == "naive":
         revision = NAIVE_REVISION
         naive_cfg = config["fusion"].get("naive", {})
