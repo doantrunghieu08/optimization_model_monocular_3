@@ -154,6 +154,29 @@ class SynchronizationTests(unittest.TestCase):
             (root / "calib.txt").write_text("1000 1001 320 240", encoding="utf-8")
             self.assertEqual(_estimate_intrinsics(root / "missing.mp4"), [[1000.0, 0.0, 320.0], [0.0, 1001.0, 240.0], [0.0, 0.0, 1.0]])
 
+    def test_intrinsics_without_video(self):
+        from preprocess_pipeline.calib import resolve_intrinsics
+        with tempfile.TemporaryDirectory() as temp:
+            cam = Path(temp) / "exo" / "cam05"
+            pkl = cam / "x_wham" / "wham_x_cam05.pkl"
+            pkl.parent.mkdir(parents=True)
+            f = (3840.0 ** 2 + 2160.0 ** 2) ** 0.5
+            K, src = resolve_intrinsics(None, pkl)  # no video, no calib -> Harmony4D default frame size
+            self.assertEqual(K, [[f, 0.0, 1920.0], [0.0, f, 1080.0], [0.0, 0.0, 1.0]])
+            self.assertIn("default", src)
+            K, _ = resolve_intrinsics(None, pkl, image_size=[640, 480])  # explicit size from the config
+            self.assertEqual(K, [[800.0, 0.0, 320.0], [0.0, 800.0, 240.0], [0.0, 0.0, 1.0]])
+            (cam / "calib.txt").write_text("1000 1001 320 240", encoding="utf-8")  # calib.txt in camera folder
+            K, src = resolve_intrinsics(None, pkl)
+            self.assertEqual((K[0][0], K[1][1], src), (1000.0, 1001.0, "calib.txt"))
+
+    def test_video_is_optional_input(self):
+        from config_loader import resolve_inputs
+        inputs = {"cam1_pkl": "a.pkl", "cam2_pkl": "b.pkl", "ground_truth_dir": "gt"}
+        self.assertIs(resolve_inputs({"inputs": inputs}), inputs)
+        with self.assertRaises(ValueError):
+            resolve_inputs({"inputs": {"cam1_pkl": "a.pkl", "ground_truth_dir": "gt"}})
+
 
 class FusionOptimizationTests(unittest.TestCase):
     JOINTS = ("pelvis", "neck", "left_shoulder", "right_shoulder", "left_hip", "right_hip")
