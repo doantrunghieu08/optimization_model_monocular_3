@@ -87,7 +87,16 @@ MANIFEST.write_text(text, encoding="utf-8")
 code("""# 4a. Prepare data and review alignment before training
 prepare_command = [sys.executable, "-u", "train_v4.py", "--manifest", str(MANIFEST),
                    "--cache", str(CACHE), "--output", str(OUTPUT), "--prepare-only"]
-subprocess.run(prepare_command, cwd=REPO_DIR, check=True)
+prepare_log = []
+with subprocess.Popen(prepare_command, cwd=REPO_DIR, stdout=subprocess.PIPE,
+                      stderr=subprocess.STDOUT, text=True, encoding="utf-8",
+                      errors="replace", bufsize=1) as process:
+    for line in process.stdout:
+        print(line, end="", flush=True)
+        prepare_log.append(line)
+    returncode = process.wait()
+if returncode:
+    raise RuntimeError("Data preparation failed:\\n" + "".join(prepare_log))
 import pandas as pd
 alignment = pd.DataFrame(json.loads((OUTPUT/"alignment.json").read_text()))
 display(alignment)
