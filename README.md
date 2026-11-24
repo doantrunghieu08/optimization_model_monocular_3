@@ -273,3 +273,32 @@ build_identity_mask.py             identity mask builder
 brute_force_runner.py              all-pairs benchmark (--workers N: pairs in parallel)
 tests/                             unit and regression tests
 ```
+
+## Train partwise from the v4 Google Sheet
+
+Open `colab_train_v4.ipynb` in Google Colab and run the cells in order. It includes
+the trainer and partwise module snapshots, reads tab `v4 22/11/26`, and saves
+every epoch under `MyDrive/partwise_v4/run_001`. Change `OUTPUT` for a new run;
+leave `RESUME = True` to resume the last checkpoint in that folder.
+
+The sheet's sequence-level train/val split is checked before training. Only train
+updates the linear weight model and its feature scale. The best epoch minimizes
+validation MPJPE averaged within each action, then across validation actions.
+`best_weights.json` contains the selected parameters; `best_partwise.yml` and
+`pipeline_best.yml` load them into the existing pipeline.
+
+Review `alignment.json` before training: track stitching and timeline selection
+use GT, and sparse camera samples are interpolated onto shared GT ticks.
+Cameras that fail alignment are recorded with `status: rejected` and excluded;
+the alignment thresholds stay unchanged. Preparation stops if any sequence has
+fewer than two accepted cameras or no usable synchronized segments. The report
+is saved after each camera so rejected inputs can be inspected even on failure.
+To continue without unusable sequences, pass `--skip-unaligned-actions` (the
+notebook enables this via `SKIP_UNALIGNED_ACTIONS`). Exclusions appear as
+`status: skipped_action` in `alignment.json` and in `protocol.json`; both train
+and val must still contain usable pairs. Validation then covers the retained
+sequences only.
+The score uses 12 body joints, hip-centered coordinates, and one GT rotation
+per camera-pair segment. It is a supervised calibration/selection score, not an
+independent test or an extrinsics-based camera MPJPE. Visibility/2D confidence
+are absent from this sheet. This trains the partwise weights, not SMPL/WHAM.
