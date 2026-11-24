@@ -217,7 +217,7 @@ def synchronize(ids_m, jm, ids_s, js):
     return common[valid], arrays[0][valid], arrays[1][valid]
 
 
-def prepare(rows, drive, cache, config, alignment_path=None):
+def prepare(rows, drive, cache, config, alignment_path=None, skip_unaligned_actions=False):
     validate_rows(rows)
     mapping = load_keypoints3d_map(str(ROOT / "configs/keypoints3D_map.yml"))
     names = [k["name"] for k in mapping["keypoints"]]
@@ -243,7 +243,11 @@ def prepare(rows, drive, cache, config, alignment_path=None):
             try:
                 gi, joints, report = associate(tracks, gt, names)
             except AlignmentError as exc:
-                report = dict(status="rejected", reason=str(exc), coverage=None, pa_mm=None)
+                frame_ids = np.unique(np.concatenate([track[0] for track in tracks.values()]))
+                report = dict(status="rejected", reason=str(exc), coverage=None, pa_mm=None,
+                              camera_frames=len(frame_ids), gt_frames=len(gt),
+                              frame_start=int(frame_ids.min()) if len(frame_ids) else None,
+                              frame_end=int(frame_ids.max()) if len(frame_ids) else None)
             else:
                 report = dict(status="accepted", **report)
                 cameras.append((row["cam"], gi, joints))
@@ -251,9 +255,6 @@ def prepare(rows, drive, cache, config, alignment_path=None):
             print(json.dumps(reports[-1]), flush=True)
             if alignment_path is not None:
                 atomic_json(Path(alignment_path), reports)
-        if len(cameras) < 2:
-            raise ValueError(f"{action}: need at least two aligned cameras; got {len(cameras)}. "
-                             "Inspect rejected cameras in alignment.json and correct their data/timeline.")
         for (cam_m, ids_m, jm), (cam_s, ids_s, js) in itertools.combinations(cameras, 2):
             common, synced_m, synced_s = synchronize(ids_m, jm, ids_s, js)
             # Temporal features/stability must never bridge missing GT ticks.
@@ -276,7 +277,16 @@ def prepare(rows, drive, cache, config, alignment_path=None):
                                       names=names, M=M, S=S, features=feats, children=children,
                                       directions=directions, target=target.astype(np.float32)))
         if not any(p["action"] == action for p in pairs):
-            raise ValueError(f"No synchronized segments for {action}; inspect camera alignment")
+            reason = (f"{action}: need at least two aligned cameras; got {len(cameras)}."
+                      if len(cameras) < 2 else f"No synchronized segments for {action}.")
+            if not skip_unaligned_actions:
+                raise ValueError(reason + " Inspect rejected cameras in alignment.json and correct their data/timeline.")
+            reports.append(dict(action=action, split=group[0]["split"], cam=None,
+                                status="skipped_action", reason=reason, coverage=None, pa_mm=None))
+            print(json.dumps(reports[-1]), flush=True)
+            if alignment_path is not None:
+                atomic_json(Path(alignment_path), reports)
+            continue
         print(f"Prepared {action}: {len(cameras)} cameras", flush=True)
     if {p["split"] for p in pairs} != {"train", "val"}:
         raise ValueError("No usable pairs for one of the splits; inspect alignment/coverage")
@@ -420,6 +430,8 @@ def main():
     parser.add_argument("--lr", type=float, default=0.01)
     parser.add_argument("--resume")
     parser.add_argument("--prepare-only", action="store_true")
+    parser.add_argument("--skip-unaligned-actions", action="store_true",
+                        help="Exclude sequences without usable camera pairs and record them in alignment.json")
     args = parser.parse_args()
     if args.epochs < 1 or args.lr <= 0:
         parser.error("epochs and lr must be positive")
@@ -439,12 +451,14 @@ def main():
     identity = hashlib.sha256(Path(args.manifest).read_bytes() +
         (ROOT / "models/J_regressor_body25_extended.npy").read_bytes() +
         Path(__file__).read_bytes() + (ROOT / "fusion_pipeline/partwise.py").read_bytes() +
-        (ROOT / "configs/keypoints3D_map.yml").read_bytes() + json.dumps(config, sort_keys=True).encode()).hexdigest()
+        (ROOT / "configs/keypoints3D_map.yml").read_bytes() + json.dumps(config, sort_keys=True).encode() +
+        str(args.skip_unaligned_actions).encode()).hexdigest()
     prepared = cache / f"prepared_{identity}.joblib"
     if prepared.exists():
         pairs, reports = joblib.load(prepared)
     else:
-        pairs, reports = prepare(rows, drive, cache, config, out / "alignment.json")
+        pairs, reports = prepare(rows, drive, cache, config, out / "alignment.json",
+                                 skip_unaligned_actions=args.skip_unaligned_actions)
         cache.mkdir(parents=True, exist_ok=True)
         temp = prepared.with_suffix(".tmp")
         joblib.dump((pairs, reports), temp)
@@ -459,6 +473,8 @@ def main():
         "feature_names": list(FEATURE_NAMES), "config": config,
         "train_actions": sorted({p["action"] for p in pairs if p["split"] == "train"}),
         "val_actions": sorted({p["action"] for p in pairs if p["split"] == "val"}),
+        "skip_unaligned_actions": args.skip_unaligned_actions,
+        "skipped_actions": [r["action"] for r in reports if r.get("status") == "skipped_action"],
         "synchronization": "linear interpolation to shared GT ticks, excluding missing-track gaps",
         "directed_segments": len(pairs),
     })

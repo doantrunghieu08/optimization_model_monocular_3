@@ -293,6 +293,11 @@ Cameras that fail alignment are recorded with `status: rejected` and excluded;
 the alignment thresholds stay unchanged. Preparation stops if any sequence has
 fewer than two accepted cameras or no usable synchronized segments. The report
 is saved after each camera so rejected inputs can be inspected even on failure.
+To continue without unusable sequences, pass `--skip-unaligned-actions` (the
+notebook enables this via `SKIP_UNALIGNED_ACTIONS`). Exclusions appear as
+`status: skipped_action` in `alignment.json` and in `protocol.json`; both train
+and val must still contain usable pairs. Validation then covers the retained
+sequences only.
 The score uses 12 body joints, hip-centered coordinates, and one GT rotation
 per camera-pair segment. It is a supervised calibration/selection score, not an
 independent test or an extrinsics-based camera MPJPE. Visibility/2D confidence

@@ -66,6 +66,7 @@ CACHE = Path("/content/v4_cache")
 EPOCHS = 50
 LEARNING_RATE = 0.01
 RESUME = True
+SKIP_UNALIGNED_ACTIONS = True  # Report and exclude sequences without valid camera pairs.
 OUTPUT.mkdir(parents=True, exist_ok=True)
 
 sheet = client.open_by_key(SPREADSHEET_ID).worksheet(TAB)
@@ -87,6 +88,8 @@ MANIFEST.write_text(text, encoding="utf-8")
 code("""# 4a. Prepare data and review alignment before training
 prepare_command = [sys.executable, "-u", "train_v4.py", "--manifest", str(MANIFEST),
                    "--cache", str(CACHE), "--output", str(OUTPUT), "--prepare-only"]
+if SKIP_UNALIGNED_ACTIONS:
+    prepare_command.append("--skip-unaligned-actions")
 prepare_log = []
 with subprocess.Popen(prepare_command, cwd=REPO_DIR, stdout=subprocess.PIPE,
                       stderr=subprocess.STDOUT, text=True, encoding="utf-8",
@@ -101,13 +104,15 @@ import pandas as pd
 alignment = pd.DataFrame(json.loads((OUTPUT/"alignment.json").read_text()))
 display(alignment)
 print("GT-assisted matching: review identity, timeline and coverage before training.")
-display(alignment[(alignment["status"] == "rejected") |
+display(alignment[alignment["status"].isin(["rejected", "skipped_action"]) |
                   (alignment["coverage"] < 0.8) | (alignment["pa_mm"] > 80)])
 """)
 code("""# 4. Train / tiếp tục từ epoch cuối
 command = [sys.executable, "-u", "train_v4.py", "--manifest", str(MANIFEST),
            "--cache", str(CACHE), "--output", str(OUTPUT),
            "--epochs", str(EPOCHS), "--lr", str(LEARNING_RATE)]
+if SKIP_UNALIGNED_ACTIONS:
+    command.append("--skip-unaligned-actions")
 if RESUME and (OUTPUT/"last.json").exists():
     last = json.loads((OUTPUT/"last.json").read_text())
     command += ["--resume", str(OUTPUT/last["checkpoint"])]
@@ -131,7 +136,7 @@ plt.xlabel("Epoch"); plt.ylabel("MPJPE (mm)"); plt.legend(); plt.show()
 import pandas as pd
 alignment = pd.DataFrame(json.loads((OUTPUT/"alignment.json").read_text()))
 display(alignment)
-display(alignment[(alignment["status"] == "rejected") |
+display(alignment[alignment["status"].isin(["rejected", "skipped_action"]) |
                   (alignment["coverage"] < 0.5) | (alignment["pa_mm"] > 80)])
 """)
 md("""## Các file kết quả

@@ -58,6 +58,20 @@ class TrainingTests(unittest.TestCase):
                     prepare([r for r in rows if not (r["split"] == "train" and r["cam"] == "cam2")],
                             None, root, CFG, report_path)
                 self.assertEqual(json.loads(report_path.read_text())[0]["status"], "rejected")
+                bad_rows = [dict(action="bad", split="train", cam=f"cam{i}",
+                                 GT="train_ground_truth", **{"file PKL": "train_camera_0"})
+                            for i in range(2)]
+                pairs, reports = prepare(rows + bad_rows, None, root, CFG, report_path,
+                                         skip_unaligned_actions=True)
+                self.assertEqual({p["action"] for p in pairs}, {"train", "val"})
+                skipped = [r for r in reports if r["status"] == "skipped_action"]
+                self.assertEqual([r["action"] for r in skipped], ["bad"])
+                self.assertEqual(json.loads(report_path.read_text()), reports)
+                self.assertTrue(all(r["camera_frames"] == 8 and r["gt_frames"] == 24
+                                    for r in reports if r["status"] == "rejected"))
+                with self.assertRaisesRegex(ValueError, "No usable pairs for one of the splits"):
+                    prepare(bad_rows + [r for r in rows if r["split"] == "val"], None, root, CFG,
+                            report_path, skip_unaligned_actions=True)
 
     def test_alignment_rejects_insufficient_overlap(self):
         names = pair()["names"]
