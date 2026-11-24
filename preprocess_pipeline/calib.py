@@ -42,41 +42,68 @@ def _probe_video_wh(abs_path: str) -> tuple[float, float]:
     return w, h
 
 
-def _estimate_intrinsics(video_path: Path) -> list[list[float]]:
-    calib_path = video_path.parent / "calib.txt"
-    if calib_path.exists():
-        values = [float(value) for value in calib_path.read_text(encoding="utf-8").split()]
-        if len(values) != 4:
-            raise ValueError(f"Expected fx fy cx cy in {calib_path}, got {len(values)} values")
-        fx, fy, cx, cy = values
-        if min(fx, fy) <= 0:
-            raise ValueError(f"Invalid focal length in {calib_path}")
-        return [[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]]
+DEFAULT_IMAGE_SIZE = (3840.0, 2160.0)  # Harmony4D / EgoHumans exo GoPro videos
 
-    w, h = 0.0, 0.0
-    if video_path.is_file() and video_path.suffix.lower() in [".mp4", ".avi", ".mov"]:
-        w, h = _probe_video_wh(os.path.abspath(str(video_path)))
 
+def _read_calib_txt(calib_path: Path) -> list[list[float]]:
+    values = [float(value) for value in calib_path.read_text(encoding="utf-8").split()]
+    if len(values) != 4:
+        raise ValueError(f"Expected fx fy cx cy in {calib_path}, got {len(values)} values")
+    fx, fy, cx, cy = values
+    if min(fx, fy) <= 0:
+        raise ValueError(f"Invalid focal length in {calib_path}")
+    return [[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]]
+
+
+def _camera_dirs(video_path, pkl_path) -> list[Path]:
+    """Folders that may hold calib.txt / extracted frames: next to the video, else the camera
+    folder of the pkl (exo/camXX/<x>_wham/<pkl> -> exo/camXX/images, exo/camXX)."""
+    dirs = [Path(video_path).parent] if video_path is not None else []
+    if pkl_path:
+        cam_dir = Path(pkl_path).parent.parent
+        dirs += [d for d in (cam_dir / "images", cam_dir) if d not in dirs]
+    return dirs
+
+
+def resolve_intrinsics(video_path=None, pkl_path=None, image_size=None) -> tuple[list[list[float]], str]:
+    """(K, source). The video is OPTIONAL: it is only probed for its frame size (w, h).
+    Order: calib.txt (next to the video, or in the pkl's camera folder) > image_size from the
+    config > the video's frame size > an extracted frame > DEFAULT_IMAGE_SIZE.
+    Guessed K: f = sqrt(w^2 + h^2), principal point at the image centre."""
+    dirs = _camera_dirs(video_path, pkl_path)
+    for d in dirs:
+        if (d / "calib.txt").is_file():
+            return _read_calib_txt(d / "calib.txt"), "calib.txt"
+
+    w = h = 0.0
+    source = "intri_esti"
+    if image_size:
+        w, h = (float(x) for x in image_size)
+        source = "intri_esti(image_size)"
+    elif video_path is not None:
+        vp = Path(video_path)
+        if vp.is_file() and vp.suffix.lower() in (".mp4", ".avi", ".mov"):
+            w, h = _probe_video_wh(os.path.abspath(str(vp)))
     if w <= 0 or h <= 0:
-        img_dir = video_path if video_path.is_dir() else (video_path.parent / "images" if (video_path.parent / "images").exists() else video_path.parent)
-        if img_dir.exists():
-            imgs = list(img_dir.glob("*.jpg")) + list(img_dir.glob("*.png"))
-            if imgs:
-                img = cv2.imread(str(imgs[0]))
-                if img is not None:
-                    h, w = float(img.shape[0]), float(img.shape[1])
-
+        cands = [Path(video_path)] if video_path is not None and Path(video_path).is_dir() else []
+        cands += [d / "images" for d in dirs] + dirs
+        for img_dir in cands:
+            imgs = (list(img_dir.glob("*.jpg")) + list(img_dir.glob("*.png"))) if img_dir.is_dir() else []
+            img = cv2.imread(str(imgs[0])) if imgs else None
+            if img is not None:
+                h, w = float(img.shape[0]), float(img.shape[1])
+                break
     if w <= 0 or h <= 0:
-        w, h = 3840.0, 2160.0
+        w, h = DEFAULT_IMAGE_SIZE
+        source = "intri_esti(default_3840x2160)"
 
-    fx = fy = float((w * w + h * h) ** 0.5)
-    cx = float(w / 2.0)
-    cy = float(h / 2.0)
-    return [
-        [fx, 0.0, cx],
-        [0.0, fy, cy],
-        [0.0, 0.0, 1.0],
-    ]
+    f = float((w * w + h * h) ** 0.5)
+    return [[f, 0.0, float(w / 2.0)], [0.0, f, float(h / 2.0)], [0.0, 0.0, 1.0]], source
+
+
+def _estimate_intrinsics(video_path) -> list[list[float]]:
+    """Backward-compatible wrapper (video-based)."""
+    return resolve_intrinsics(video_path=video_path)[0]
 
 
 def export_camera_jsons(config: dict, offset: int) -> None:
@@ -84,25 +111,12 @@ def export_camera_jsons(config: dict, offset: int) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     inputs = resolve_inputs(config)
-    source_by_id = {
-        "cam1": str(Path(inputs.get("cam1_pkl", ""))),
-        "cam2": str(Path(inputs.get("cam2_pkl", ""))),
-    }
-    video_by_id = {
-        "cam1": Path(inputs.get("camera1_video", "input/video_1.mp4")),
-        "cam2": Path(inputs.get("camera2_video", "input/video_2.mp4")),
-    }
-    pkl_by_id = {
-        "cam1": Path(inputs.get("cam1_pkl", "")),
-        "cam2": Path(inputs.get("cam2_pkl", "")),
-    }
-
-    for cam_id in ["cam1", "cam2"]:
-        video_path = video_by_id.get(cam_id)
-        pkl_path = pkl_by_id.get(cam_id)
-        if video_path is None or (not video_path.exists() and not (video_path.parent / "images").exists() and not video_path.parent.exists()):
-            print(f"[Preprocess] Video and image directory not found for {cam_id}: {video_path}")
-            continue
+    for cam_id, idx in (("cam1", "1"), ("cam2", "2")):
+        pkl_value = inputs.get(f"cam{idx}_pkl") or ""
+        pkl_path = Path(pkl_value) if pkl_value else None
+        video_value = inputs.get(f"camera{idx}_video")
+        video_path = Path(video_value) if video_value else None
+        has_video = video_path is not None and video_path.is_file()
 
         wham_payload = None
         if pkl_path is not None and pkl_path.exists():
@@ -111,13 +125,16 @@ def export_camera_jsons(config: dict, offset: int) -> None:
             except Exception as exc:
                 print(f"[Preprocess] PKL skip for {cam_id}: {exc}")
 
-        calib_txt = video_path.parent / "calib.txt" if video_path else Path("calib.txt")
+        K, source = resolve_intrinsics(video_path, pkl_path, inputs.get(f"camera{idx}_image_size"))
+        if not has_video:
+            print(f"[Preprocess] {cam_id}: no video -> K from {source} (f={K[0][0]:.1f}, c=({K[0][2]:.0f},{K[1][2]:.0f}))")
         payload = {
             "camera_id": cam_id,
-            "source_pkl": source_by_id.get(cam_id, ""),
+            "source_pkl": str(pkl_path) if pkl_path else "",
             "offset": int(offset),
-            "intrinsics_source": "calib.txt" if calib_txt.exists() else "intri_esti",
-            "intrinsics_estimation": _estimate_intrinsics(video_path if video_path else Path("dummy")),
+            "intrinsics_source": "calib.txt" if source == "calib.txt" else "intri_esti",
+            "intrinsics_detail": source,
+            "intrinsics_estimation": K,
         }
 
         if wham_payload is not None and "betas" in wham_payload:
