@@ -191,6 +191,10 @@ def cmd_run(a):
     # two parameter sets in one table (this happened once), so it is refused unless --fresh / new --out.
     import hashlib
     config_sha = hashlib.sha1(json.dumps(base_cfg, sort_keys=True, default=str).encode()).hexdigest()[:12]
+    missing = [p for p in (a.mask or []) if not Path(p).is_file()]
+    if missing:  # fail before hours of fusion: --mask takes several values and swallows stray words
+        raise SystemExit(f"--mask file(s) not found: {missing}. Note --mask takes several values, so a "
+                         "word after it (e.g. 'summarize') is read as a mask path.")
     mask = {"path": a.mask, "margin_mm": a.mask_margin} if a.mask else None
     commit = _git_commit()
     from evaluation_pipeline.extrinsics import ext_enabled
