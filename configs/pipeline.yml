@@ -120,8 +120,8 @@ fusion:
     min_bone_direction_cos: -0.8
     observability_ratio: 0.1
     observed_prior_weight: 0.0001
-    unobserved_prior_weight: 0.003
-    huber_delta_normalized: 0.008
+    unobserved_prior_weight: 0.0003 # cũ 0.003 - tinh chỉnh trên 003 aria01, kiểm tra trên 003 aria02
+    huber_delta_normalized: 0.016 #cũ 0.008
     minimum_cost_reduction: 1.0e-07
     trust_max_iter: 12
     trust_initial_radius: 0.25
