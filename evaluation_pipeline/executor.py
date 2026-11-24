@@ -701,8 +701,8 @@ def run_evaluation(config: dict) -> None:
     # #endregion
 
     gt_camera_keys = {
-        "camera1": _camera_key_from_video_path(inputs.get("camera1_video")),
-        "camera2": _camera_key_from_video_path(inputs.get("camera2_video")),
+        "camera1": _camera_key_from_video_path(inputs.get("camera1_video") or inputs.get("cam1_pkl")),
+        "camera2": _camera_key_from_video_path(inputs.get("camera2_video") or inputs.get("cam2_pkl")),
     }
 
     module_frame_maps = {}
