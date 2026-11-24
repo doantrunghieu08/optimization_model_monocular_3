@@ -31,7 +31,7 @@ if not REPO_DIR.exists():
     subprocess.run(["git", "clone", REPO_URL, str(REPO_DIR)], check=True)
 subprocess.run(["git", "checkout", "--detach", COMMIT], cwd=REPO_DIR, check=True)
 subprocess.run([sys.executable, "-m", "pip", "install", "-q",
-                "numpy<2.3", "scipy", "torch", "joblib", "pyyaml",
+                "numpy<2.3", "scipy", "torch", "joblib", "pyyaml", "trimesh",
                 "gspread", "google-api-python-client", "matplotlib"], check=True)
 os.chdir(REPO_DIR)
 if str(REPO_DIR) not in sys.path:
