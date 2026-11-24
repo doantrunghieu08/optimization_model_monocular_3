@@ -1,0 +1,17 @@
+{
+ "commit": "8727a047",
+ "ext": true,
+ "config": "configs/pipeline.yml",
+ "brute": "configs/001_mma5.yml",
+ "mask": [
+  "configs/identity_mask_001_mma5.json"
+ ],
+ "mask_margin_mm": 10.0,
+ "splits": null,
+ "methods": [
+  "aotr",
+  "aotr@unobserved_prior_weight=0.0003,huber_delta_normalized=0.016"
+ ],
+ "use_pair_modes": false,
+ "units_total": 760
+}

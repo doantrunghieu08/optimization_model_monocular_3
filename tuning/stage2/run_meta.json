@@ -1,0 +1,23 @@
+{
+ "commit": "8727a047",
+ "ext": true,
+ "config": "configs/pipeline.yml",
+ "brute": "/private/tmp/claude-501/-Users-thanhnt/a5e9a1ed-ac1f-4991-8841-cf2e9584d25f/scratchpad/003_mma5.video.yml",
+ "mask": [
+  "configs/identity_mask_003_mma5.json"
+ ],
+ "mask_margin_mm": 10.0,
+ "splits": [
+  "dev=aria01:cam01,cam03,cam05,cam07,cam12,cam14,cam17,cam20"
+ ],
+ "methods": [
+  "aotr",
+  "aotr@unobserved_prior_weight=0.0003",
+  "aotr@unobserved_prior_weight=0.0001",
+  "aotr@huber_delta_normalized=0.032",
+  "aotr@unobserved_prior_weight=0.001,huber_delta_normalized=0.016",
+  "aotr@unobserved_prior_weight=0.0003,huber_delta_normalized=0.016"
+ ],
+ "use_pair_modes": false,
+ "units_total": 56
+}

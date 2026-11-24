@@ -1,0 +1,25 @@
+tuning/stage2 [masked] 56 cặp
+
+PA     mono   47.65
+  aotr                                            43.54  gain +4.11  HR@0   0.0%  WG10 +1.09
+  aotr@huber_delta_normalized=0.032               43.28  gain +4.37  HR@0   0.0%  WG10 +1.10
+  aotr@unobserved_prior_weight=0.0001             41.67  gain +5.98  HR@0   0.0%  WG10 +1.17
+  aotr@unobserved_prior_weight=0.0003             41.81  gain +5.84  HR@0   0.0%  WG10 +1.25
+  aotr@unobserved_prior_weight=0.0003,huber_delta_normalized=0.016   41.76  gain +5.89  HR@0   0.0%  WG10 +1.24
+  aotr@unobserved_prior_weight=0.001,huber_delta_normalized=0.016   42.27  gain +5.38  HR@0   0.0%  WG10 +1.26
+
+MPJPE  mono   81.94
+  aotr                                            79.23  gain +2.71  HR@0   5.4%  WG10 -0.37
+  aotr@huber_delta_normalized=0.032               79.08  gain +2.86  HR@0   5.4%  WG10 -0.31
+  aotr@unobserved_prior_weight=0.0001             78.36  gain +3.58  HR@0   7.1%  WG10 -0.83
+  aotr@unobserved_prior_weight=0.0003             78.38  gain +3.56  HR@0   7.1%  WG10 -0.75
+  aotr@unobserved_prior_weight=0.0003,huber_delta_normalized=0.016   78.36  gain +3.58  HR@0   5.4%  WG10 -0.66
+  aotr@unobserved_prior_weight=0.001,huber_delta_normalized=0.016   78.56  gain +3.39  HR@0   5.4%  WG10 -0.45
+
+ACCEL  mono  115.39
+  aotr                                            51.57  gain +63.82  HR@0   0.0%  WG10 +42.03
+  aotr@huber_delta_normalized=0.032               51.58  gain +63.81  HR@0   0.0%  WG10 +42.03
+  aotr@unobserved_prior_weight=0.0001             51.61  gain +63.78  HR@0   0.0%  WG10 +41.86
+  aotr@unobserved_prior_weight=0.0003             51.60  gain +63.79  HR@0   0.0%  WG10 +41.89
+  aotr@unobserved_prior_weight=0.0003,huber_delta_normalized=0.016   51.60  gain +63.79  HR@0   0.0%  WG10 +41.88
+  aotr@unobserved_prior_weight=0.001,huber_delta_normalized=0.016   51.58  gain +63.82  HR@0   0.0%  WG10 +41.95

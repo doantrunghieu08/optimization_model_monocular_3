@@ -1,0 +1,20 @@
+{
+ "commit": "8727a047",
+ "ext": true,
+ "config": "configs/pipeline.yml",
+ "brute": "configs/025_grappling2.yml",
+ "mask": [
+  "configs/identity_mask_025_grappling2.json"
+ ],
+ "mask_margin_mm": 10.0,
+ "splits": [
+  "a1=aria01:cam01,cam02,cam04,cam05,cam06,cam08,cam09,cam11,cam12,cam13,cam14,cam15,cam16,cam17,cam18,cam20",
+  "a2=aria02:cam02,cam03,cam05,cam08,cam09,cam10,cam14,cam15,cam16,cam17,cam19"
+ ],
+ "methods": [
+  "aotr",
+  "aotr@unobserved_prior_weight=0.0003,huber_delta_normalized=0.016"
+ ],
+ "use_pair_modes": false,
+ "units_total": 700
+}

@@ -1,0 +1,34 @@
+{
+ "commit": "8727a047",
+ "ext": true,
+ "config": "configs/pipeline.yml",
+ "brute": "configs/003_mma5.yml",
+ "mask": [
+  "configs/identity_mask_003_mma5.json"
+ ],
+ "mask_margin_mm": 10.0,
+ "splits": [
+  "dev=aria01:cam01,cam03,cam05,cam07,cam12,cam14,cam17,cam20"
+ ],
+ "methods": [
+  "aotr",
+  "aotr@huber_delta_normalized=0.004",
+  "aotr@huber_delta_normalized=0.016",
+  "aotr@observed_prior_weight=0.00001",
+  "aotr@observed_prior_weight=0.001",
+  "aotr@unobserved_prior_weight=0.001",
+  "aotr@unobserved_prior_weight=0.01",
+  "aotr@observability_ratio=0.05",
+  "aotr@observability_ratio=0.2",
+  "aotr@min_2d_confidence=0.2",
+  "aotr@min_2d_confidence=0.5",
+  "aotr@max_cross_view_bone_angle_deg=35.0",
+  "aotr@max_cross_view_bone_angle_deg=70.0",
+  "aotr@min_bone_direction_cos=-0.5",
+  "aotr@min_bone_direction_cos=0.0",
+  "aotr@trust_initial_radius=0.5",
+  "aotr@trust_max_iter=24"
+ ],
+ "use_pair_modes": false,
+ "units_total": 56
+}
