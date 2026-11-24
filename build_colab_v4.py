@@ -101,7 +101,8 @@ import pandas as pd
 alignment = pd.DataFrame(json.loads((OUTPUT/"alignment.json").read_text()))
 display(alignment)
 print("GT-assisted matching: review identity, timeline and coverage before training.")
-display(alignment[(alignment["coverage"] < 0.8) | (alignment["pa_mm"] > 80)])
+display(alignment[(alignment["status"] == "rejected") |
+                  (alignment["coverage"] < 0.8) | (alignment["pa_mm"] > 80)])
 """)
 code("""# 4. Train / tiếp tục từ epoch cuối
 command = [sys.executable, "-u", "train_v4.py", "--manifest", str(MANIFEST),
@@ -130,7 +131,8 @@ plt.xlabel("Epoch"); plt.ylabel("MPJPE (mm)"); plt.legend(); plt.show()
 import pandas as pd
 alignment = pd.DataFrame(json.loads((OUTPUT/"alignment.json").read_text()))
 display(alignment)
-display(alignment[(alignment["coverage"] < 0.5) | (alignment["pa_mm"] > 80)])
+display(alignment[(alignment["status"] == "rejected") |
+                  (alignment["coverage"] < 0.5) | (alignment["pa_mm"] > 80)])
 """)
 md("""## Các file kết quả
 - epoch_0001.pt, epoch_0002.pt, ...: trọng số, optimizer, trạng thái RNG để tiếp tục train.

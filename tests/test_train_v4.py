@@ -3,11 +3,15 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+import joblib
 import numpy as np
 import torch
 
-from train_v4 import (associate, centered, export_model, fit, torch_fuse, validate_rows, synchronize)
+from train_v4 import (AlignmentError, associate, centered, export_model, fit, prepare,
+                      torch_fuse, validate_rows, synchronize)
+from keypoints_map import load_keypoints3d_map
 from fusion_pipeline.partwise import extract_pair_features, fuse_partwise, slave_directions
 from test_partwise import CFG, skeleton
 
@@ -24,6 +28,43 @@ def pair(split="train"):
 
 
 class TrainingTests(unittest.TestCase):
+    def test_prepare_reports_rejected_camera_and_keeps_valid_pairs(self):
+        mapping = load_keypoints3d_map("configs/keypoints3D_map.yml")
+        names = [k["name"] for k in mapping["keypoints"]]
+        joints = np.array([[skeleton(elbow_lift=0.01*t)[n] for n in names] for t in range(24)])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rows = []
+            for split, count in (("train", 3), ("val", 2)):
+                gt_id = f"{split}_ground_truth"
+                with (root / gt_id).open("wb") as stream:
+                    np.savez(stream, verts=joints)
+                for i in range(count):
+                    pkl_id = f"{split}_camera_{i}"
+                    length = 8 if split == "train" and i == 0 else len(joints)
+                    joblib.dump({"0": dict(frame_ids=np.arange(length), verts=joints[:length])}, root / pkl_id)
+                    rows.append(dict(action=split, split=split, cam=f"cam{i}",
+                                     GT=gt_id, **{"file PKL": pkl_id}))
+            report_path = root / "alignment.json"
+            with patch("train_v4.download", side_effect=lambda drive, value, cache: root/value), \
+                 patch("train_v4.joints_from_vertices", side_effect=lambda vertices, reg: vertices):
+                pairs, reports = prepare(rows, None, root, CFG, report_path)
+                rejected = [r for r in reports if r["status"] == "rejected"]
+                self.assertEqual([(r["action"], r["cam"]) for r in rejected], [("train", "cam0")])
+                self.assertEqual(json.loads(report_path.read_text()), reports)
+                self.assertEqual({p["split"] for p in pairs}, {"train", "val"})
+                self.assertTrue(all("cam0" not in p["cameras"] for p in pairs if p["split"] == "train"))
+                with self.assertRaisesRegex(ValueError, "train: need at least two aligned cameras"):
+                    prepare([r for r in rows if not (r["split"] == "train" and r["cam"] == "cam2")],
+                            None, root, CFG, report_path)
+                self.assertEqual(json.loads(report_path.read_text())[0]["status"], "rejected")
+
+    def test_alignment_rejects_insufficient_overlap(self):
+        names = pair()["names"]
+        gt = np.zeros((100, len(names), 3))
+        with self.assertRaisesRegex(AlignmentError, "No alignment covers"):
+            associate({"0": (np.arange(16), gt[:16])}, gt, names)
+
     def test_leakage_and_duplicates_rejected(self):
         rows = [dict(action=a, cam=c, split=s, GT=g, **{"file PKL": "some_id"})
                 for a,s,g in [("a","train","g1"),("b","val","g2")] for c in ["cam0","cam1"]]

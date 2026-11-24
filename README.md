@@ -289,6 +289,10 @@ validation MPJPE averaged within each action, then across validation actions.
 
 Review `alignment.json` before training: track stitching and timeline selection
 use GT, and sparse camera samples are interpolated onto shared GT ticks.
+Cameras that fail alignment are recorded with `status: rejected` and excluded;
+the alignment thresholds stay unchanged. Preparation stops if any sequence has
+fewer than two accepted cameras or no usable synchronized segments. The report
+is saved after each camera so rejected inputs can be inspected even on failure.
 The score uses 12 body joints, hip-centered coordinates, and one GT rotation
 per camera-pair segment. It is a supervised calibration/selection score, not an
 independent test or an extrinsics-based camera MPJPE. Visibility/2D confidence

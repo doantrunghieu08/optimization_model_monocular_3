@@ -115,13 +115,17 @@ def pa_errors(source, target):
     return np.linalg.norm(moved * scale[:, None, None] - target, axis=-1).mean(1)
 
 
+class AlignmentError(ValueError):
+    """A camera has insufficient overlap or pose agreement with GT."""
+
+
 def associate(tracks, gt, names, ratios=(0.5, 1.0, 2.0)):
     """GT-assisted timeline search and track stitching with a switch penalty."""
     body = [names.index(n) for n in BODY]
     keys = sorted(tracks)
     all_ids = np.unique(np.concatenate([np.asarray(tracks[k][0], dtype=int) for k in keys]))
     if len(all_ids) < 16:
-        raise ValueError("Need >=16 camera frames for alignment")
+        raise AlignmentError("Need >=16 camera frames for alignment")
     # Precompute PA costs against every GT tick once, then search timelines cheaply.
     costs = np.full((len(all_ids), len(keys), len(gt)), np.inf)
     joints_at = {}
@@ -177,11 +181,11 @@ def associate(tracks, gt, names, ratios=(0.5, 1.0, 2.0)):
             score = float(previous[final] / len(path) + 0.03 * (1 - coverage))
             candidates.append((score, raw_error, ratio, offset, positions, unique_gt, path, coverage))
     if not candidates:
-        raise ValueError("No alignment covers >=70% camera frames and >=50% GT timeline")
+        raise AlignmentError("No alignment covers >=70% camera frames and >=50% GT timeline")
     candidates.sort(key=lambda c: c[:4])
     score, error, ratio, offset, positions, gi, path, coverage = candidates[0]
     if error > 0.15:
-        raise ValueError(f"Alignment PA error {error * 1000:.1f}mm exceeds 150mm; inspect data")
+        raise AlignmentError(f"Alignment PA error {error * 1000:.1f}mm exceeds 150mm; inspect data")
     joints = np.array([joints_at[(int(pos), int(ki))] for pos, ki in zip(positions, path)])
     segments = []
     for i, ki in enumerate(path):
@@ -213,7 +217,7 @@ def synchronize(ids_m, jm, ids_s, js):
     return common[valid], arrays[0][valid], arrays[1][valid]
 
 
-def prepare(rows, drive, cache, config):
+def prepare(rows, drive, cache, config, alignment_path=None):
     validate_rows(rows)
     mapping = load_keypoints3d_map(str(ROOT / "configs/keypoints3D_map.yml"))
     names = [k["name"] for k in mapping["keypoints"]]
@@ -235,10 +239,21 @@ def prepare(rows, drive, cache, config):
                     tracks[str(key)] = (track["frame_ids"], joints_from_vertices(track["verts"], reg))
             if not tracks:
                 raise ValueError(f"Expected WHAM tracks with camera-frame verts: {action}/{row['cam']}")
-            gi, joints, report = associate(tracks, gt, names)
+            print(f"Aligning {action}/{row['cam']}", flush=True)
+            try:
+                gi, joints, report = associate(tracks, gt, names)
+            except AlignmentError as exc:
+                report = dict(status="rejected", reason=str(exc), coverage=None, pa_mm=None)
+            else:
+                report = dict(status="accepted", **report)
+                cameras.append((row["cam"], gi, joints))
             reports.append(dict(action=action, cam=row["cam"], **report))
             print(json.dumps(reports[-1]), flush=True)
-            cameras.append((row["cam"], gi, joints))
+            if alignment_path is not None:
+                atomic_json(Path(alignment_path), reports)
+        if len(cameras) < 2:
+            raise ValueError(f"{action}: need at least two aligned cameras; got {len(cameras)}. "
+                             "Inspect rejected cameras in alignment.json and correct their data/timeline.")
         for (cam_m, ids_m, jm), (cam_s, ids_s, js) in itertools.combinations(cameras, 2):
             common, synced_m, synced_s = synchronize(ids_m, jm, ids_s, js)
             # Temporal features/stability must never bridge missing GT ticks.
@@ -429,7 +444,7 @@ def main():
     if prepared.exists():
         pairs, reports = joblib.load(prepared)
     else:
-        pairs, reports = prepare(rows, drive, cache, config)
+        pairs, reports = prepare(rows, drive, cache, config, out / "alignment.json")
         cache.mkdir(parents=True, exist_ok=True)
         temp = prepared.with_suffix(".tmp")
         joblib.dump((pairs, reports), temp)
