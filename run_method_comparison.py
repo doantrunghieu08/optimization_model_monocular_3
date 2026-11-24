@@ -8,7 +8,9 @@ scored twice with the official evaluator:
   * unmasked (secondary).
 Only `inputs` and output paths change per pair; everything else comes from --config.
 
-Run (split into workers, resumable):
+Run (split into workers, resumable). Resuming skips pairs already 'ok' in results_w*.csv, and is
+refused if configs/pipeline.yml changed since (config_sha in run_meta.json): then pass --fresh to
+rerun everything (old CSVs go to <out>/old/), or --redo-masters camXX to recompute some masters.
   python run_method_comparison.py run --brute configs/brute_force.yml \
       --mask configs/identity_mask_hugging_002.json \
       --split design=aria01:cam02,cam04,cam13,cam19 \
@@ -74,6 +76,16 @@ def _local_or(entry, key):
     if local and Path(str(local)).expanduser().exists():
         return str(Path(str(local)).expanduser())
     return entry.get(key)
+
+
+def _local_video(entry):
+    """Existing local video file or None. Videos are optional: they are never downloaded and
+    a missing/commented video only means the frame size falls back (calib.resolve_intrinsics)."""
+    for key in ("video_local", "video"):
+        value = entry.get(key)
+        if value and Path(str(value)).expanduser().is_file():
+            return str(Path(str(value)).expanduser())
+    return None
 
 
 def build_units(brute_cfg, splits=None, persons=None, segments=None):
@@ -161,22 +173,45 @@ def cmd_run(a):
     out_dir = Path(a.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     out_csv = out_dir / f"results_w{a.worker}.csv"
+    if a.fresh and out_csv.exists():  # start over, but never delete: move the old CSV aside
+        backup = out_dir / "old" / f"results_w{a.worker}.{time.strftime('%Y%m%d-%H%M%S')}.csv"
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        out_csv.rename(backup)
+        print(f"[compare w{a.worker}] --fresh: old results moved to {backup}")
     rows = pd.read_csv(out_csv).to_dict("records") if out_csv.exists() else []
+    if a.redo_masters:  # e.g. after fixing one camera's extrinsic: recompute only its master pairs
+        n0 = len(rows)
+        rows = [r for r in rows if r["master"] not in set(a.redo_masters)]
+        print(f"[compare w{a.worker}] --redo-masters {a.redo_masters}: {n0 - len(rows)} rows dropped")
     done = {(r["segment"], r["split"], r["person"], r["master"], r["slave"]) for r in rows
             if str(r.get("status", "")).startswith(("ok", "skip"))}
     rows = [r for r in rows if (r["segment"], r["split"], r["person"], r["master"], r["slave"]) in done]
     base_cfg = load_config(Path(a.config))
+    # Fingerprint of the whole pipeline config: resuming with different parameters would silently mix
+    # two parameter sets in one table (this happened once), so it is refused unless --fresh / new --out.
+    import hashlib
+    config_sha = hashlib.sha1(json.dumps(base_cfg, sort_keys=True, default=str).encode()).hexdigest()[:12]
     mask = {"path": a.mask, "margin_mm": a.mask_margin} if a.mask else None
     commit = _git_commit()
     from evaluation_pipeline.extrinsics import ext_enabled
     ext = ext_enabled()
     meta_path = out_dir / "run_meta.json"
     if rows and meta_path.exists():
-        prev_ext = bool(json.loads(meta_path.read_text(encoding="utf-8")).get("ext", False))
+        prev = json.loads(meta_path.read_text(encoding="utf-8"))
+        prev_ext = bool(prev.get("ext", False))
         if prev_ext != ext:
             raise SystemExit(f"{out_dir} holds results with EXT={int(prev_ext)}, this run has EXT={int(ext)}: "
                              "use another --out so the two scorings are not mixed")
-    meta = {"commit": commit, "ext": ext, "config": a.config, "brute": a.brute, "mask": a.mask,
+        prev_sha = prev.get("config_sha")
+        if prev_sha is None:
+            print(f"[compare w{a.worker}] WARNING: {out_dir} predates config fingerprints; resuming cannot "
+                  f"check that {a.config} is unchanged. Use --fresh to rerun everything with the current config.")
+        elif prev_sha != config_sha:
+            raise SystemExit(f"{out_dir} was run with a different {a.config} (config_sha {prev_sha} != {config_sha}). "
+                             "Resuming would mix two parameter sets in one table: pass --fresh to rerun all "
+                             "pairs (old CSVs are moved to <out>/old/), or use another --out.")
+    meta = {"commit": commit, "ext": ext, "config": a.config, "config_sha": config_sha,
+            "brute": a.brute, "mask": a.mask,
             "mask_margin_mm": a.mask_margin, "splits": a.split, "methods": a.methods,
             "use_pair_modes": a.use_pair_modes, "units_total": len(units)}
     (out_dir / "run_meta.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
@@ -189,8 +224,8 @@ def cmd_run(a):
         A, B = u["A"], u["B"]
         work = out_dir / "runs" / "_".join(unit_key(u))
         cfg = copy.deepcopy(base_cfg)
-        cfg["inputs"].update({"cam1_pkl": _local_or(A, "pkl"), "camera1_video": _local_or(A, "video"),
-                              "cam2_pkl": _local_or(B, "pkl"), "camera2_video": _local_or(B, "video"),
+        cfg["inputs"].update({"cam1_pkl": _local_or(A, "pkl"), "camera1_video": _local_video(A),
+                              "cam2_pkl": _local_or(B, "pkl"), "camera2_video": _local_video(B),
                               "ground_truth_dir": u["gt_dir"], "target_person": u["person"]})
         cfg["inputs"].pop("person_heights", None)
         for cam, entry in (("camera1", A), ("camera2", B)):  # YAML extrinsic (used only under EXT=1)
@@ -209,7 +244,7 @@ def cmd_run(a):
             cfg["paths"][k] = str(work / k)
         cfg = absolutize_config_paths(cfg, ROOT)
         rec_base = {"segment": u["segment"], "sequence": u["sequence"], "split": u["split"], "person": u["person"],
-                    "master": A["id"], "slave": B["id"], "commit": commit, "ext": ext}
+                    "master": A["id"], "slave": B["id"], "commit": commit, "config_sha": config_sha, "ext": ext}
         new_rows = []
         try:
             synced, reason = check_cameras_synchronized(cfg)
@@ -285,33 +320,192 @@ def _wilcoxon_p(diff):
 
 
 def _macro_lines(g, methods, refs):
-    """Sequence-level analysis (pre-registration primary): per-sequence means, macro mean,
-    bootstrap CI over sequences, number of sequences won."""
-    per = g.groupby(["sequence", "method"])[[*METRICS, *(f"{k}_mono" for k in METRICS)]].mean()
-    seqs = sorted(g.sequence.unique())
-    out = [f"\nMacro (mean over {len(seqs)} sequences; each sequence = mean over its runs):\n",
-           "| Method | PA-MPJPE | MPJPE | MBLE | Accel |", "|---|---|---|---|---|"]
-    m0 = per.xs(methods[0], level="method")
-    out.append("| mono | " + " | ".join(f"{m0[f'{k}_mono'].mean():.2f}" for k in METRICS) + " |")
+    """
+    Sequence-level statistical analysis.
+
+    Each sequence is one statistical observation:
+      - Macro mean: equal weight for each sequence.
+      - Bootstrap CI: resampling sequences.
+      - Wilcoxon: paired test over sequence-level differences.
+      - Holm: multiple-comparison correction across methods
+              within each reference and primary metric (PA).
+      - Wins: number of sequences improved.
+    """
+    metrics = list(METRICS)
+    mono_cols = [f"{k}_mono" for k in metrics]
+
+    per = (
+        g.groupby(["sequence", "method"])[metrics + mono_cols]
+         .mean()
+    )
+
+    # Only retain sequences available for every compared method.
+    available = [
+        set(per.xs(m, level="method").index)
+        for m in methods
+    ]
+    common = sorted(set.intersection(*available))
+
+    if len(common) == 0:
+        return [
+            "\nMacro analysis skipped: no common sequences across methods.\n"
+        ]
+
+    per = per.loc[
+        per.index.get_level_values("sequence").isin(common)
+    ]
+
+    # Mono is identical across methods because all methods use
+    # the same pose export. Use the first method's mono measurements.
+    mono = per.xs(methods[0], level="method").loc[common]
+
+    method_data = {
+        m: per.xs(m, level="method").loc[common]
+        for m in methods
+    }
+
+    out = [
+        f"\n## Sequence-level analysis "
+        f"(n={len(common)} sequences)\n",
+        "Each sequence contributes equally, regardless of its "
+        "number of frames or camera pairs.\n",
+        "| Method | PA-MPJPE | MPJPE | MBLE | Accel |",
+        "|---|---:|---:|---:|---:|",
+    ]
+
+    out.append(
+        "| mono | "
+        + " | ".join(f"{mono[k].mean():.2f}" for k in metrics)
+        + " |"
+    )
+
     for m in methods:
-        pm = per.xs(m, level="method")
-        out.append(f"| {m} | " + " | ".join(f"{pm[k].mean():.2f}" for k in METRICS) + " |")
-    out += ["\n| Method | vs | ΔPA macro [CI over sequences] | ΔMPJPE | ΔAccel | sequences won (PA) |",
-            "|---|---|---|---|---|---|"]
+        pm = method_data[m]
+        out.append(
+            f"| {m} | "
+            + " | ".join(f"{pm[k].mean():.2f}" for k in metrics)
+            + " |"
+        )
+
+    out += [
+        "\n### Paired sequence-level comparisons",
+        "",
+        "Difference = method - reference; negative is better.",
+        "Bootstrap CI: 95%, resampling sequences (10,000 iterations).",
+        "Wilcoxon: paired signed-rank test on sequence-level PA differences.",
+        "Holm p: Holm-Bonferroni correction across methods "
+        "within each reference comparison.",
+        "",
+        "| Method | vs | ΔPA [95% CI] | ΔMPJPE | ΔAccel "
+        "| PA wins | p raw | p Holm |",
+        "|---|---|---:|---:|---:|---:|---:|---:|",
+    ]
+
     for ref in refs + ["mono"]:
+
+        if ref == "mono":
+            reference = mono
+            ref_suffix = "_mono"
+        else:
+            if ref not in method_data:
+                continue
+            reference = method_data[ref]
+            ref_suffix = ""
+
+        comparisons = []
+
         for m in methods:
             if m == ref:
                 continue
-            pm = per.xs(m, level="method")
-            pr = m0 if ref == "mono" else per.xs(ref, level="method")
-            sfx = "_mono" if ref == "mono" else ""
-            common = pm.index.intersection(pr.index)
-            d = {k: (pm.loc[common, k] - pr.loc[common, f"{k}{sfx}"]).to_numpy() for k in ("pa", "mpjpe", "accel")}
-            lo, hi = _bootstrap_ci(d["pa"])
-            out.append(f"| {m} | {ref} | {d['pa'].mean():+.2f} [{lo:+.2f}, {hi:+.2f}] | {d['mpjpe'].mean():+.2f} "
-                       f"| {d['accel'].mean():+.2f} | {int((d['pa'] < 0).sum())}/{len(common)} |")
-    return out
 
+            pm = method_data[m]
+
+            differences = {}
+
+            for k in ("pa", "mpjpe", "accel"):
+                x = pm[k].to_numpy(dtype=float)
+                y = reference[f"{k}{ref_suffix}"].to_numpy(dtype=float)
+
+                valid = np.isfinite(x) & np.isfinite(y)
+                differences[k] = x[valid] - y[valid]
+
+            dpa = differences["pa"]
+
+            if len(dpa) >= 2:
+                lo, hi = _bootstrap_ci(dpa)
+            else:
+                lo, hi = np.nan, np.nan
+
+            p = _wilcoxon_p(dpa)
+
+            wins = int((dpa < 0).sum())
+            n = len(dpa)
+
+            comparisons.append({
+                "method": m,
+                "dpa": dpa,
+                "dmpjpe": differences["mpjpe"],
+                "daccel": differences["accel"],
+                "lo": lo,
+                "hi": hi,
+                "wins": wins,
+                "n": n,
+                "p": p,
+            })
+
+        # Holm correction for PA-MPJPE comparisons against this reference.
+        adjusted = _holm_adjust([c["p"] for c in comparisons])
+
+        for c, p_holm in zip(comparisons, adjusted):
+
+            if c["n"] > 0:
+                pa_text = (
+                    f"{c['dpa'].mean():+.2f} "
+                    f"[{c['lo']:+.2f}, {c['hi']:+.2f}]"
+                )
+                win_text = f"{c['wins']}/{c['n']}"
+            else:
+                pa_text = "N/A"
+                win_text = "0/0"
+
+            def mean_text(values):
+                return (
+                    f"{values.mean():+.2f}"
+                    if len(values) else "N/A"
+                )
+
+            p_text = (
+                f"{c['p']:.4g}"
+                if np.isfinite(c["p"]) else "N/A"
+            )
+            holm_text = (
+                f"{p_holm:.4g}"
+                if np.isfinite(p_holm) else "N/A"
+            )
+
+            out.append(
+                f"| {c['method']} | {ref} | {pa_text} "
+                f"| {mean_text(c['dmpjpe'])} "
+                f"| {mean_text(c['daccel'])} "
+                f"| {win_text} | {p_text} | {holm_text} |"
+            )
+
+    out += [
+        "",
+        "### Interpretation",
+        "",
+        "- Negative ΔPA indicates improvement over the reference.",
+        "- A 95% CI excluding zero indicates evidence of a "
+        "non-zero mean difference under the sequence-level bootstrap.",
+        "- Holm-adjusted p < 0.05 indicates statistical significance "
+        "after correcting for multiple method comparisons.",
+        "- PA wins measures how many sequences improved, "
+        "not how many camera pairs improved.",
+        "- Results are conditional on the evaluated sequences; "
+        "they do not establish generalization to unseen datasets.",
+    ]
+
+    return out
 
 def summarize(df):
     """Markdown tables per (split, mask): one row per method incl. mono; paired comparisons."""
@@ -383,6 +577,28 @@ def cmd_summarize(a):
     print(header + text)
 
 
+def _holm_adjust(p_values):
+    """Holm-Bonferroni adjusted p-values. NaN values remain NaN."""
+    p = np.asarray(p_values, dtype=float)
+    adjusted = np.full(len(p), np.nan)
+    valid = np.flatnonzero(np.isfinite(p))
+
+    if len(valid) == 0:
+        return adjusted
+
+    order = valid[np.argsort(p[valid])]
+    m = len(order)
+    running_max = 0.0
+
+    for rank, idx in enumerate(order):
+        candidate = (m - rank) * p[idx]
+        running_max = max(running_max, candidate)
+        adjusted[idx] = min(running_max, 1.0)
+
+    return adjusted
+
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -401,6 +617,10 @@ def main():
     r.add_argument("--keep-per-frame", action="store_true", help="keep per-frame evaluator CSVs")
     r.add_argument("--worker", type=int, default=0)
     r.add_argument("--n-workers", type=int, default=1)
+    r.add_argument("--fresh", action="store_true",
+                   help="rerun every pair: this worker's old results CSV is moved to <out>/old/ (not deleted)")
+    r.add_argument("--redo-masters", nargs="+", metavar="CAM",
+                   help="drop and recompute the pairs whose master is one of these cameras (e.g. cam15)")
     s = sub.add_parser("summarize")
     s.add_argument("--out", required=True)
     a = ap.parse_args()
