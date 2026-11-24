@@ -1183,7 +1183,7 @@ def run_fusion(config: dict) -> None:
                 inter_person_radius=inter_radius,
                 inter_person_min_hits=inter_min_hits,
                 inter_person_tau=inter_tau,
-                skip_aotr_opt=(fusion_method in ("partwise", "naive")),
+                skip_aotr_opt=(fusion_method in SEQUENCE_FUSION_METHODS),
             )
             clean_tf = result.pop("_clean_transform", None)
             if clean_tf is not None:
