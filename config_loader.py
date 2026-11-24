@@ -39,10 +39,12 @@ ALLOWED_STAGES = {
 INPUT_KEYS = (
     "cam1_pkl",
     "cam2_pkl",
-    "camera1_video",
-    "camera2_video",
     "ground_truth_dir",
 )
+# camera1_video / camera2_video are OPTIONAL. Inference only needs the frame size (w, h) for the
+# guessed intrinsics; without a video it comes from inputs.camera{1,2}_image_size, else the
+# Harmony4D exo default 3840x2160 (see preprocess_pipeline/calib.py:_estimate_intrinsics).
+OPTIONAL_INPUT_KEYS = ("camera1_video", "camera2_video")
 
 def env_var_constructor(loader, node):
     value = loader.construct_scalar(node)

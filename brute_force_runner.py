@@ -288,9 +288,10 @@ def _resolve_camera_inputs(
             workspace, camera, "pkl", "pkl_local",
             description=f"{camera['id']} PKL"
         ),
+        # Video is optional (frame size only); missing -> None, never downloaded.
         "video": _resolve_local_or_drive_path(
             workspace, camera, "video", "video_local",
-            description=f"{camera['id']} video"
+            description=f"{camera['id']} video", required=False,
         ),
     }
 
@@ -821,9 +822,9 @@ def _setup_pipeline_config(
     cfg["inputs"].update({
         "ground_truth_dir": os.path.abspath(str(gt_path)),
         "cam1_pkl": str(camA_inputs["pkl"]),
-        "camera1_video": str(camA_inputs["video"]),
+        "camera1_video": str(camA_inputs["video"]) if camA_inputs["video"] else None,
         "cam2_pkl": str(camB_inputs["pkl"]),
-        "camera2_video": str(camB_inputs["video"]),
+        "camera2_video": str(camB_inputs["video"]) if camB_inputs["video"] else None,
     })
 
     for cam, entry in (("camera1", camA), ("camera2", camB)):  # YAML extrinsic (used only under EXT=1)

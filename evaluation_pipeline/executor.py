@@ -891,7 +891,7 @@ def run_evaluation(config: dict) -> None:
             cid = _cam_num_from_text(inputs.get(vid_key))
         if cid is not None and cid in colmap_rotations:
             cam_rotations[cam] = colmap_rotations[cid]
-    if cam_rotations:
+    if cam_rotations and not use_ext:  # EXT=1 never uses these rotations (truth is camera-frame)
         print(f"[Evaluation] Using Harmony4D COLMAP extrinsics (0% GT) from {extrinsics_source} for {sorted(cam_rotations)}")
 
     if metric_enabled["MPJPE"] and mpjpe_alignment == "sequence":
@@ -940,8 +940,10 @@ def run_evaluation(config: dict) -> None:
     accel_results = {cam: {} for cam in CAMERAS}
     if accel_enabled:
         for cam in CAMERAS:
-            R_cam = cam_rotations.get(cam)
-            if R_cam is None and "posed" in module_names:
+            # EXT=1: truth was moved into the camera frame with the real extrinsics, like the
+            # prediction, so the accelerations are compared as they are (no camera->world rotation).
+            R_cam = None if use_ext else cam_rotations.get(cam)
+            if R_cam is None and not use_ext and "posed" in module_names:
                 ref_frames = [
                     (sequences[cam][f]["posed"], sequences[cam][f]["truth"],
                      [k for k in joint_names if k in sequences[cam][f]["posed"] and k in sequences[cam][f]["truth"]])
