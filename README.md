@@ -170,10 +170,16 @@ Caveats, all verified:
 ---
 
 ## Usage
+Để xử lý test với dataset Harmony4D, cần thực thi colab notebook sau rồi nhận về các tệp yml
+
 
 ```bash
 # 0) once per new dataset without person mapping (writes *_person_mapping.txt next to the pkl)
 python -m preprocessing_data.label_persons input/043_Grappling2 --brute-config configs/brute_force_grappling2_043.yml
+
+Để xử lý trường hợp Google chặn tải, có thể dùng colab notebook sau để upload tệp yml lên và nó tải về:
+    https://colab.research.google.com/drive/1Zc2d18UP-h4Myi6bPhmj0jyPdnVbUwqc?usp=sharing
+
 python build_identity_mask.py configs/brute_force_grappling2_043.yml configs/identity_mask_grappling2_043.json
 #    or from a brute-force YAML whose ground_truth_dir / pkl / video are local paths OR Google Drive
 #    File IDs (GT: zip of poses3d/*.npy). Drive files and the extracted GT are kept in
