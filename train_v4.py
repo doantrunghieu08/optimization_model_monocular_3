@@ -448,6 +448,45 @@ def synchronize(ids_m, jm, ids_s, js):
     return common[valid], arrays[0][valid], arrays[1][valid]
 
 
+def _download_drive_file(drive, fid, dest):
+    """Stream a Drive file via OAuth API (or gdown if quota-limited) to a temporary path."""
+    from googleapiclient.http import MediaIoBaseDownload
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    temp = dest.with_suffix(".download")
+    try:
+        with temp.open("wb") as stream:
+            reader = MediaIoBaseDownload(
+                stream,
+                drive.files().get_media(fileId=fid, supportsAllDrives=True),
+                chunksize=32 * 1024 * 1024,
+            )
+            done = False
+            while not done:
+                _, done = reader.next_chunk(num_retries=5)
+        temp.replace(dest)
+        return dest
+    except Exception:
+        temp.unlink(missing_ok=True)
+        import gdown
+        out = gdown.download(id=fid, output=str(temp), quiet=True, fuzzy=True)
+        if not out or not temp.is_file() or not temp.stat().st_size:
+            raise
+        temp.replace(dest)
+        return dest
+
+
+def _resolve_or_download(drive, ref, mount, temp_dir, mount_state):
+    """Prefer mounted Drive (0% download); fall back to OAuth API only for unmounted orphan files."""
+    try:
+        return resolve_mounted(drive, ref, mount, mount_state), False
+    except FileNotFoundError:
+        if drive is None:
+            raise
+        fid = file_id(ref)
+        print(f"  [Fallback API] Đang đọc file chia sẻ lẻ {fid}...", flush=True)
+        return _download_drive_file(drive, fid, Path(temp_dir) / fid), True
+
+
 def prepare(rows, drive, cache, config, alignment_path=None, skip_unaligned_actions=False,
             drive_mount="/content/drive", data_dir=""):
     validate_rows(rows)
@@ -461,30 +500,49 @@ def prepare(rows, drive, cache, config, alignment_path=None, skip_unaligned_acti
         "data_dir": data_dir,
         "exclude_dir": str(Path(alignment_path).parent) if alignment_path else None,
     }
+    temp_dir = Path("/content/v4_tmp") if Path("/content").is_dir() else Path(cache) / "_tmp"
     pairs, reports = [], []
     for action in dict.fromkeys(r["action"] for r in rows):
         cameras = []
         group = sorted((r for r in rows if r["action"] == action), key=lambda r: int(r["cam"][3:]))
         if len({file_id(r["GT"]) for r in group}) != 1:
             raise ValueError(f"Different GT files in one sequence: {action}")
-        gt_ref = group[0].get("GT_path") or group[0]["GT"]
-        gt_path = resolve_mounted(drive, gt_ref, drive_mount, mount_state)
-        with np.load(gt_path, allow_pickle=False) as data:
-            gt = joints_from_vertices(data["verts"], reg)
+        gt_fid = file_id(group[0]["GT"])
+        gt_jcache = Path(cache) / f"{gt_fid}.gt_joints.joblib" if drive is not None else None
+        if gt_jcache is not None and gt_jcache.exists():
+            gt = joblib.load(gt_jcache)
+        else:
+            gt_ref = group[0].get("GT_path") or group[0]["GT"]
+            gt_path, gt_is_tmp = _resolve_or_download(drive, gt_ref, drive_mount, temp_dir, mount_state)
+            try:
+                with np.load(gt_path, allow_pickle=False) as data:
+                    gt = joints_from_vertices(data["verts"], reg)
+            finally:
+                if gt_is_tmp:
+                    gt_path.unlink(missing_ok=True)
+            if gt_jcache is not None:
+                gt_jcache.parent.mkdir(parents=True, exist_ok=True)
+                tmp_g = gt_jcache.with_suffix(".tmp")
+                joblib.dump(gt, tmp_g)
+                tmp_g.replace(gt_jcache)
         for row in group:
-            # ponytail: cache compact 21-joint tracks (~100KB) so mounted PKLs (~150MB) are read once
+            # ponytail: cache compact 21-joint tracks (~100KB) & drop raw temp downloads immediately
             jcache = Path(cache) / f"{file_id(row['file PKL'])}.joints.joblib" if (drive is not None or row.get("PKL_path")) else None
             if jcache is not None and jcache.exists():
                 tracks = joblib.load(jcache)
             else:
                 pkl_ref = row.get("PKL_path") or row["file PKL"]
-                pkl_path = resolve_mounted(drive, pkl_ref, drive_mount, mount_state)
-                raw = joblib.load(pkl_path)
-                tracks = {}
-                for key, track in raw.items():
-                    if isinstance(track, dict) and "verts" in track and "frame_ids" in track:
-                        tracks[str(key)] = (np.asarray(track["frame_ids"], dtype=int),
-                                            joints_from_vertices(track["verts"], reg))
+                pkl_path, pkl_is_tmp = _resolve_or_download(drive, pkl_ref, drive_mount, temp_dir, mount_state)
+                try:
+                    raw = joblib.load(pkl_path)
+                    tracks = {}
+                    for key, track in raw.items():
+                        if isinstance(track, dict) and "verts" in track and "frame_ids" in track:
+                            tracks[str(key)] = (np.asarray(track["frame_ids"], dtype=int),
+                                                joints_from_vertices(track["verts"], reg))
+                finally:
+                    if pkl_is_tmp:
+                        pkl_path.unlink(missing_ok=True)
                 if jcache is not None and tracks:
                     jcache.parent.mkdir(parents=True, exist_ok=True)
                     tmp_j = jcache.with_suffix(".tmp")

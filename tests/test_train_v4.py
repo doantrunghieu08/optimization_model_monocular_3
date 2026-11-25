@@ -74,6 +74,36 @@ class TrainingTests(unittest.TestCase):
                     prepare(bad_rows + [r for r in rows if r["split"] == "val"], None, root, CFG,
                             report_path, skip_unaligned_actions=True)
 
+    def test_prepare_falls_back_to_download_and_cleans_temp_files(self):
+        mapping = load_keypoints3d_map("configs/keypoints3D_map.yml")
+        names = [k["name"] for k in mapping["keypoints"]]
+        joints = np.array([[skeleton(elbow_lift=0.01 * t)[n] for n in names] for t in range(24)])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            gt_file = root / "raw_gt.npz"
+            with gt_file.open("wb") as stream:
+                np.savez(stream, verts=joints)
+            pkl_file = root / "raw_pkl.pkl"
+            joblib.dump({"0": dict(frame_ids=np.arange(len(joints)), verts=joints)}, pkl_file)
+            rows = [
+                dict(action=s, split=s, cam=c, GT=f"gt_{s}_0123456789", **{"file PKL": f"pkl_{s}_{c}_0123456"})
+                for s in ("train", "val") for c in ("cam0", "cam1")
+            ]
+            cache = root / "cache"
+            def fake_dl(drive, fid, dest):
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes((gt_file if fid.startswith("gt_") else pkl_file).read_bytes())
+                return dest
+            with patch("train_v4.resolve_mounted", side_effect=FileNotFoundError("not mounted")), \
+                 patch("train_v4._download_drive_file", side_effect=fake_dl) as dl_mock, \
+                 patch("train_v4.joints_from_vertices", side_effect=lambda vertices, reg: vertices):
+                pairs, _ = prepare(rows, object(), cache, CFG, root / "alignment.json")
+            self.assertEqual(len(pairs), 4)
+            self.assertGreaterEqual(dl_mock.call_count, 6)
+            self.assertTrue((cache / "gt_train_0123456789.gt_joints.joblib").exists())
+            self.assertTrue((cache / "pkl_train_cam0_0123456.joints.joblib").exists())
+            self.assertFalse(list((cache / "_tmp").glob("*")))
+
     def test_resolve_mounted_mydrive_shortcut_and_duplicates(self):
         class FakeReq:
             def __init__(self, payload):
