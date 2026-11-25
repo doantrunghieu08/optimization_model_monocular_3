@@ -63,6 +63,38 @@ fusion:
       b: 1.6761106970863668
       mu: 4.2041772210435745e-05
       sd: 1.3685969107519123
+    # Bộ trọng số tuyến tính 8 đặc trưng phản đối xứng học trên v4 (epoch 13: val PA-MPJPE 85.82 vs 50-50 86.49 vs mono 92.73 mm)
+    weight_model:
+      enabled: true
+      type: linear
+      feature_names:
+      - d_depth
+      - d_occ_joint
+      - d_occ_torso
+      - d_conf2d
+      - d_bone_jit
+      - d_cam_accel
+      - d_bone_distort
+      - d_facing
+      mean: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+      std:
+      - 2.0482571125030518
+      - 9.999999974752427e-07
+      - 9.999999974752427e-07
+      - 9.999999974752427e-07
+      - 1.4201602935791016
+      - 1.5395150184631348
+      - 0.005559795536100864
+      - 0.3992931544780731
+      weights:
+      - -0.4793398976325989
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.08805369585752487
+      - -0.4794311821460724
+      - -0.17094489932060242
+      - 0.36988016963005066
     rotation_half_window: 4
     multi_person:
       enabled: true

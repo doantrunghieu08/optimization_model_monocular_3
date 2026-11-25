@@ -170,21 +170,77 @@ else:
 """)
 
 code("""#@title 4b. Chạy Train & lưu checkpoint từng epoch trên Google Drive
+import hashlib, shutil, torch, yaml
+
+# Tính đúng chữ ký cấu hình của train_v4.py để kiểm tra tương thích trước khi resume
+cfg_pw = yaml.safe_load((REPO_DIR / "configs/pipeline.yml").read_text(encoding="utf-8"))["fusion"]["partwise"]
+cfg_pw.pop("weight_model", None)
+cfg_pw["multi_person"] = {"enabled": False}
+stable_rows = [{k: v for k, v in r.items() if k not in ("GT_path", "PKL_path")}
+               for r in json.loads(MANIFEST.read_text(encoding="utf-8"))]
+cur_identity = hashlib.sha256(
+    json.dumps(stable_rows, sort_keys=True, ensure_ascii=False).encode()
+    + (REPO_DIR / "models/J_regressor_body25_extended.npy").read_bytes()
+    + (REPO_DIR / "train_v4.py").read_bytes()
+    + (REPO_DIR / "fusion_pipeline/partwise.py").read_bytes()
+    + (REPO_DIR / "configs/keypoints3D_map.yml").read_bytes()
+    + json.dumps(cfg_pw, sort_keys=True).encode()
+    + str(bool(SKIP_UNALIGNED_ACTIONS)).encode()
+).hexdigest()
+cur_sig = hashlib.sha256(
+    (cur_identity + json.dumps(cfg_pw, sort_keys=True) + str(float(LEARNING_RATE))).encode()
+).hexdigest()
+
+
+def _probe_ckpt(folder):
+    lp = folder / "last.json"
+    if not lp.exists():
+        return None, None, None
+    info = json.loads(lp.read_text(encoding="utf-8"))
+    pt = folder / info.get("checkpoint", "")
+    if not pt.exists():
+        return None, None, None
+    sig = info.get("signature") or torch.load(pt, map_location="cpu", weights_only=False).get("signature")
+    return pt, sig, info.get("epoch")
+
+
+pt, sig, ep = _probe_ckpt(OUTPUT)
+has_pts = any(OUTPUT.glob("epoch_*.pt"))
+if not has_pts:
+    ACTIVE_OUT, resume_pt = OUTPUT, None
+elif RESUME and pt is not None and sig == cur_sig:
+    ACTIVE_OUT, resume_pt = OUTPUT, pt
+else:
+    # Khác lr/config hoặc tắt RESUME: tự tách sang thư mục con và tái sử dụng dữ liệu đã căn chỉnh
+    sub = OUTPUT / f"lr_{float(LEARNING_RATE):g}"
+    pt2, sig2, ep2 = _probe_ckpt(sub)
+    if RESUME and pt2 is not None and sig2 == cur_sig:
+        ACTIVE_OUT, resume_pt, ep = sub, pt2, ep2
+    elif not any(sub.glob("epoch_*.pt")):
+        ACTIVE_OUT, resume_pt = sub, None
+    else:
+        k = 2
+        while any((OUTPUT / f"lr_{float(LEARNING_RATE):g}_run{k}").glob("epoch_*.pt")):
+            k += 1
+        ACTIVE_OUT, resume_pt = OUTPUT / f"lr_{float(LEARNING_RATE):g}_run{k}", None
+    ACTIVE_OUT.mkdir(parents=True, exist_ok=True)
+    prep_src = OUTPUT / f"prepared_{cur_identity}.joblib"
+    prep_dst = ACTIVE_OUT / prep_src.name
+    if prep_src.exists() and not prep_dst.exists():
+        shutil.copy2(prep_src, prep_dst)
+    for aux in ("alignment.json", "manifest.json", "protocol.json"):
+        if (OUTPUT / aux).exists() and not (ACTIVE_OUT / aux).exists():
+            shutil.copy2(OUTPUT / aux, ACTIVE_OUT / aux)
+    print(f"Khác lr/cấu hình so với checkpoint gốc -> lưu tại: {ACTIVE_OUT} (tái sử dụng dữ liệu đã căn chỉnh)")
+
 train_cmd = [sys.executable, "-u", "train_v4.py", "--manifest", str(MANIFEST),
              "--drive-mount", DRIVE_MOUNT, "--cache", str(CACHE),
-             "--output", str(OUTPUT), "--epochs", str(EPOCHS), "--lr", str(LEARNING_RATE)]
+             "--output", str(ACTIVE_OUT), "--epochs", str(EPOCHS), "--lr", str(LEARNING_RATE)]
 if SKIP_UNALIGNED_ACTIONS:
     train_cmd.append("--skip-unaligned-actions")
-
-last_path = OUTPUT / "last.json"
-if RESUME and last_path.exists():
-    last = json.loads(last_path.read_text(encoding="utf-8"))
-    ckpt_file = OUTPUT / last["checkpoint"]
-    if ckpt_file.exists() and "signature" in last:
-        print(f"Resume từ checkpoint: {ckpt_file.name} (epoch {last.get('epoch')})")
-        train_cmd += ["--resume", str(ckpt_file)]
-    else:
-        raise RuntimeError(f"Thư mục {OUTPUT} chứa checkpoint phiên bản cũ không tương thích; hãy đổi OUTPUT_DIR ở Bước 3.")
+if resume_pt is not None:
+    print(f"Resume từ checkpoint: {resume_pt} (epoch {ep})")
+    train_cmd += ["--resume", str(resume_pt)]
 
 run_live(train_cmd)
 """)
@@ -193,18 +249,19 @@ code("""#@title 5. Chọn Best Epoch, xem bộ tham số tốt nhất & vẽ đ�
 import matplotlib.pyplot as plt
 import pandas as pd
 
-history = json.loads((OUTPUT / "history.json").read_text(encoding="utf-8"))
-best = json.loads((OUTPUT / "best_weights.json").read_text(encoding="utf-8"))
-saved_pts = sorted(OUTPUT.glob("epoch_*.pt"))
+RUN_OUT = globals().get("ACTIVE_OUT", OUTPUT)
+history = json.loads((RUN_OUT / "history.json").read_text(encoding="utf-8"))
+best = json.loads((RUN_OUT / "best_weights.json").read_text(encoding="utf-8"))
+saved_pts = sorted(RUN_OUT.glob("epoch_*.pt"))
 
-print(f"Đã lưu {len(saved_pts)} epoch checkpoints tại: {OUTPUT}")
+print(f"Đã lưu {len(saved_pts)} epoch checkpoints tại: {RUN_OUT}")
 print(f"★ Best Epoch          : {best['epoch']} / {len(history)}")
 print(f"  Val PA-MPJPE (Best) : {best['val_mpjpe_mm']:.2f} mm")
 if "equal_val_mpjpe_mm" in best:
     print(f"  Val PA-MPJPE (50-50): {best['equal_val_mpjpe_mm']:.2f} mm")
 print(f"  Val PA-MPJPE (Mono) : {best['baseline_val_mpjpe_mm']:.2f} mm")
-print(f"  File tham số tốt nhất: {OUTPUT / 'best_weights.json'}")
-print(f"  File patch YAML     : {OUTPUT / 'best_partwise.yml'}")
+print(f"  File tham số tốt nhất: {RUN_OUT / 'best_weights.json'}")
+print(f"  File patch YAML     : {RUN_OUT / 'best_partwise.yml'}")
 
 param_df = pd.DataFrame({
     "feature": best["feature_names"],
@@ -231,11 +288,12 @@ plt.show()
 code("""#@title 6. Ghép bộ tham số tốt nhất vào pipeline_best.yml để suy luận / benchmark
 import yaml
 
+RUN_OUT = globals().get("ACTIVE_OUT", OUTPUT)
 base = yaml.safe_load((REPO_DIR / "configs/pipeline.yml").read_text(encoding="utf-8"))
-patch = yaml.safe_load((OUTPUT / "best_partwise.yml").read_text(encoding="utf-8"))
+patch = yaml.safe_load((RUN_OUT / "best_partwise.yml").read_text(encoding="utf-8"))
 base["fusion"]["method"] = "partwise"
 base["fusion"].setdefault("partwise", {})["weight_model"] = patch["fusion"]["partwise"]["weight_model"]
-out_cfg = OUTPUT / "pipeline_best.yml"
+out_cfg = RUN_OUT / "pipeline_best.yml"
 out_cfg.write_text(yaml.safe_dump(base, sort_keys=False, allow_unicode=True), encoding="utf-8")
 print("Đã xuất cấu hình đầy đủ (nhúng sẵn trọng số, dùng được ngay cả trên Colab lẫn máy local):")
 print(" ->", out_cfg)
