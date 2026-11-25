@@ -276,16 +276,17 @@ tests/                             unit and regression tests
 
 ## Train partwise from the v4 Google Sheet
 
-Open `colab_train_v4.ipynb` in Google Colab and run the cells in order. It includes
-the trainer and partwise module snapshots, reads tab `v4 22/11/26`, and saves
-every epoch under `MyDrive/partwise_v4/run_001`. Change `OUTPUT` for a new run;
+Open `colab_train_v4.ipynb` in Google Colab and run the cells in order. It mounts
+Google Drive at `/content/drive` (resolving Sheet file IDs directly on the mounted
+filesystem with zero file downloads), reads tab `v4 22/11/26`, and saves
+every epoch under `MyDrive/partwise_v4/run_002`. Change `OUTPUT_DIR` for a new run;
 leave `RESUME = True` to resume the last checkpoint in that folder.
 
 The sheet's sequence-level train/val split is checked before training. Only train
 updates the linear weight model and its feature scale. The best epoch minimizes
-validation MPJPE averaged within each action, then across validation actions.
+validation PA-MPJPE averaged within each action, then across validation actions.
 `best_weights.json` contains the selected parameters; `best_partwise.yml` and
-`pipeline_best.yml` load them into the existing pipeline.
+`pipeline_best.yml` embed the inline `weight_model` directly into the existing pipeline.
 
 Review `alignment.json` before training: track stitching and timeline selection
 use GT, and sparse camera samples are interpolated onto shared GT ticks.
