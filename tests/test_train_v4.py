@@ -9,8 +9,9 @@ import joblib
 import numpy as np
 import torch
 
-from train_v4 import (AlignmentError, associate, centered, export_model, fit, prepare,
-                      resolve_mounted, torch_fuse, validate_rows, synchronize)
+from train_v4 import (AlignmentError, associate, centered, export_model, fit,
+                      index_mounted_files, prepare, resolve_mounted, torch_fuse,
+                      validate_rows, synchronize)
 from keypoints_map import load_keypoints3d_map
 from fusion_pipeline.partwise import extract_pair_features, fuse_partwise, slave_directions
 from test_partwise import CFG, skeleton
@@ -109,21 +110,27 @@ class TrainingTests(unittest.TestCase):
 
             db = {
                 "root": {"id": "root_0000000000"},
-                "ds_000000000000": {"id": "ds_000000000000", "name": "ds", "parents": ["root_0000000000"]},
-                "seq_00000000000": {"id": "seq_00000000000", "name": "seq", "parents": ["ds_000000000000"]},
+                "ds_000000000000": {"id": "ds_000000000000", "name": "ds", "mimeType": "application/vnd.google-apps.folder", "parents": ["root_0000000000"]},
+                "seq_00000000000": {"id": "seq_00000000000", "name": "seq", "mimeType": "application/vnd.google-apps.folder", "parents": ["ds_000000000000"]},
                 "file_dup_000000": {"id": "file_dup_000000", "name": "wham.pkl", "parents": ["seq_00000000000"]},
-                "sub_00000000000": {"id": "sub_00000000000", "name": "sub", "parents": ["shared_folder_12345"]},
+                "sub_00000000000": {"id": "sub_00000000000", "name": "sub", "mimeType": "application/vnd.google-apps.folder", "parents": ["shared_folder_12345"]},
                 "gt_shared_00000": {"id": "gt_shared_00000", "name": "gt.npz", "parents": ["sub_00000000000"]},
                 "missing_id_0000": {"id": "missing_id_0000", "name": "x.pkl", "parents": ["unshared_folder_99"]},
+                "orphan_id_00000": {"id": "orphan_id_00000", "name": "solo.npz", "owners": [{"emailAddress": "owner@lab.org"}]},
             }
             drive = FakeDrive(db)
             xattrs = {str(f1): "other_id_000000", str(f1_dup): "file_dup_000000"}
             state = {}
             with patch("train_v4._xattr_drive_id", side_effect=lambda p: xattrs.get(str(p))):
+                # 0-API xattr scan works on an explicit dataset folder
+                scanned = index_mounted_files({"file_dup_000000"}, mount / "MyDrive/ds")
+                self.assertEqual(scanned["file_dup_000000"], f1_dup)
                 self.assertEqual(resolve_mounted(drive, "file_dup_000000", mount, state), f1_dup)
                 self.assertEqual(resolve_mounted(drive, "gt_shared_00000", mount, state), f2)
-                with self.assertRaisesRegex(FileNotFoundError, "shortcut"):
+                with self.assertRaisesRegex(FileNotFoundError, "folders/unshared_folder_99"):
                     resolve_mounted(drive, "missing_id_0000", mount, state)
+                with self.assertRaisesRegex(FileNotFoundError, "owner@lab.org"):
+                    resolve_mounted(drive, "orphan_id_00000", mount, state)
 
     def test_untrimmed_camera_longer_than_gt_aligns_at_true_rate(self):
         rng = np.random.default_rng(7)

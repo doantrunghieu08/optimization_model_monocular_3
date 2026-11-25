@@ -85,12 +85,17 @@ for name, text in SNAPSHOTS.items():
 run_live([sys.executable, "-m", "unittest", "discover", "-s", "tests", "-p", "test_train_v4.py", "-v"])
 """, form=True)
 
-code("""#@title 3. Mount Google Drive, đọc Google Sheet & cấu hình lưu checkpoint
-import re
+code("""#@title 3. Mount Google Drive, ánh xạ file trên ổ mount (0% download) & đọc Sheet
+import logging, re
 from google.colab import auth, drive
 import google.auth, gspread
+from googleapiclient.discovery import build
+from train_v4 import ensure_folder_shortcuts, file_id, resolve_mounted, validate_rows
+
+logging.getLogger("google_auth_httplib2").setLevel(logging.ERROR)
 
 DRIVE_MOUNT = "/content/drive"  #@param {type:"string"}
+DRIVE_DATA_DIR = ""  #@param {type:"string"}
 SPREADSHEET_ID = "11OipPLik-aXw0GmrTfEwg6wsAQYEmvGEV8VRlyry4Rg"  #@param {type:"string"}
 TAB = "v4 22/11/26"  #@param {type:"string"}
 OUTPUT_DIR = "/content/drive/MyDrive/partwise_v4/run_002"  #@param {type:"string"}
@@ -99,10 +104,15 @@ LEARNING_RATE = 0.01  #@param {type:"number"}
 RESUME = True  #@param {type:"boolean"}
 SKIP_UNALIGNED_ACTIONS = True  #@param {type:"boolean"}
 
+SCOPES = [
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/spreadsheets.readonly",
+]
 auth.authenticate_user()
 drive.mount(DRIVE_MOUNT, force_remount=False)
-credentials, _ = google.auth.default()
+credentials, _ = google.auth.default(scopes=SCOPES)
 client = gspread.authorize(credentials)
+drive_svc = build("drive", "v3", credentials=credentials, cache_discovery=False)
 
 OUTPUT = Path(OUTPUT_DIR.strip())
 CACHE = OUTPUT / "joints_cache"
@@ -123,13 +133,51 @@ for raw_row in values[1:]:
     d["action"] = re.sub(r"_cam\\d+$", "", d.get("action", ""))
     rows.append(d)
 
-from train_v4 import validate_rows
 groups = validate_rows(rows)
-print(f"Loaded tab '{sheet.title}' | Rows: {len(rows)} | Train sequences: {list(groups.values()).count('train')} | Val sequences: {list(groups.values()).count('val')}")
+print(f"Loaded tab '{sheet.title}' | Rows: {len(rows)} | Train sequences: {list(groups.values()).count('train')} | Val sequences: {list(groups.values()).count('val')}", flush=True)
+
+# Ánh xạ toàn bộ File ID trên sheet sang đường dẫn nội bộ trên /content/drive (0% tải file)
+wanted_ids = sorted({file_id(r["GT"]) for r in rows} | {file_id(r["file PKL"]) for r in rows})
+print(f"Đang ánh xạ {len(wanted_ids)} file ID sang đường dẫn trên {DRIVE_MOUNT}...", flush=True)
+for attempt in range(2):
+    state = {
+        "wanted_ids": set(wanted_ids),
+        "data_dir": DRIVE_DATA_DIR.strip(),
+        "exclude_dir": str(OUTPUT),
+        "unmounted_folders": {},
+    }
+    first_err = None
+    for idx, fid in enumerate(wanted_ids, 1):
+        try:
+            p = resolve_mounted(drive_svc, fid, DRIVE_MOUNT, state)
+            if idx == 1 or idx % 40 == 0 or idx == len(wanted_ids):
+                print(f"  [{idx}/{len(wanted_ids)}] -> {p}", flush=True)
+        except FileNotFoundError as exc:
+            if first_err is None:
+                first_err = exc
+            if not state["unmounted_folders"]:
+                break
+    if first_err is None:
+        break
+    if attempt == 0 and state["unmounted_folders"]:
+        n_new = ensure_folder_shortcuts(drive_svc, state["unmounted_folders"])
+        if n_new > 0:
+            print(f"Đã tạo {n_new} lối tắt thư mục dữ liệu vào MyDrive/_v4_shortcuts; đang remount Google Drive...", flush=True)
+            drive.mount(DRIVE_MOUNT, force_remount=True)
+            continue
+    raise first_err
+
+for r in rows:
+    r["GT_path"] = str(state["files"][file_id(r["GT"])])
+    r["PKL_path"] = str(state["files"][file_id(r["file PKL"])])
+print(f"Đã ánh xạ thành công {len(wanted_ids)}/{len(wanted_ids)} file trực tiếp trên {DRIVE_MOUNT} (0% download)!")
 
 MANIFEST = OUTPUT / "manifest_input.json"
 if (OUTPUT / "last.json").exists() and MANIFEST.exists():
-    if json.loads(MANIFEST.read_text(encoding="utf-8")) != rows:
+    old_clean = [{k: v for k, v in r.items() if k not in ("GT_path", "PKL_path")}
+                 for r in json.loads(MANIFEST.read_text(encoding="utf-8"))]
+    new_clean = [{k: v for k, v in r.items() if k not in ("GT_path", "PKL_path")} for r in rows]
+    if old_clean != new_clean:
         raise ValueError("Dữ liệu Sheet đã thay đổi so với checkpoint cũ; hãy đổi OUTPUT_DIR sang thư mục mới.")
 MANIFEST.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
 print("Output Drive folder:", OUTPUT)

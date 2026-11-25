@@ -71,6 +71,12 @@ def file_id(value):
     return value
 
 
+SKIP_SCAN_DIRS = frozenset({
+    "images", "images (1)", "color", "depth", "colmap", "sparse", "dense",
+    ".git", "__pycache__", ".ipynb_checkpoints", "node_modules", "Trash", ".Trash",
+})
+
+
 def _xattr_drive_id(path):
     if not hasattr(os, "getxattr"):
         return None
@@ -78,6 +84,34 @@ def _xattr_drive_id(path):
         return os.getxattr(path, "user.drive.id").decode("utf-8").strip()
     except OSError:
         return None
+
+
+def index_mounted_files(wanted_ids, data_dir, exclude_dir=None):
+    """Scan an explicit dataset folder via user.drive.id xattr (never crawls all of MyDrive)."""
+    root = Path(data_dir)
+    if not data_dir or not root.is_dir():
+        return {}
+    wanted = set(wanted_ids)
+    found = {}
+    excl = os.path.realpath(exclude_dir) if exclude_dir and Path(exclude_dir).exists() else None
+    visited = set()
+    for dirpath, dirs, filenames in os.walk(root, followlinks=True):
+        real = os.path.realpath(dirpath)
+        if real in visited or (excl and (real == excl or real.startswith(excl + os.sep))):
+            dirs[:] = []
+            continue
+        visited.add(real)
+        dirs[:] = [d for d in dirs if d not in SKIP_SCAN_DIRS and not d.startswith(".")]
+        for fname in filenames:
+            if not fname.endswith((".pkl", ".npz")):
+                continue
+            full = os.path.join(dirpath, fname)
+            did = _xattr_drive_id(full)
+            if did in wanted:
+                found[did] = Path(full)
+                if len(found) == len(wanted):
+                    return found
+    return found
 
 
 def resolve_mounted(drive, value, mount, state=None):
@@ -88,18 +122,25 @@ def resolve_mounted(drive, value, mount, state=None):
         return direct
     mount = Path(mount)
     if not mount.exists():
-        raise FileNotFoundError(f"Google Drive is not mounted at {mount}; run drive.mount('/content/drive') first")
+        raise FileNotFoundError(f"Google Drive chưa được mount tại {mount}; hãy chạy drive.mount('/content/drive') trước.")
     fid = file_id(raw)
     state = state if state is not None else {}
     files_map = state.setdefault("files", {})
     if fid in files_map and files_map[fid].is_file():
         return files_map[fid]
-    by_id = mount / ".shortcut-targets-by-id" / fid
-    if by_id.is_file():
-        files_map[fid] = by_id
-        return by_id
+    # ponytail: never os.walk entire MyDrive over FUSE (hangs on thousands of dirs); scan only explicit data_dir
+    if not state.get("indexed") and state.get("wanted_ids") and str(state.get("data_dir", "")).strip():
+        files_map.update(index_mounted_files(
+            state["wanted_ids"], state["data_dir"], state.get("exclude_dir")))
+        state["indexed"] = True
+        if fid in files_map and files_map[fid].is_file():
+            return files_map[fid]
     if drive is None:
-        raise FileNotFoundError(f"Cannot resolve Drive ID {fid} under {mount} without Drive metadata client")
+        by_id = mount / ".shortcut-targets-by-id" / fid
+        if by_id.is_file():
+            files_map[fid] = by_id
+            return by_id
+        raise FileNotFoundError(f"Không tìm thấy Drive ID {fid} trên {mount} (thiếu Drive metadata client).")
 
     # ponytail: metadata-only parent walk (0 bytes downloaded -> never hits Drive download quota)
     meta_cache = state.setdefault("meta", {})
@@ -112,12 +153,13 @@ def resolve_mounted(drive, value, mount, state=None):
         if item_id not in meta_cache:
             meta_cache[item_id] = drive.files().get(
                 fileId=item_id,
-                fields="id,name,parents,driveId,shortcutDetails",
+                fields="id,name,mimeType,parents,driveId,shortcutDetails,owners",
                 supportsAllDrives=True,
             ).execute(num_retries=5)
         return meta_cache[item_id]
 
-    chain, seen, cur, base, top_id = [], set(), fid, None, fid
+    chain, seen, cur, base = [], set(), fid, None
+    top_folder_id, top_folder_name, leaf_meta, leaf_err = None, None, None, None
     while cur and cur not in seen:
         seen.add(cur)
         if cur in folders and folders[cur].is_dir():
@@ -130,13 +172,18 @@ def resolve_mounted(drive, value, mount, state=None):
                 break
         try:
             meta = get_meta(cur)
-        except Exception:
+        except Exception as exc:
+            if cur == fid:
+                leaf_err = exc
             break
+        if cur == fid:
+            leaf_meta = meta
         target_id = (meta.get("shortcutDetails") or {}).get("targetId")
         if target_id:
             cur = target_id
             continue
-        top_id = cur
+        if meta.get("mimeType") == "application/vnd.google-apps.folder":
+            top_folder_id, top_folder_name = cur, meta.get("name")
         parents = meta.get("parents") or []
         if not parents:
             drive_id = meta.get("driveId")
@@ -149,7 +196,7 @@ def resolve_mounted(drive, value, mount, state=None):
                     base = cand
                 elif sd_root.is_dir():
                     base = next((p for p in sd_root.iterdir() if _xattr_drive_id(p) == drive_id), None)
-            else:
+            elif top_folder_id == cur:
                 sc_dir = mount / ".shortcut-targets-by-id" / cur
                 if sc_dir.is_dir():
                     base = sc_dir
@@ -158,6 +205,8 @@ def resolve_mounted(drive, value, mount, state=None):
             break
         chain.append((cur, meta["name"]))
         parent = parents[0]
+        if top_folder_id is None:
+            top_folder_id = parent
         if parent == state["root_id"]:
             base = folders[parent] = mount / "MyDrive"
             break
@@ -180,10 +229,62 @@ def resolve_mounted(drive, value, mount, state=None):
             files_map[fid] = curr
             return curr
 
+    if top_folder_id and state.get("unmounted_folders") is not None:
+        state["unmounted_folders"][top_folder_id] = top_folder_name or top_folder_id
+    fname = (leaf_meta or {}).get("name", fid)
+    owner = (((leaf_meta or {}).get("owners") or [{}])[0]).get("emailAddress", "chủ sở hữu")
+    if leaf_err is not None:
+        raise FileNotFoundError(
+            f"Không truy cập được file {fid} ({leaf_err}). Hãy kiểm tra quyền truy cập hoặc mount đúng tài khoản Google Drive sở hữu dữ liệu."
+        )
+    if top_folder_id:
+        label = f"'{top_folder_name}' " if top_folder_name else ""
+        raise FileNotFoundError(
+            f"File '{fname}' ({fid}) chưa có trên Drive đã mount ({mount}). "
+            f"Hãy mở thư mục gốc {label}https://drive.google.com/drive/folders/{top_folder_id} "
+            f"-> bấm 'Thêm lối tắt vào Drive' (Add shortcut to Drive) vào MyDrive rồi chạy lại."
+        )
     raise FileNotFoundError(
-        f"File {fid} not found on mounted Drive ({mount}). "
-        f"If shared with you, add a Drive shortcut to MyDrive for https://drive.google.com/drive/folders/{top_id}"
+        f"File '{fname}' ({fid}, chủ sở hữu: {owner}) không nằm trong MyDrive của bạn và chỉ được chia sẻ lẻ link file "
+        f"(không chia sẻ thư mục cha), nên Google Drive Mount không thể gắn file này vào {mount}. "
+        f"Cách xử lý: (1) Khi chạy drive.mount('/content/drive'), hãy đăng nhập tài khoản Google sở hữu dữ liệu ({owner}), "
+        f"HOẶC (2) nhờ {owner} chia sẻ THƯ MỤC GỐC chứa dữ liệu v4 rồi bấm 'Add shortcut to Drive' vào MyDrive."
     )
+
+
+def ensure_folder_shortcuts(drive, folder_ids, shortcut_dir_name="_v4_shortcuts"):
+    """Create folder shortcuts in MyDrive/<shortcut_dir_name> so DriveFS mounts shared root folders."""
+    if not folder_ids:
+        return 0
+    q = f"mimeType='application/vnd.google-apps.folder' and name='{shortcut_dir_name}' and 'root' in parents and trashed=false"
+    res = drive.files().list(q=q, fields="files(id)", pageSize=1).execute(num_retries=5)
+    if res.get("files"):
+        parent_id = res["files"][0]["id"]
+    else:
+        parent_id = drive.files().create(
+            body={"name": shortcut_dir_name, "mimeType": "application/vnd.google-apps.folder", "parents": ["root"]},
+            fields="id",
+        ).execute(num_retries=5)["id"]
+    existing = drive.files().list(
+        q=f"'{parent_id}' in parents and mimeType='application/vnd.google-apps.shortcut' and trashed=false",
+        fields="files(id,shortcutDetails)", pageSize=200,
+    ).execute(num_retries=5).get("files", [])
+    have = {(f.get("shortcutDetails") or {}).get("targetId") for f in existing}
+    created = 0
+    for fid, label in folder_ids.items():
+        if fid not in have:
+            drive.files().create(
+                body={
+                    "name": f"{label}_{fid[:6]}",
+                    "mimeType": "application/vnd.google-apps.shortcut",
+                    "parents": [parent_id],
+                    "shortcutDetails": {"targetId": fid},
+                },
+                fields="id",
+                supportsAllDrives=True,
+            ).execute(num_retries=5)
+            created += 1
+    return created
 
 
 def joints_from_vertices(vertices, regressor):
@@ -337,28 +438,36 @@ def synchronize(ids_m, jm, ids_s, js):
 
 
 def prepare(rows, drive, cache, config, alignment_path=None, skip_unaligned_actions=False,
-            drive_mount="/content/drive"):
+            drive_mount="/content/drive", data_dir=""):
     validate_rows(rows)
     mapping = load_keypoints3d_map(str(ROOT / "configs/keypoints3D_map.yml"))
     names = [k["name"] for k in mapping["keypoints"]]
     reg = np.load(ROOT / "models/J_regressor_body25_extended.npy")
     reg = reg[[k["regressor_index"] for k in mapping["keypoints"]]]
-    pairs, reports, mount_state = [], [], {}
+    wanted_ids = {file_id(r["GT"]) for r in rows} | {file_id(r["file PKL"]) for r in rows}
+    mount_state = {
+        "wanted_ids": wanted_ids,
+        "data_dir": data_dir,
+        "exclude_dir": str(Path(alignment_path).parent) if alignment_path else None,
+    }
+    pairs, reports = [], []
     for action in dict.fromkeys(r["action"] for r in rows):
         cameras = []
         group = sorted((r for r in rows if r["action"] == action), key=lambda r: int(r["cam"][3:]))
         if len({file_id(r["GT"]) for r in group}) != 1:
             raise ValueError(f"Different GT files in one sequence: {action}")
-        gt_path = resolve_mounted(drive, group[0]["GT"], drive_mount, mount_state)
+        gt_ref = group[0].get("GT_path") or group[0]["GT"]
+        gt_path = resolve_mounted(drive, gt_ref, drive_mount, mount_state)
         with np.load(gt_path, allow_pickle=False) as data:
             gt = joints_from_vertices(data["verts"], reg)
         for row in group:
             # ponytail: cache compact 21-joint tracks (~100KB) so mounted PKLs (~150MB) are read once
-            jcache = Path(cache) / f"{file_id(row['file PKL'])}.joints.joblib" if drive is not None else None
+            jcache = Path(cache) / f"{file_id(row['file PKL'])}.joints.joblib" if (drive is not None or row.get("PKL_path")) else None
             if jcache is not None and jcache.exists():
                 tracks = joblib.load(jcache)
             else:
-                pkl_path = resolve_mounted(drive, row["file PKL"], drive_mount, mount_state)
+                pkl_ref = row.get("PKL_path") or row["file PKL"]
+                pkl_path = resolve_mounted(drive, pkl_ref, drive_mount, mount_state)
                 raw = joblib.load(pkl_path)
                 tracks = {}
                 for key, track in raw.items():
@@ -587,6 +696,8 @@ def main():
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--drive-mount", default="/content/drive",
                         help="Root directory where Google Drive is mounted (0 media downloads)")
+    parser.add_argument("--data-dir", default="",
+                        help="Optional dataset folder inside mounted Drive to scan first")
     parser.add_argument("--cache", default="inputs/v4_cache")
     parser.add_argument("--output", required=True)
     parser.add_argument("--epochs", type=int, default=50)
@@ -604,14 +715,18 @@ def main():
     config.pop("weight_model", None)
     # Sheet lacks visibility/tracking results: match training and inference evidence.
     config["multi_person"] = {"enabled": False}
-    from google.auth import default
-    from googleapiclient.discovery import build
-    credentials, _ = default()
-    drive = build("drive", "v3", credentials=credentials, cache_discovery=False)
+    need_drive = not all(r.get("GT_path") and r.get("PKL_path") for r in rows)
+    drive = None
+    if need_drive:
+        from google.auth import default
+        from googleapiclient.discovery import build
+        credentials, _ = default(scopes=["https://www.googleapis.com/auth/drive"])
+        drive = build("drive", "v3", credentials=credentials, cache_discovery=False)
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
     cache = Path(args.cache)
-    identity = hashlib.sha256(Path(args.manifest).read_bytes() +
+    stable_rows = [{k: v for k, v in r.items() if k not in ("GT_path", "PKL_path")} for r in rows]
+    identity = hashlib.sha256(json.dumps(stable_rows, sort_keys=True, ensure_ascii=False).encode() +
         (ROOT / "models/J_regressor_body25_extended.npy").read_bytes() +
         Path(__file__).read_bytes() + (ROOT / "fusion_pipeline/partwise.py").read_bytes() +
         (ROOT / "configs/keypoints3D_map.yml").read_bytes() + json.dumps(config, sort_keys=True).encode() +
@@ -625,7 +740,7 @@ def main():
     else:
         pairs, reports = prepare(rows, drive, cache, config, out / "alignment.json",
                                  skip_unaligned_actions=args.skip_unaligned_actions,
-                                 drive_mount=args.drive_mount)
+                                 drive_mount=args.drive_mount, data_dir=args.data_dir)
         temp = prepared_out.with_suffix(".tmp")
         joblib.dump((pairs, reports), temp)
         temp.replace(prepared_out)
