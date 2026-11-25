@@ -10,7 +10,7 @@ import numpy as np
 import torch
 
 from train_v4 import (AlignmentError, associate, centered, export_model, fit, prepare,
-                      torch_fuse, validate_rows, synchronize)
+                      resolve_mounted, torch_fuse, validate_rows, synchronize)
 from keypoints_map import load_keypoints3d_map
 from fusion_pipeline.partwise import extract_pair_features, fuse_partwise, slave_directions
 from test_partwise import CFG, skeleton
@@ -46,7 +46,7 @@ class TrainingTests(unittest.TestCase):
                     rows.append(dict(action=split, split=split, cam=f"cam{i}",
                                      GT=gt_id, **{"file PKL": pkl_id}))
             report_path = root / "alignment.json"
-            with patch("train_v4.download", side_effect=lambda drive, value, cache: root/value), \
+            with patch("train_v4.resolve_mounted", side_effect=lambda drive, value, mount, state=None: root / value), \
                  patch("train_v4.joints_from_vertices", side_effect=lambda vertices, reg: vertices):
                 pairs, reports = prepare(rows, None, root, CFG, report_path)
                 rejected = [r for r in reports if r["status"] == "rejected"]
@@ -72,6 +72,69 @@ class TrainingTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "No usable pairs for one of the splits"):
                     prepare(bad_rows + [r for r in rows if r["split"] == "val"], None, root, CFG,
                             report_path, skip_unaligned_actions=True)
+
+    def test_resolve_mounted_mydrive_shortcut_and_duplicates(self):
+        class FakeReq:
+            def __init__(self, payload):
+                self.payload = payload
+            def execute(self, num_retries=0):
+                if isinstance(self.payload, Exception):
+                    raise self.payload
+                return self.payload
+
+        class FakeFiles:
+            def __init__(self, db):
+                self.db = db
+            def get(self, fileId, fields="", supportsAllDrives=False):
+                return FakeReq(self.db.get(fileId, RuntimeError("404")))
+
+        class FakeDrive:
+            def __init__(self, db):
+                self._files = FakeFiles(db)
+            def files(self):
+                return self._files
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mount = Path(tmp) / "drive"
+            (mount / "MyDrive/ds/seq").mkdir(parents=True)
+            f1 = mount / "MyDrive/ds/seq/wham.pkl"
+            f1_dup = mount / "MyDrive/ds/seq/wham (1).pkl"
+            f1.write_bytes(b"a")
+            f1_dup.write_bytes(b"b")
+            sc_dir = mount / ".shortcut-targets-by-id/shared_folder_12345"
+            sc_dir.mkdir(parents=True)
+            f2 = sc_dir / "sub/gt.npz"
+            f2.parent.mkdir(parents=True)
+            f2.write_bytes(b"gt")
+
+            db = {
+                "root": {"id": "root_0000000000"},
+                "ds_000000000000": {"id": "ds_000000000000", "name": "ds", "parents": ["root_0000000000"]},
+                "seq_00000000000": {"id": "seq_00000000000", "name": "seq", "parents": ["ds_000000000000"]},
+                "file_dup_000000": {"id": "file_dup_000000", "name": "wham.pkl", "parents": ["seq_00000000000"]},
+                "sub_00000000000": {"id": "sub_00000000000", "name": "sub", "parents": ["shared_folder_12345"]},
+                "gt_shared_00000": {"id": "gt_shared_00000", "name": "gt.npz", "parents": ["sub_00000000000"]},
+                "missing_id_0000": {"id": "missing_id_0000", "name": "x.pkl", "parents": ["unshared_folder_99"]},
+            }
+            drive = FakeDrive(db)
+            xattrs = {str(f1): "other_id_000000", str(f1_dup): "file_dup_000000"}
+            state = {}
+            with patch("train_v4._xattr_drive_id", side_effect=lambda p: xattrs.get(str(p))):
+                self.assertEqual(resolve_mounted(drive, "file_dup_000000", mount, state), f1_dup)
+                self.assertEqual(resolve_mounted(drive, "gt_shared_00000", mount, state), f2)
+                with self.assertRaisesRegex(FileNotFoundError, "shortcut"):
+                    resolve_mounted(drive, "missing_id_0000", mount, state)
+
+    def test_untrimmed_camera_longer_than_gt_aligns_at_true_rate(self):
+        rng = np.random.default_rng(7)
+        names = pair()["names"]
+        gt = rng.normal(size=(40, len(names), 3))
+        extra = rng.normal(size=(60, len(names), 3))
+        cam = np.concatenate([gt @ np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]]) + 2, extra], axis=0)
+        ids, _, report = associate({"0": (np.arange(100), cam)}, gt, names)
+        self.assertEqual(report["ratio"], 1.0)
+        self.assertEqual(report["offset"], 0)
+        np.testing.assert_array_equal(ids, np.arange(40))
 
     def test_alignment_rejects_insufficient_overlap(self):
         names = pair()["names"]

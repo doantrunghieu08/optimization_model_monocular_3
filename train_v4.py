@@ -8,6 +8,7 @@ import copy
 import hashlib
 import itertools
 import json
+import os
 import random
 from pathlib import Path
 
@@ -16,12 +17,15 @@ import numpy as np
 import torch
 import yaml
 
+from compat import patch_numpy_and_inspect
 from fusion_pipeline.aotr import _ordered_bones
 from fusion_pipeline.partwise import (
     FEATURE_NAMES, blend_frame, eval_weight_model, extract_pair_features,
     fuse_partwise, slave_directions,
 )
 from keypoints_map import load_keypoints3d_map
+
+patch_numpy_and_inspect()
 
 ROOT = Path(__file__).resolve().parent
 BODY = ("left_shoulder", "right_shoulder", "left_elbow", "right_elbow",
@@ -67,19 +71,119 @@ def file_id(value):
     return value
 
 
-def download(drive, value, cache):
-    from googleapiclient.http import MediaIoBaseDownload
-    cache.mkdir(parents=True, exist_ok=True)
-    path = cache / file_id(value)
-    if not path.exists():
-        temp = path.with_suffix(".download")
-        with temp.open("wb") as stream:
-            reader = MediaIoBaseDownload(stream, drive.files().get_media(fileId=path.name))
-            done = False
-            while not done:
-                _, done = reader.next_chunk()
-        temp.replace(path)
-    return path
+def _xattr_drive_id(path):
+    if not hasattr(os, "getxattr"):
+        return None
+    try:
+        return os.getxattr(path, "user.drive.id").decode("utf-8").strip()
+    except OSError:
+        return None
+
+
+def resolve_mounted(drive, value, mount, state=None):
+    """Resolve a Drive file ID/URL to a local path on mounted Google Drive (0 media downloads)."""
+    raw = str(value).strip()
+    direct = Path(raw)
+    if direct.is_file():
+        return direct
+    mount = Path(mount)
+    if not mount.exists():
+        raise FileNotFoundError(f"Google Drive is not mounted at {mount}; run drive.mount('/content/drive') first")
+    fid = file_id(raw)
+    state = state if state is not None else {}
+    files_map = state.setdefault("files", {})
+    if fid in files_map and files_map[fid].is_file():
+        return files_map[fid]
+    by_id = mount / ".shortcut-targets-by-id" / fid
+    if by_id.is_file():
+        files_map[fid] = by_id
+        return by_id
+    if drive is None:
+        raise FileNotFoundError(f"Cannot resolve Drive ID {fid} under {mount} without Drive metadata client")
+
+    # ponytail: metadata-only parent walk (0 bytes downloaded -> never hits Drive download quota)
+    meta_cache = state.setdefault("meta", {})
+    folders = state.setdefault("folders", {})
+    if "root_id" not in state:
+        state["root_id"] = drive.files().get(fileId="root", fields="id").execute(num_retries=5)["id"]
+        folders[state["root_id"]] = mount / "MyDrive"
+
+    def get_meta(item_id):
+        if item_id not in meta_cache:
+            meta_cache[item_id] = drive.files().get(
+                fileId=item_id,
+                fields="id,name,parents,driveId,shortcutDetails",
+                supportsAllDrives=True,
+            ).execute(num_retries=5)
+        return meta_cache[item_id]
+
+    chain, seen, cur, base, top_id = [], set(), fid, None, fid
+    while cur and cur not in seen:
+        seen.add(cur)
+        if cur in folders and folders[cur].is_dir():
+            base = folders[cur]
+            break
+        if chain:
+            sc_dir = mount / ".shortcut-targets-by-id" / cur
+            if sc_dir.is_dir():
+                base = folders[cur] = sc_dir
+                break
+        try:
+            meta = get_meta(cur)
+        except Exception:
+            break
+        target_id = (meta.get("shortcutDetails") or {}).get("targetId")
+        if target_id:
+            cur = target_id
+            continue
+        top_id = cur
+        parents = meta.get("parents") or []
+        if not parents:
+            drive_id = meta.get("driveId")
+            if cur == state["root_id"]:
+                base = mount / "MyDrive"
+            elif drive_id and cur == drive_id:
+                sd_root = mount / "Shareddrives"
+                cand = sd_root / meta["name"]
+                if cand.is_dir():
+                    base = cand
+                elif sd_root.is_dir():
+                    base = next((p for p in sd_root.iterdir() if _xattr_drive_id(p) == drive_id), None)
+            else:
+                sc_dir = mount / ".shortcut-targets-by-id" / cur
+                if sc_dir.is_dir():
+                    base = sc_dir
+            if base is not None:
+                folders[cur] = base
+            break
+        chain.append((cur, meta["name"]))
+        parent = parents[0]
+        if parent == state["root_id"]:
+            base = folders[parent] = mount / "MyDrive"
+            break
+        cur = parent
+
+    if base is not None:
+        curr = base
+        for item_id, item_name in reversed(chain):
+            cand = curr / item_name
+            if cand.exists() and (_xattr_drive_id(cand) in (None, item_id)):
+                curr = cand
+            elif curr.is_dir():
+                matched = next((p for p in curr.iterdir() if _xattr_drive_id(p) == item_id), None)
+                curr = matched if matched is not None else cand
+            else:
+                curr = cand
+            if curr.is_dir():
+                folders[item_id] = curr
+        if curr.is_file():
+            files_map[fid] = curr
+            return curr
+
+    raise FileNotFoundError(
+        f"File {fid} not found on mounted Drive ({mount}). "
+        f"If shared with you, add a Drive shortcut to MyDrive for https://drive.google.com/drive/folders/{top_id}"
+    )
 
 
 def joints_from_vertices(vertices, regressor):
@@ -104,10 +208,12 @@ def rotation(source, target):
 
 
 def pa_errors(source, target):
+    source = np.asarray(source, dtype=np.float32)
+    target = np.asarray(target, dtype=np.float32)
     source = source - source.mean(1, keepdims=True)
     target = target - target.mean(1, keepdims=True)
     u, _, vt = np.linalg.svd(np.einsum("tji,tjk->tik", source, target))
-    correction = np.broadcast_to(np.eye(3), u.shape).copy()
+    correction = np.broadcast_to(np.eye(3, dtype=np.float32), u.shape).copy()
     correction[:, -1, -1] = np.linalg.det(u @ vt)
     rot = u @ correction @ vt
     moved = source @ rot
@@ -127,18 +233,22 @@ def associate(tracks, gt, names, ratios=(0.5, 1.0, 2.0)):
     if len(all_ids) < 16:
         raise AlignmentError("Need >=16 camera frames for alignment")
     # Precompute PA costs against every GT tick once, then search timelines cheaply.
-    costs = np.full((len(all_ids), len(keys), len(gt)), np.inf)
+    costs = np.full((len(all_ids), len(keys), len(gt)), np.inf, dtype=np.float32)
     joints_at = {}
+    gt_body = np.asarray(gt[:, body], dtype=np.float32)
     for ki, key in enumerate(keys):
         ids, joints = tracks[key]
         ids = np.asarray(ids, dtype=int)
         if len(np.unique(ids)) != len(ids) or len(ids) != len(joints):
             raise ValueError(f"Invalid/duplicate frame ids for track {key}")
         positions = np.searchsorted(all_ids, ids)
-        source = np.repeat(joints[:, None, body], len(gt), axis=1)
-        target = np.broadcast_to(gt[None, :, body], source.shape)
-        costs[positions, ki] = pa_errors(source.reshape(-1, len(body), 3),
-                                        target.reshape(-1, len(body), 3)).reshape(len(ids), len(gt))
+        for s0 in range(0, len(ids), 128):
+            chunk = joints[s0:s0 + 128, body]
+            source = np.repeat(chunk[:, None], len(gt), axis=1)
+            target = np.broadcast_to(gt_body[None], source.shape)
+            costs[positions[s0:s0 + 128], ki] = pa_errors(
+                source.reshape(-1, len(body), 3), target.reshape(-1, len(body), 3)
+            ).reshape(len(chunk), len(gt))
         for pos, joint in zip(positions, joints):
             joints_at[(int(pos), ki)] = joint
     roots = np.zeros((len(all_ids), len(keys), 3))
@@ -146,19 +256,26 @@ def associate(tracks, gt, names, ratios=(0.5, 1.0, 2.0)):
         roots[pos, ki] = joints[[names.index("left_hip"), names.index("right_hip")]].mean(0)
     continuity = {}
     candidates = []
+    best_lb = float("inf")
     for ratio in ratios:
         mapped = np.rint((all_ids - all_ids.min()) * ratio).astype(int)
+        # ponytail: cap required camera frames by achievable GT window when video outlasts mocap clip
+        min_keep = max(16, int(np.ceil(0.7 * min(len(all_ids), np.ceil(len(gt) / ratio)))))
         for offset in range(-int(mapped.max()), len(gt)):
             gi = mapped + offset
             keep = np.where((gi >= 0) & (gi < len(gt)))[0]
-            if len(keep) < max(16, int(np.ceil(0.7 * len(all_ids)))):
+            if len(keep) < min_keep:
                 continue
             unique_gt, unique = np.unique(gi[keep], return_index=True)
             positions = keep[unique]
-            coverage = min(1.0, (float(np.ptp(unique_gt)) + ratio) / len(gt))
+            coverage = min(1.0, (float(len(unique_gt)) * max(ratio, 1.0)) / len(gt))
             if len(unique_gt) < 16 or coverage < 0.5:
                 continue
             local = costs[positions, :, unique_gt]
+            lb = float(local.min(axis=1).mean())
+            best_lb = min(best_lb, lb)
+            if lb > 0.15:
+                continue
             previous = local[0].copy()
             parents = []
             for step, emission in enumerate(local[1:], 1):
@@ -181,7 +298,9 @@ def associate(tracks, gt, names, ratios=(0.5, 1.0, 2.0)):
             score = float(previous[final] / len(path) + 0.03 * (1 - coverage))
             candidates.append((score, raw_error, ratio, offset, positions, unique_gt, path, coverage))
     if not candidates:
-        raise AlignmentError("No alignment covers >=70% camera frames and >=50% GT timeline")
+        if np.isfinite(best_lb):
+            raise AlignmentError(f"Alignment PA error {best_lb * 1000:.1f}mm exceeds 150mm; inspect data")
+        raise AlignmentError("No alignment covers >=70% achievable camera overlap and >=50% GT timeline")
     candidates.sort(key=lambda c: c[:4])
     score, error, ratio, offset, positions, gi, path, coverage = candidates[0]
     if error > 0.15:
@@ -217,26 +336,40 @@ def synchronize(ids_m, jm, ids_s, js):
     return common[valid], arrays[0][valid], arrays[1][valid]
 
 
-def prepare(rows, drive, cache, config, alignment_path=None, skip_unaligned_actions=False):
+def prepare(rows, drive, cache, config, alignment_path=None, skip_unaligned_actions=False,
+            drive_mount="/content/drive"):
     validate_rows(rows)
     mapping = load_keypoints3d_map(str(ROOT / "configs/keypoints3D_map.yml"))
     names = [k["name"] for k in mapping["keypoints"]]
     reg = np.load(ROOT / "models/J_regressor_body25_extended.npy")
     reg = reg[[k["regressor_index"] for k in mapping["keypoints"]]]
-    pairs, reports = [], []
+    pairs, reports, mount_state = [], [], {}
     for action in dict.fromkeys(r["action"] for r in rows):
         cameras = []
         group = sorted((r for r in rows if r["action"] == action), key=lambda r: int(r["cam"][3:]))
         if len({file_id(r["GT"]) for r in group}) != 1:
             raise ValueError(f"Different GT files in one sequence: {action}")
-        with np.load(download(drive, group[0]["GT"], cache), allow_pickle=False) as data:
+        gt_path = resolve_mounted(drive, group[0]["GT"], drive_mount, mount_state)
+        with np.load(gt_path, allow_pickle=False) as data:
             gt = joints_from_vertices(data["verts"], reg)
         for row in group:
-            raw = joblib.load(download(drive, row["file PKL"], cache))
-            tracks = {}
-            for key, track in raw.items():
-                if isinstance(track, dict) and "verts" in track and "frame_ids" in track:
-                    tracks[str(key)] = (track["frame_ids"], joints_from_vertices(track["verts"], reg))
+            # ponytail: cache compact 21-joint tracks (~100KB) so mounted PKLs (~150MB) are read once
+            jcache = Path(cache) / f"{file_id(row['file PKL'])}.joints.joblib" if drive is not None else None
+            if jcache is not None and jcache.exists():
+                tracks = joblib.load(jcache)
+            else:
+                pkl_path = resolve_mounted(drive, row["file PKL"], drive_mount, mount_state)
+                raw = joblib.load(pkl_path)
+                tracks = {}
+                for key, track in raw.items():
+                    if isinstance(track, dict) and "verts" in track and "frame_ids" in track:
+                        tracks[str(key)] = (np.asarray(track["frame_ids"], dtype=int),
+                                            joints_from_vertices(track["verts"], reg))
+                if jcache is not None and tracks:
+                    jcache.parent.mkdir(parents=True, exist_ok=True)
+                    tmp_j = jcache.with_suffix(".tmp")
+                    joblib.dump(tracks, tmp_j)
+                    tmp_j.replace(jcache)
             if not tracks:
                 raise ValueError(f"Expected WHAM tracks with camera-frame verts: {action}/{row['cam']}")
             print(f"Aligning {action}/{row['cam']}", flush=True)
@@ -319,6 +452,20 @@ def torch_fuse(pair, weights, std):
     return output - root
 
 
+def torch_pa_loss(pred, target):
+    # ponytail: Envelope-theorem Procrustes PA-MPJPE avoids global yaw drift in uncalibrated v4 GT & SVD backward NaNs
+    pred_c = pred - pred.mean(1, keepdim=True)
+    tgt_c = target - target.mean(1, keepdim=True)
+    with torch.no_grad():
+        u, _, vt = torch.linalg.svd(torch.einsum("tji,tjk->tik", pred_c, tgt_c))
+        corr = torch.eye(3, dtype=pred.dtype, device=pred.device).expand_as(u).clone()
+        corr[:, -1, -1] = torch.det(u @ vt)
+        rot = u @ corr @ vt
+        moved = pred_c @ rot
+        scale = (moved * tgt_c).sum((1, 2)) / (moved * moved).sum((1, 2)).clamp_min(1e-12)
+    return torch.linalg.vector_norm((pred_c @ rot) * scale[:, None, None] - tgt_c, dim=-1).mean()
+
+
 def validation(pairs, model, config):
     # Equal sequence weight prevents sequences with more camera pairs dominating selection.
     scores, baselines = {}, {}
@@ -328,16 +475,17 @@ def validation(pairs, model, config):
         fused, _ = fuse_partwise(p["M"], p["S"], cfg)
         names = p["names"]
         inds = [names.index(n) for n in BODY]
-        output = centered(np.array([[f[n] for n in names] for f in fused]), names)
-        master = centered(np.array([[f[n] for n in names] for f in p["M"]]), names)
+        output = np.array([[f[n] for n in names] for f in fused], dtype=np.float32)
+        master = np.array([[f[n] for n in names] for f in p["M"]], dtype=np.float32)
         for values, pred in ((scores, output), (baselines, master)):
-            values.setdefault(p["action"], []).append(float(np.linalg.norm(
-                pred[:, inds] - p["target"][:, inds], axis=-1).mean() * 1000))
+            values.setdefault(p["action"], []).append(
+                float(pa_errors(pred[:, inds], p["target"][:, inds]).mean() * 1000))
     return (float(np.mean([np.mean(v) for v in scores.values()])),
             float(np.mean([np.mean(v) for v in baselines.values()])))
 
 
 def atomic_json(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_suffix(path.suffix + ".tmp")
     temp.write_text(json.dumps(value, indent=2, ensure_ascii=False, allow_nan=False), encoding="utf-8")
     temp.replace(path)
@@ -375,6 +523,12 @@ def fit(pairs, config, out, epochs=50, lr=0.01, resume=None, identity=""):
     elif list(out.glob("epoch_*.pt")):
         raise ValueError("Output already has checkpoints; resume or choose a new folder")
     best_model = ckpt["best_model"] if resume else None
+    equal_val, _ = validation(val, export_model(np.zeros(len(FEATURE_NAMES)), std.numpy()), config)
+    if start > epochs:
+        print(json.dumps({"status": "already_completed", "epochs": epochs,
+                          "best_epoch": best_model["epoch"] if best_model else None,
+                          "best_val_mpjpe_mm": best}), flush=True)
+        return history
     actions = sorted({p["action"] for p in train})
     for epoch in range(start, epochs + 1):
         order = actions.copy()
@@ -386,8 +540,8 @@ def fit(pairs, config, out, epochs=50, lr=0.01, resume=None, identity=""):
             action_losses = []
             for p in group:
                 inds = [p["names"].index(n) for n in BODY]
-                target = torch.as_tensor(p["target"])
-                loss = torch.linalg.vector_norm(torch_fuse(p, weights, std)[:, inds] - target[:, inds], dim=-1).mean()
+                target = torch.as_tensor(p["target"][:, inds])
+                loss = torch_pa_loss(torch_fuse(p, weights, std)[:, inds], target)
                 (loss / len(group)).backward()
                 action_losses.append(float(loss.detach()) * 1000)
             optimizer.step()
@@ -399,9 +553,12 @@ def fit(pairs, config, out, epochs=50, lr=0.01, resume=None, identity=""):
         improved = score < best
         if improved:
             best, best_model = score, dict(model, epoch=epoch, val_mpjpe_mm=score,
+                                           equal_val_mpjpe_mm=equal_val,
                                            baseline_val_mpjpe_mm=baseline)
         history.append(dict(epoch=epoch, train_mpjpe_mm=float(np.mean(losses)),
-                            val_mpjpe_mm=score, baseline_val_mpjpe_mm=baseline))
+                            val_mpjpe_mm=score, equal_val_mpjpe_mm=equal_val,
+                            baseline_val_mpjpe_mm=baseline,
+                            best_epoch=best_model["epoch"], best_val_mpjpe_mm=best))
         checkpoint = dict(epoch=epoch, weights=weights.detach().clone(), std=std.numpy(),
                           optimizer=optimizer.state_dict(), signature=signature, history=history,
                           best_val_mm=best, best_model=best_model,
@@ -411,10 +568,14 @@ def fit(pairs, config, out, epochs=50, lr=0.01, resume=None, identity=""):
         temp.replace(out / f"epoch_{epoch:04d}.pt")
         atomic_json(out / f"epoch_{epoch:04d}_weights.json", model)
         atomic_json(out / "history.json", history)
-        atomic_json(out / "last.json", {"checkpoint": f"epoch_{epoch:04d}.pt"})
+        atomic_json(out / "last.json", {"checkpoint": f"epoch_{epoch:04d}.pt", "signature": signature, "epoch": epoch})
         atomic_json(out / "best_weights.json", best_model)
         patch = copy.deepcopy(config)
-        patch["weight_model"] = {"enabled": True, "path": str((out / "best_weights.json").resolve())}
+        # ponytail: inline 8 linear weights directly in YAML so config works across Colab/local without broken paths
+        patch["weight_model"] = {
+            "enabled": True,
+            **{k: best_model[k] for k in ("type", "feature_names", "mean", "std", "weights")},
+        }
         (out / "best_partwise.yml").write_text(yaml.safe_dump(
             {"fusion": {"method": "partwise", "partwise": patch}}, sort_keys=False), encoding="utf-8")
         print(json.dumps(history[-1]), flush=True)
@@ -424,6 +585,8 @@ def fit(pairs, config, out, epochs=50, lr=0.01, resume=None, identity=""):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", required=True)
+    parser.add_argument("--drive-mount", default="/content/drive",
+                        help="Root directory where Google Drive is mounted (0 media downloads)")
     parser.add_argument("--cache", default="inputs/v4_cache")
     parser.add_argument("--output", required=True)
     parser.add_argument("--epochs", type=int, default=50)
@@ -453,21 +616,24 @@ def main():
         Path(__file__).read_bytes() + (ROOT / "fusion_pipeline/partwise.py").read_bytes() +
         (ROOT / "configs/keypoints3D_map.yml").read_bytes() + json.dumps(config, sort_keys=True).encode() +
         str(args.skip_unaligned_actions).encode()).hexdigest()
-    prepared = cache / f"prepared_{identity}.joblib"
-    if prepared.exists():
-        pairs, reports = joblib.load(prepared)
+    prepared_out = out / f"prepared_{identity}.joblib"
+    prepared_cache = cache / f"prepared_{identity}.joblib"
+    if prepared_out.exists():
+        pairs, reports = joblib.load(prepared_out)
+    elif prepared_cache.exists():
+        pairs, reports = joblib.load(prepared_cache)
     else:
         pairs, reports = prepare(rows, drive, cache, config, out / "alignment.json",
-                                 skip_unaligned_actions=args.skip_unaligned_actions)
-        cache.mkdir(parents=True, exist_ok=True)
-        temp = prepared.with_suffix(".tmp")
+                                 skip_unaligned_actions=args.skip_unaligned_actions,
+                                 drive_mount=args.drive_mount)
+        temp = prepared_out.with_suffix(".tmp")
         joblib.dump((pairs, reports), temp)
-        temp.replace(prepared)
+        temp.replace(prepared_out)
     atomic_json(out / "alignment.json", reports)
     atomic_json(out / "manifest.json", rows)
     atomic_json(out / "protocol.json", {
-        "metric": "12-body-joint root-centered MPJPE, one GT rotation per camera-pair segment",
-        "selection": "mean of pair scores within each action, then mean across val actions",
+        "metric": "12-body-joint Procrustes PA-MPJPE (mm)",
+        "selection": "mean of pair PA-MPJPE scores within each action, then mean across val actions",
         "association": "GT-assisted proper-rotation PA timeline search and penalized track stitching; ratio 0.5/1/2, integer offset",
         "limitations": "GT-assisted time/track association; review alignment.json. No independent test score.",
         "feature_names": list(FEATURE_NAMES), "config": config,
