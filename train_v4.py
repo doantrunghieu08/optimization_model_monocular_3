@@ -128,6 +128,11 @@ def resolve_mounted(drive, value, mount, state=None):
     files_map = state.setdefault("files", {})
     if fid in files_map and files_map[fid].is_file():
         return files_map[fid]
+    for cand in (mount / ".shortcut-targets-by-id" / fid,
+                 mount / "MyDrive" / "_v4_shortcuts" / fid):
+        if cand.is_file():
+            files_map[fid] = cand
+            return cand
     # ponytail: never os.walk entire MyDrive over FUSE (hangs on thousands of dirs); scan only explicit data_dir
     if not state.get("indexed") and state.get("wanted_ids") and str(state.get("data_dir", "")).strip():
         files_map.update(index_mounted_files(
@@ -229,8 +234,9 @@ def resolve_mounted(drive, value, mount, state=None):
             files_map[fid] = curr
             return curr
 
-    if top_folder_id and state.get("unmounted_folders") is not None:
-        state["unmounted_folders"][top_folder_id] = top_folder_name or top_folder_id
+    if leaf_err is None and state.get("unmounted_targets") is not None:
+        target_id = top_folder_id or fid
+        state["unmounted_targets"][target_id] = (top_folder_name or fid) if top_folder_id else fid
     fname = (leaf_meta or {}).get("name", fid)
     owner = (((leaf_meta or {}).get("owners") or [{}])[0]).get("emailAddress", "chủ sở hữu")
     if leaf_err is not None:
@@ -245,16 +251,14 @@ def resolve_mounted(drive, value, mount, state=None):
             f"-> bấm 'Thêm lối tắt vào Drive' (Add shortcut to Drive) vào MyDrive rồi chạy lại."
         )
     raise FileNotFoundError(
-        f"File '{fname}' ({fid}, chủ sở hữu: {owner}) không nằm trong MyDrive của bạn và chỉ được chia sẻ lẻ link file "
-        f"(không chia sẻ thư mục cha), nên Google Drive Mount không thể gắn file này vào {mount}. "
-        f"Cách xử lý: (1) Khi chạy drive.mount('/content/drive'), hãy đăng nhập tài khoản Google sở hữu dữ liệu ({owner}), "
-        f"HOẶC (2) nhờ {owner} chia sẻ THƯ MỤC GỐC chứa dữ liệu v4 rồi bấm 'Add shortcut to Drive' vào MyDrive."
+        f"File '{fname}' ({fid}, chủ sở hữu: {owner}) chưa gắn được vào {mount} dù đã tạo lối tắt. "
+        f"Hãy mount đúng tài khoản Google sở hữu ({owner}) hoặc nhờ {owner} chia sẻ thư mục cha."
     )
 
 
-def ensure_folder_shortcuts(drive, folder_ids, shortcut_dir_name="_v4_shortcuts"):
-    """Create folder shortcuts in MyDrive/<shortcut_dir_name> so DriveFS mounts shared root folders."""
-    if not folder_ids:
+def ensure_shortcuts(drive, target_ids, shortcut_dir_name="_v4_shortcuts"):
+    """Create Drive shortcuts in MyDrive/<shortcut_dir_name> so DriveFS mounts shared folders/files."""
+    if not target_ids:
         return 0
     q = f"mimeType='application/vnd.google-apps.folder' and name='{shortcut_dir_name}' and 'root' in parents and trashed=false"
     res = drive.files().list(q=q, fields="files(id)", pageSize=1).execute(num_retries=5)
@@ -265,26 +269,33 @@ def ensure_folder_shortcuts(drive, folder_ids, shortcut_dir_name="_v4_shortcuts"
             body={"name": shortcut_dir_name, "mimeType": "application/vnd.google-apps.folder", "parents": ["root"]},
             fields="id",
         ).execute(num_retries=5)["id"]
-    existing = drive.files().list(
-        q=f"'{parent_id}' in parents and mimeType='application/vnd.google-apps.shortcut' and trashed=false",
-        fields="files(id,shortcutDetails)", pageSize=200,
-    ).execute(num_retries=5).get("files", [])
-    have = {(f.get("shortcutDetails") or {}).get("targetId") for f in existing}
-    created = 0
-    for fid, label in folder_ids.items():
-        if fid not in have:
-            drive.files().create(
+    have, page_token = set(), None
+    while True:
+        resp = drive.files().list(
+            q=f"'{parent_id}' in parents and mimeType='application/vnd.google-apps.shortcut' and trashed=false",
+            fields="nextPageToken,files(shortcutDetails)", pageSize=1000, pageToken=page_token,
+        ).execute(num_retries=5)
+        have.update((f.get("shortcutDetails") or {}).get("targetId") for f in resp.get("files", []))
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            break
+    missing = [(tid, label) for tid, label in target_ids.items() if tid not in have]
+    for i in range(0, len(missing), 50):
+        batch = drive.new_batch_http_request()
+        for tid, label in missing[i:i + 50]:
+            name = tid if label == tid else f"{label}_{tid[:6]}"
+            batch.add(drive.files().create(
                 body={
-                    "name": f"{label}_{fid[:6]}",
+                    "name": name,
                     "mimeType": "application/vnd.google-apps.shortcut",
                     "parents": [parent_id],
-                    "shortcutDetails": {"targetId": fid},
+                    "shortcutDetails": {"targetId": tid},
                 },
                 fields="id",
                 supportsAllDrives=True,
-            ).execute(num_retries=5)
-            created += 1
-    return created
+            ))
+        batch.execute()
+    return len(missing)
 
 
 def joints_from_vertices(vertices, regressor):

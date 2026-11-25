@@ -119,18 +119,24 @@ class TrainingTests(unittest.TestCase):
                 "orphan_id_00000": {"id": "orphan_id_00000", "name": "solo.npz", "owners": [{"emailAddress": "owner@lab.org"}]},
             }
             drive = FakeDrive(db)
+            (mount / "MyDrive/_v4_shortcuts").mkdir(parents=True)
+            (mount / "MyDrive/_v4_shortcuts/sc_file_000000").write_bytes(b"sc")
             xattrs = {str(f1): "other_id_000000", str(f1_dup): "file_dup_000000"}
-            state = {}
+            state = {"unmounted_targets": {}}
             with patch("train_v4._xattr_drive_id", side_effect=lambda p: xattrs.get(str(p))):
                 # 0-API xattr scan works on an explicit dataset folder
                 scanned = index_mounted_files({"file_dup_000000"}, mount / "MyDrive/ds")
                 self.assertEqual(scanned["file_dup_000000"], f1_dup)
+                self.assertEqual(resolve_mounted(drive, "sc_file_000000", mount, state),
+                                 mount / "MyDrive/_v4_shortcuts/sc_file_000000")
                 self.assertEqual(resolve_mounted(drive, "file_dup_000000", mount, state), f1_dup)
                 self.assertEqual(resolve_mounted(drive, "gt_shared_00000", mount, state), f2)
                 with self.assertRaisesRegex(FileNotFoundError, "folders/unshared_folder_99"):
                     resolve_mounted(drive, "missing_id_0000", mount, state)
                 with self.assertRaisesRegex(FileNotFoundError, "owner@lab.org"):
                     resolve_mounted(drive, "orphan_id_00000", mount, state)
+                self.assertIn("orphan_id_00000", state["unmounted_targets"])
+                self.assertIn("unshared_folder_99", state["unmounted_targets"])
 
     def test_untrimmed_camera_longer_than_gt_aligns_at_true_rate(self):
         rng = np.random.default_rng(7)

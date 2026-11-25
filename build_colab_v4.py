@@ -90,7 +90,7 @@ import logging, re
 from google.colab import auth, drive
 import google.auth, gspread
 from googleapiclient.discovery import build
-from train_v4 import ensure_folder_shortcuts, file_id, resolve_mounted, validate_rows
+from train_v4 import ensure_shortcuts, file_id, resolve_mounted, validate_rows
 
 logging.getLogger("google_auth_httplib2").setLevel(logging.ERROR)
 
@@ -144,7 +144,7 @@ for attempt in range(2):
         "wanted_ids": set(wanted_ids),
         "data_dir": DRIVE_DATA_DIR.strip(),
         "exclude_dir": str(OUTPUT),
-        "unmounted_folders": {},
+        "unmounted_targets": {},
     }
     first_err = None
     for idx, fid in enumerate(wanted_ids, 1):
@@ -155,16 +155,13 @@ for attempt in range(2):
         except FileNotFoundError as exc:
             if first_err is None:
                 first_err = exc
-            if not state["unmounted_folders"]:
-                break
     if first_err is None:
         break
-    if attempt == 0 and state["unmounted_folders"]:
-        n_new = ensure_folder_shortcuts(drive_svc, state["unmounted_folders"])
-        if n_new > 0:
-            print(f"Đã tạo {n_new} lối tắt thư mục dữ liệu vào MyDrive/_v4_shortcuts; đang remount Google Drive...", flush=True)
-            drive.mount(DRIVE_MOUNT, force_remount=True)
-            continue
+    if attempt == 0 and state["unmounted_targets"]:
+        n_new = ensure_shortcuts(drive_svc, state["unmounted_targets"])
+        print(f"Đã tạo {n_new} lối tắt trong MyDrive/_v4_shortcuts (tổng {len(state['unmounted_targets'])} mục); đang remount Google Drive...", flush=True)
+        drive.mount(DRIVE_MOUNT, force_remount=True)
+        continue
     raise first_err
 
 for r in rows:
