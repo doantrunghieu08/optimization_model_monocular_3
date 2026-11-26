@@ -19,6 +19,7 @@ import yaml
 
 from compat import patch_numpy_and_inspect
 from fusion_pipeline.aotr import _ordered_bones
+from fusion_pipeline.naive import fuse_naive
 from fusion_pipeline.partwise import (
     FEATURE_NAMES, blend_frame, eval_weight_model, extract_pair_features,
     fuse_partwise, slave_directions,
@@ -617,9 +618,10 @@ def export_model(weights, std, active_features=None):
 
 
 def training_options(config):
-    opts = dict(mpjpe_weight=0.25, prior_l2=0.001, patience=10, min_delta_mm=0.01)
+    opts = dict(mpjpe_weight=0.25, prior_l2=0.001, patience=10, min_delta_mm=0.01,
+                naive_regret_weight=1.0, naive_margin_mm=0.0)
     opts.update(config.get("training", {}))
-    for key in ("mpjpe_weight", "prior_l2", "min_delta_mm"):
+    for key in ("mpjpe_weight", "prior_l2", "min_delta_mm", "naive_regret_weight", "naive_margin_mm"):
         if not np.isfinite(opts[key]) or opts[key] < 0:
             raise ValueError(f"training.{key} must be finite and non-negative")
     if isinstance(opts["patience"], bool) or not isinstance(opts["patience"], int) or opts["patience"] < 1:
@@ -627,9 +629,20 @@ def training_options(config):
     return opts
 
 
+def training_config(pipeline):
+    fusion = pipeline["fusion"]
+    config = copy.deepcopy(fusion["partwise"])
+    config.pop("weight_model", None)
+    naive = copy.deepcopy(fusion.get("naive", {}))
+    if naive.get("use_aotr_stability", False):
+        naive["sequence_stability"] = copy.deepcopy(fusion["aotr"].get("sequence_stability", {}))
+    config["naive_reference"] = naive
+    return config
+
+
 def fit_signature(identity, config, lr):
     return hashlib.sha256((identity + json.dumps(config, sort_keys=True) + str(lr) +
-                           "pa+sequence-mpjpe-prior-v1").encode()).hexdigest()
+                           "pa+sequence-mpjpe-naive-regret-nonneg-v3").encode()).hexdigest()
 
 
 def torch_fuse(pair, weights, std):
@@ -653,7 +666,7 @@ def torch_fuse(pair, weights, std):
     return output - root
 
 
-def torch_pa_loss(pred, target):
+def torch_pa_loss(pred, target, per_frame=False):
     # ponytail: Envelope-theorem Procrustes PA-MPJPE avoids global yaw drift in uncalibrated v4 GT & SVD backward NaNs
     pred_c = pred - pred.mean(1, keepdim=True)
     tgt_c = target - target.mean(1, keepdim=True)
@@ -664,10 +677,32 @@ def torch_pa_loss(pred, target):
         rot = u @ corr @ vt
         moved = pred_c @ rot
         scale = (moved * tgt_c).sum((1, 2)) / (moved * moved).sum((1, 2)).clamp_min(1e-12)
-    return torch.linalg.vector_norm((pred_c @ rot) * scale[:, None, None] - tgt_c, dim=-1).mean()
+    errors = torch.linalg.vector_norm((pred_c @ rot) * scale[:, None, None] - tgt_c, dim=-1).mean(-1)
+    return errors if per_frame else errors.mean()
 
 
-def validation(pairs, model, config):
+def naive_relative_loss(pa, mpjpe, naive_pa, naive_mpjpe, opts):
+    margin = opts["naive_margin_mm"] / 1000.0
+    regret = (torch.relu(pa - naive_pa + margin) +
+              opts["mpjpe_weight"] * torch.relu(mpjpe - naive_mpjpe + margin)).mean()
+    loss = (pa + opts["mpjpe_weight"] * mpjpe).mean() + opts["naive_regret_weight"] * regret
+    return loss, regret
+
+
+def selection_key(metrics, naive, opts):
+    margin = opts["naive_margin_mm"]
+    beats = (metrics["pa_mm"] < naive["pa_mm"] - margin and
+             metrics["mpjpe_mm"] < naive["mpjpe_mm"] - margin)
+    return (not beats, metrics["pa_mm"] + opts["mpjpe_weight"] * metrics["mpjpe_mm"])
+
+
+def naive_prediction(pair, config):
+    # Match the benchmark's naive smoothing settings; never fit a rotation to GT here.
+    fused, _ = fuse_naive(pair["M"], pair["S"], config.get("naive_reference", {"master_weight": 0.5}))
+    return np.array([[f[n] for n in pair["names"]] for f in fused], dtype=np.float32)
+
+
+def validation(pairs, model, config, method="partwise"):
     # Equal sequence weight prevents sequences with more camera pairs dominating selection.
     scores, baselines, mpjpe, mono_mpjpe = {}, {}, {}, {}
     for p in pairs:
@@ -676,10 +711,15 @@ def validation(pairs, model, config):
             cfg.pop("weight_model", None)
         else:
             cfg["weight_model"] = model
-        fused, _ = fuse_partwise(p["M"], p["S"], cfg)
         names = p["names"]
         inds = [names.index(n) for n in BODY]
-        output = np.array([[f[n] for n in names] for f in fused], dtype=np.float32)
+        if method == "naive":
+            output = naive_prediction(p, config)
+        elif method == "partwise":
+            fused, _ = fuse_partwise(p["M"], p["S"], cfg)
+            output = np.array([[f[n] for n in names] for f in fused], dtype=np.float32)
+        else:
+            raise ValueError(f"Unknown validation method: {method}")
         master = np.array([[f[n] for n in names] for f in p["M"]], dtype=np.float32)
         for values, pred in ((scores, output), (baselines, master)):
             values.setdefault(p["action"], []).append(
@@ -727,17 +767,12 @@ def fit(pairs, config, out, epochs=50, lr=0.01, resume=None, identity=""):
         raise ValueError("Non-finite training features")
     active = np.ptp(flat, axis=0) > 1e-6
     std = torch.tensor(np.where(active, np.maximum(np.sqrt(np.mean(flat ** 2, axis=0)), 1e-6), 1.0))
+    # ponytail: anchor init & L2 prior at 0 (w=0.5 symmetric 50-50) so model only deviates when features help
     prior = torch.zeros(len(FEATURE_NAMES))
-    logit = config["depth_logit"]
-    if not np.isfinite([logit[k] for k in ("a", "b", "mu", "sd")]).all() or logit["sd"] <= 0 or logit["b"] < 0:
-        raise ValueError("depth_logit prior needs finite values, sd > 0 and b >= 0")
-    depth_i = FEATURE_NAMES.index("d_depth")
-    prior[depth_i] = float(logit["b"] / logit["sd"]) * std[depth_i]
-    prior[~torch.as_tensor(active)] = 0
     weights = torch.nn.Parameter(prior.clone())
     optimizer = torch.optim.Adam([weights], lr=lr)
     signature = fit_signature(identity, config, lr)
-    history, best, start, stale, stopping_best = [], float("inf"), 1, 0, float("inf")
+    history, best, start, stale, stopping_best = [], float("inf"), 1, 0, (True, float("inf"))
     if resume:
         ckpt = torch.load(resume, map_location="cpu", weights_only=False)
         if ckpt["signature"] != signature or not np.allclose(ckpt["std"], std.numpy()):
@@ -756,62 +791,86 @@ def fit(pairs, config, out, epochs=50, lr=0.01, resume=None, identity=""):
     best_model = ckpt["best_model"] if resume else None
     equal = validation(val, export_model(np.zeros(len(FEATURE_NAMES)), std.numpy(), active), config)
     depth = validation(val, None, config)
+    naive = validation(val, None, config, method="naive")
     if start > epochs or stale >= opts["patience"]:
         print(json.dumps({"status": "already_completed", "epochs": epochs,
                           "best_epoch": best_model["epoch"] if best_model else None,
-                          "best_val_objective_mm": best}), flush=True)
+                          "best_val_objective_mm": best,
+                          "val_beats_naive": best_model["val_beats_naive"]}), flush=True)
         return history
+    # Fixed train-only references are computed once; no GT-dependent inference routing.
+    naive_errors = {}
+    for p in train:
+        inds = [p["names"].index(n) for n in BODY]
+        output = centered(naive_prediction(p, config), p["names"])[:, inds]
+        target = p["target"][:, inds]
+        naive_errors[id(p)] = (torch.as_tensor(pa_errors(output, target)),
+                               torch.as_tensor(np.linalg.norm(output - target, axis=-1).mean(-1)))
     actions = sorted({p["action"] for p in train})
     for epoch in range(start, epochs + 1):
         order = actions.copy()
         random.shuffle(order)
-        losses, train_pa, train_mpjpe = [], [], []
+        losses, train_pa, train_mpjpe, train_regret = [], [], [], []
         for action in order:
             group = [p for p in train if p["action"] == action]
             optimizer.zero_grad()
             action_losses = []
-            action_pa, action_mpjpe = [], []
+            action_pa, action_mpjpe, action_regret = [], [], []
             for p in group:
                 inds = [p["names"].index(n) for n in BODY]
                 target = torch.as_tensor(p["target"][:, inds])
                 pred = torch_fuse(p, weights, std)[:, inds]
-                pa = torch_pa_loss(pred, target)
-                mpjpe = torch.linalg.vector_norm(pred - target, dim=-1).mean()
-                loss = pa + opts["mpjpe_weight"] * mpjpe
+                pa = torch_pa_loss(pred, target, per_frame=True)
+                mpjpe = torch.linalg.vector_norm(pred - target, dim=-1).mean(-1)
+                loss, regret = naive_relative_loss(pa, mpjpe, *naive_errors[id(p)], opts)
                 (loss / len(group)).backward()
                 action_losses.append(float(loss.detach()) * 1000)
-                action_pa.append(float(pa.detach()) * 1000)
-                action_mpjpe.append(float(mpjpe.detach()) * 1000)
+                action_pa.append(float(pa.detach().mean()) * 1000)
+                action_mpjpe.append(float(mpjpe.detach().mean()) * 1000)
+                action_regret.append(float(regret.detach()) * 1000)
             (opts["prior_l2"] * (weights - prior).square().sum()).backward()
             optimizer.step()
             with torch.no_grad():
-                weights[depth_i].clamp_(min=0.0)
+                # ponytail: all 8 antisymmetric features are defined >0 = Master better; forbid inverted negative weights
+                weights.clamp_(min=0.0)
                 weights[~torch.as_tensor(active)] = 0.0
             losses.append(float(np.mean(action_losses)))
             train_pa.append(float(np.mean(action_pa)))
             train_mpjpe.append(float(np.mean(action_mpjpe)))
+            train_regret.append(float(np.mean(action_regret)))
         model = export_model(weights.detach().numpy(), std.numpy(), active)
         metrics = validation(val, model, config)
-        score = metrics["pa_mm"] + opts["mpjpe_weight"] * metrics["mpjpe_mm"]
+        key = selection_key(metrics, naive, opts)
+        beats_naive, score = not key[0], key[1]
         if not np.isfinite(score):
             raise ValueError("Non-finite validation score")
-        improved = score < best
+        improved = best_model is None or key < (not best_model["val_beats_naive"], best)
         if improved:
             best, best_model = score, dict(model, epoch=epoch, val_objective_mm=score,
                                            val_mpjpe_mm=metrics["pa_mm"],
                                            val_sequence_mpjpe_mm=metrics["mpjpe_mm"],
                                            equal_val_mpjpe_mm=equal["pa_mm"],
-                                           baseline_val_mpjpe_mm=metrics["mono_pa_mm"])
-        if score < stopping_best - opts["min_delta_mm"]:
-            stopping_best, stale = score, 0
+                                           baseline_val_mpjpe_mm=metrics["mono_pa_mm"],
+                                           naive_val_mpjpe_mm=naive["pa_mm"],
+                                           naive_val_sequence_mpjpe_mm=naive["mpjpe_mm"],
+                                           val_pa_gain_vs_naive_mm=naive["pa_mm"] - metrics["pa_mm"],
+                                           val_mpjpe_gain_vs_naive_mm=naive["mpjpe_mm"] - metrics["mpjpe_mm"],
+                                           val_beats_naive=beats_naive)
+        if key[0] < stopping_best[0] or (key[0] == stopping_best[0] and score < stopping_best[1] - opts["min_delta_mm"]):
+            stopping_best, stale = key, 0
         else:
             stale += 1
         history.append(dict(epoch=epoch, train_mpjpe_mm=float(np.mean(train_pa)),
                             train_sequence_mpjpe_mm=float(np.mean(train_mpjpe)),
+                            train_naive_regret_mm=float(np.mean(train_regret)),
                             train_objective_mm=float(np.mean(losses)), val_objective_mm=score,
                             val_mpjpe_mm=metrics["pa_mm"], val_sequence_mpjpe_mm=metrics["mpjpe_mm"],
                             equal_val_mpjpe_mm=equal["pa_mm"], equal_val_sequence_mpjpe_mm=equal["mpjpe_mm"],
                             depth_val_mpjpe_mm=depth["pa_mm"], depth_val_sequence_mpjpe_mm=depth["mpjpe_mm"],
+                            naive_val_mpjpe_mm=naive["pa_mm"], naive_val_sequence_mpjpe_mm=naive["mpjpe_mm"],
+                            val_pa_gain_vs_naive_mm=naive["pa_mm"] - metrics["pa_mm"],
+                            val_mpjpe_gain_vs_naive_mm=naive["mpjpe_mm"] - metrics["mpjpe_mm"],
+                            val_beats_naive=beats_naive, best_val_beats_naive=best_model["val_beats_naive"],
                             baseline_val_mpjpe_mm=metrics["mono_pa_mm"],
                             baseline_val_sequence_mpjpe_mm=metrics["mono_mpjpe_mm"],
                             stale_epochs=stale, best_epoch=best_model["epoch"],
@@ -830,8 +889,12 @@ def fit(pairs, config, out, epochs=50, lr=0.01, resume=None, identity=""):
         save_best(out, config, best_model)
         print(json.dumps(history[-1]), flush=True)
         if stale >= opts["patience"]:
-            print(json.dumps({"status": "early_stopped", "epoch": epoch, "best_epoch": best_model["epoch"]}), flush=True)
+            print(json.dumps({"status": "early_stopped", "epoch": epoch, "best_epoch": best_model["epoch"],
+                              "val_beats_naive": best_model["val_beats_naive"]}), flush=True)
             break
+    print(json.dumps({"status": "finished", "best_epoch": best_model["epoch"],
+                      "val_beats_naive": best_model["val_beats_naive"],
+                      "note": "Validation gate only; independent coco17 benchmark still required."}), flush=True)
     return history
 
 
@@ -855,8 +918,7 @@ def main():
         parser.error("epochs and lr must be positive")
     rows = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
     validate_rows(rows)
-    config = yaml.safe_load((ROOT / "configs/pipeline.yml").read_text(encoding="utf-8"))["fusion"]["partwise"]
-    config.pop("weight_model", None)
+    config = training_config(yaml.safe_load((ROOT / "configs/pipeline.yml").read_text(encoding="utf-8")))
     # Validation uses inference guards/stability; optimization remains a differentiable surrogate.
     need_drive = not all(r.get("GT_path") and r.get("PKL_path") for r in rows)
     drive = None
@@ -872,6 +934,7 @@ def main():
     identity = hashlib.sha256(json.dumps(stable_rows, sort_keys=True, ensure_ascii=False).encode() +
         (ROOT / "models/J_regressor_body25_extended.npy").read_bytes() +
         Path(__file__).read_bytes() + (ROOT / "fusion_pipeline/partwise.py").read_bytes() +
+        (ROOT / "fusion_pipeline/naive.py").read_bytes() + (ROOT / "fusion_pipeline/aotr_stability.py").read_bytes() +
         (ROOT / "configs/keypoints3D_map.yml").read_bytes() + json.dumps(config, sort_keys=True).encode() +
         str(args.skip_unaligned_actions).encode()).hexdigest()
     prepared_out = out / f"prepared_{identity}.joblib"
@@ -891,7 +954,9 @@ def main():
     atomic_json(out / "manifest.json", rows)
     atomic_json(out / "protocol.json", {
         "metric": "12-body-joint PA-MPJPE and baseline-sequence-aligned MPJPE (mm), not coco17",
-        "selection": "PA + mpjpe_weight * MPJPE; equal segment weight within action, equal val action weight",
+        "selection": "Prefer checkpoints beating naive on BOTH PA and MPJPE by naive_margin_mm; then minimize PA + mpjpe_weight * MPJPE. Equal segment/action weight.",
+        "loss": "PA + mpjpe_weight * MPJPE + naive_regret_weight * mean(relu(PA_frame - naive_PA_frame + margin) + mpjpe_weight * relu(MPJPE_frame - naive_MPJPE_frame + margin)) + zero-prior L2 (non-negative weights); train references only",
+        "naive_reference": config["naive_reference"],
         "training": training_options(config),
         "target_alignment": "one mono-derived rotation per action/camera on all associated frames (12 body joints)",
         "surrogate": "gradient step excludes non-differentiable inference guards/stability; validation includes them",

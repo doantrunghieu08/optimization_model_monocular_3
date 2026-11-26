@@ -322,12 +322,25 @@ def _seq_median_accel_mm(poses):
     return float(np.median(acc[5:] if len(acc) > 8 else acc) * 1000.0)
 
 
+def _depth_outlier_flags(z_m_arr, z_s_arr, ratio=1.5, min_m=10.0):
+    # ponytail: shared bbox-collapse depth explosion guard (z >= 10m & >1.5x other/median)
+    z_m_med = float(np.median(z_m_arr[np.isfinite(z_m_arr)])) if np.any(np.isfinite(z_m_arr)) else 5.0
+    z_s_med = float(np.median(z_s_arr[np.isfinite(z_s_arr)])) if np.any(np.isfinite(z_s_arr)) else 5.0
+    s_exp = (z_s_arr >= min_m) & ((z_s_arr > ratio * np.maximum(z_m_arr, 1e-3)) | (z_s_arr > ratio * max(z_s_med, 1e-3)))
+    m_exp = (z_m_arr >= min_m) & ((z_m_arr > ratio * np.maximum(z_s_arr, 1e-3)) | (z_m_arr > ratio * max(z_m_med, 1e-3)))
+    return m_exp & ~s_exp, s_exp & ~m_exp
+
+
 def extract_pair_features(M, S, vis_master=None, vis_slave=None, conf_master=None, conf_slave=None):
     """Return (features[T, B, 8], bone_children) with antisymmetric features phi(M, S) = -phi(S, M)."""
     n = len(M)
     bones = _ordered_bones(M[0])
     b_children = [c for c, _ in bones]
-    d_depth = np.clip(np.array([root_depth(m) - root_depth(s) for m, s in zip(M, S)], dtype=float), -3.0, 3.0)
+    z_m_arr = np.array([root_depth(m) for m in M], dtype=float)
+    z_s_arr = np.array([root_depth(s) for s in S], dtype=float)
+    d_depth = np.clip(np.nan_to_num(z_m_arr - z_s_arr), -3.0, 3.0)
+    m_exp, s_exp = _depth_outlier_flags(z_m_arr, z_s_arr)
+    d_depth = np.where(s_exp, 3.0, np.where(m_exp, -3.0, d_depth))
     jm, js = bone_jitter(M, bones, 3), bone_jitter(S, bones, 3)
     j_med = {}
     for c in b_children:
@@ -414,35 +427,29 @@ def fuse_partwise(master_frames, slave_frames, config, vis_master=None, vis_slav
     if use_wm:
         feats, b_children = extract_pair_features(M, S, vis_master, vis_slave, conf_master, conf_slave)
         w_mat = eval_weight_model(feats, wm_cfg)
+    # ponytail: always guard against occlusion-induced bbox-collapse depth explosion (not gated on mp_enabled)
+    depth_outlier_ratio = float(mp_cfg.get("depth_outlier_ratio", 1.5))
+    depth_outlier_min_m = float(mp_cfg.get("depth_outlier_min_m", 10.0))
+    depth_outlier_bias = float(mp_cfg.get("depth_outlier_logit_bias", 3.0))
     if mp_enabled:
-        # ponytail: guard against occlusion-induced bbox-collapse depth explosion (z -> 2x normal)
-        # In monocular HMR, partial occlusion shrinks bbox -> z spikes to 12-20m -> raw depth_logit
-        # would falsely assign w=0.0 to a clean Master and 100% to the collapsed Slave.
         max_depth_diff = float(mp_cfg.get("max_depth_diff_m", 3.0))
-        depth_outlier_ratio = float(mp_cfg.get("depth_outlier_ratio", 1.5))
-        depth_outlier_min_m = float(mp_cfg.get("depth_outlier_min_m", 10.0))
-        depth_outlier_bias = float(mp_cfg.get("depth_outlier_logit_bias", 3.0))
-        z_m_med = float(np.median(z_m_arr[np.isfinite(z_m_arr)])) if np.any(np.isfinite(z_m_arr)) else 5.0
-        z_s_med = float(np.median(z_s_arr[np.isfinite(z_s_arr)])) if np.any(np.isfinite(z_s_arr)) else 5.0
         d_clamped = np.clip(np.nan_to_num(z_m_arr - z_s_arr), -max_depth_diff, max_depth_diff)
         logit = config["depth_logit"]
         z_depth = float(logit["a"]) + float(logit["b"]) * (d_clamped - float(logit["mu"])) / float(logit["sd"])
-        for t in range(len(M)):
-            outlier = False
-            zm, zs = float(z_m_arr[t]), float(z_s_arr[t])
-            s_exploded = (zs >= depth_outlier_min_m and (zs > depth_outlier_ratio * max(zm, 1e-3) or zs > depth_outlier_ratio * max(z_s_med, 1e-3)))
-            m_exploded = (zm >= depth_outlier_min_m and (zm > depth_outlier_ratio * max(zs, 1e-3) or zm > depth_outlier_ratio * max(z_m_med, 1e-3)))
-            if s_exploded and not m_exploded:
-                z_depth[t] = max(z_depth[t], 0.0) + depth_outlier_bias
-                depth_outlier_frames += 1
-                outlier = True
-            elif m_exploded and not s_exploded:
-                z_depth[t] = min(z_depth[t], 0.0) - depth_outlier_bias
-                depth_outlier_frames += 1
-                outlier = True
-            if outlier and use_wm:
+    m_exp, s_exp = _depth_outlier_flags(z_m_arr, z_s_arr, depth_outlier_ratio, depth_outlier_min_m)
+    for t in range(len(M)):
+        if s_exp[t]:
+            z_depth[t] = max(z_depth[t], 0.0) + depth_outlier_bias
+            depth_outlier_frames += 1
+            if use_wm:
                 w_mat[t, :] = _sigmoid(z_depth[t])
-        w = np.mean(w_mat, axis=1) if use_wm else _sigmoid(z_depth)
+        elif m_exp[t]:
+            z_depth[t] = min(z_depth[t], 0.0) - depth_outlier_bias
+            depth_outlier_frames += 1
+            if use_wm:
+                w_mat[t, :] = _sigmoid(z_depth[t])
+    w = np.mean(w_mat, axis=1) if use_wm else _sigmoid(z_depth)
+    if mp_enabled:
         use_vis_rot = bool(mp_cfg.get("visibility_weighted_rotation", True))
         dirs_init = slave_directions(
             M, S, hw,

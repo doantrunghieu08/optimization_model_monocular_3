@@ -4,7 +4,8 @@ from pathlib import Path
 root = Path(__file__).resolve().parent
 snapshots = {
     name: (root / name).read_text(encoding="utf-8")
-    for name in ["compat.py", "train_v4.py", "fusion_pipeline/partwise.py", "tests/test_train_v4.py",
+    for name in ["compat.py", "train_v4.py", "fusion_pipeline/partwise.py", "fusion_pipeline/naive.py",
+                 "fusion_pipeline/aotr_stability.py", "tests/test_train_v4.py",
                  "configs/pipeline.yml"]
 }
 cells = []
@@ -34,7 +35,8 @@ def code(s, form=False):
 md("""# Train `partwise` — Sheet `v4 22/11/26` (Colab — Google Drive Mount)
 Mở notebook trong Google Colab và bấm **Run all (Chạy tất cả)** hoặc chạy lần lượt từ trên xuống.
 - **Ưu tiên đọc từ Drive đã mount:** ánh xạ File ID trên sheet sang `/content/drive`; file không tìm thấy trên mount có thể được tải qua API/gdown. Với dữ liệu trong **Được chia sẻ với tôi**, thêm lối tắt thư mục vào `MyDrive` trước khi chạy.
-- Lưu **mọi epoch** (`epoch_0001.pt`, `epoch_0001_weights.json`, ...) trên **Google Drive**, tự động chọn **Best Epoch** theo validation PA-MPJPE + λ·MPJPE (12 khớp thân), có dừng sớm, và xuất `best_weights.json`, `best_partwise.yml`, `pipeline_best.yml`.
+- Loss có phạt theo frame khi PA hoặc MPJPE thua naive. **Best Epoch** ưu tiên checkpoint thắng naive ở cả PA và MPJPE validation (12 khớp thân), rồi mới xét PA + λ·MPJPE. Nếu chưa có checkpoint đạt, vẫn lưu ứng viên tốt nhất và ghi `val_beats_naive: false`.
+- Lưu **mọi epoch** trên **Google Drive**, có giới hạn epoch và dừng sớm khi không cải thiện; xuất `best_weights.json`, `best_partwise.yml`, `pipeline_best.yml`. Thắng validation chưa thay thế benchmark độc lập; không dùng test để ép train đến khi thắng.
 
 **Lưu ý phạm vi:** GT chỉ dùng khi chuẩn bị dữ liệu giám sát (ghép track/thời gian và tính hàm mục tiêu), **0% GT lúc suy luận**. Kiểm tra bảng `alignment.json` ở Bước 4a trước khi dùng bộ tham số.
 """)
@@ -83,6 +85,9 @@ for name, text in SNAPSHOTS.items():
     path = REPO_DIR / name
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+import importlib
+if "train_v4" in sys.modules:
+    importlib.reload(sys.modules["train_v4"])
 run_live([sys.executable, "-m", "unittest", "discover", "-s", "tests", "-p", "test_train_v4.py", "-v"])
 """, form=True)
 
@@ -98,7 +103,7 @@ DRIVE_MOUNT = "/content/drive"  #@param {type:"string"}
 DRIVE_DATA_DIR = ""  #@param {type:"string"}
 SPREADSHEET_ID = "11OipPLik-aXw0GmrTfEwg6wsAQYEmvGEV8VRlyry4Rg"  #@param {type:"string"}
 TAB = "v4 22/11/26"  #@param {type:"string"}
-OUTPUT_DIR = "/content/drive/MyDrive/partwise_v4/run_003"  #@param {type:"string"}
+OUTPUT_DIR = "/content/drive/MyDrive/partwise_v4/run_004"  #@param {type:"string"}
 EPOCHS = 50  #@param {type:"integer"}
 LEARNING_RATE = 0.01  #@param {type:"number"}
 RESUME = True  #@param {type:"boolean"}
@@ -173,11 +178,10 @@ else:
 
 code("""#@title 4b. Chạy Train & lưu checkpoint từng epoch trên Google Drive
 import hashlib, shutil, torch, yaml
-from train_v4 import fit_signature
+from train_v4 import fit_signature, training_config
 
 # Tính đúng chữ ký cấu hình của train_v4.py để kiểm tra tương thích trước khi resume
-cfg_pw = yaml.safe_load((REPO_DIR / "configs/pipeline.yml").read_text(encoding="utf-8"))["fusion"]["partwise"]
-cfg_pw.pop("weight_model", None)
+cfg_pw = training_config(yaml.safe_load((REPO_DIR / "configs/pipeline.yml").read_text(encoding="utf-8")))
 stable_rows = [{k: v for k, v in r.items() if k not in ("GT_path", "PKL_path")}
                for r in json.loads(MANIFEST.read_text(encoding="utf-8"))]
 cur_identity = hashlib.sha256(
@@ -185,6 +189,8 @@ cur_identity = hashlib.sha256(
     + (REPO_DIR / "models/J_regressor_body25_extended.npy").read_bytes()
     + (REPO_DIR / "train_v4.py").read_bytes()
     + (REPO_DIR / "fusion_pipeline/partwise.py").read_bytes()
+    + (REPO_DIR / "fusion_pipeline/naive.py").read_bytes()
+    + (REPO_DIR / "fusion_pipeline/aotr_stability.py").read_bytes()
     + (REPO_DIR / "configs/keypoints3D_map.yml").read_bytes()
     + json.dumps(cfg_pw, sort_keys=True).encode()
     + str(bool(SKIP_UNALIGNED_ACTIONS)).encode()
@@ -262,6 +268,11 @@ print(f"  Val PA-MPJPE (Best) : {best['val_mpjpe_mm']:.2f} mm")
 if "equal_val_mpjpe_mm" in best:
     print(f"  Val PA-MPJPE (50-50): {best['equal_val_mpjpe_mm']:.2f} mm")
 print(f"  Val PA-MPJPE (Mono) : {best['baseline_val_mpjpe_mm']:.2f} mm")
+print(f"  Naive PA / MPJPE    : {best['naive_val_mpjpe_mm']:.2f} / {best['naive_val_sequence_mpjpe_mm']:.2f} mm")
+print(f"  Gain vs naive PA/MP : {best['val_pa_gain_vs_naive_mm']:.2f} / {best['val_mpjpe_gain_vs_naive_mm']:.2f} mm (dương = tốt hơn)")
+print(f"  Thắng cả PA và MP   : {best['val_beats_naive']}")
+if not best["val_beats_naive"]:
+    print("Chưa có checkpoint thắng naive ở cả hai chỉ số validation; file best là ứng viên để kiểm tra.")
 print(f"  File tham số tốt nhất: {RUN_OUT / 'best_weights.json'}")
 print(f"  File patch YAML     : {RUN_OUT / 'best_partwise.yml'}")
 
@@ -279,7 +290,8 @@ plt.plot(epochs_x, [h["val_mpjpe_mm"] for h in history], label="Val PA-MPJPE (pa
 if "equal_val_mpjpe_mm" in history[0]:
     plt.axhline(history[0]["equal_val_mpjpe_mm"], color="gray", linestyle="--", label="Val 50-50 (w=0.5)")
 plt.axhline(history[0]["depth_val_mpjpe_mm"], color="green", linestyle=":", label="Val depth_logit")
-plt.scatter([best["epoch"]], [best["val_mpjpe_mm"]], color="red", zorder=5, label=f"Best combined objective (epoch {best['epoch']})")
+plt.axhline(history[0]["naive_val_mpjpe_mm"], color="orange", linestyle="--", label="Val naive")
+plt.scatter([best["epoch"]], [best["val_mpjpe_mm"]], color="red", zorder=5, label=f"Selected checkpoint (epoch {best['epoch']})")
 plt.xlabel("Epoch")
 plt.ylabel("PA-MPJPE (mm)")
 plt.title("Quá trình huấn luyện bộ trọng số partwise")
@@ -289,6 +301,7 @@ plt.show()
 plt.figure(figsize=(7, 4))
 plt.plot(epochs_x, [h["val_sequence_mpjpe_mm"] for h in history], label="Val MPJPE learned")
 plt.axhline(history[0]["depth_val_sequence_mpjpe_mm"], label="Val MPJPE depth_logit", linestyle="--")
+plt.axhline(history[0]["naive_val_sequence_mpjpe_mm"], label="Val MPJPE naive", linestyle="-.")
 plt.axhline(history[0]["baseline_val_sequence_mpjpe_mm"], label="Val MPJPE mono", linestyle=":")
 plt.xlabel("Epoch")
 plt.ylabel("Sequence MPJPE (mm), 12 body joints")

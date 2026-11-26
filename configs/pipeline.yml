@@ -99,6 +99,8 @@ fusion:
     training:
       mpjpe_weight: 0.25
       prior_l2: 0.001
+      naive_regret_weight: 1.0
+      naive_margin_mm: 0.0
       patience: 10
       min_delta_mm: 0.01
     rotation_half_window: 4

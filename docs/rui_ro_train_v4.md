@@ -74,20 +74,28 @@ Chưa suy ra visibility từ ray-casting. Cần kiểm tra hệ tọa độ, mes
 
 ### R5. Loss chỉ tối ưu PA và cách căn target theo đoạn — trung bình
 
-**Đã sửa:** loss dữ liệu là `PA + λ·MPJPE`, cộng L2 về prior khi tối ưu. Target dùng chung phép xoay mono trên action/camera thay vì fit riêng từng run. Validation và chọn best dùng `PA_mm + λ·MPJPE_mm` sau `fuse_partwise`.
+**Đã sửa:** loss dữ liệu là `PA + λ·MPJPE`, thêm phạt khi thua naive theo frame và L2 về prior khi tối ưu. Target dùng chung phép xoay mono trên action/camera thay vì fit riêng từng run. Validation ưu tiên checkpoint thắng naive ở cả PA và MPJPE, rồi mới tối thiểu hóa `PA_mm + λ·MPJPE_mm` sau `fuse_partwise`.
 
 Mặc định mới trong `fusion.partwise.training`:
 
 ```yaml
 mpjpe_weight: 0.25
 prior_l2: 0.001
+naive_regret_weight: 1.0
+naive_margin_mm: 0.0
 patience: 10
 min_delta_mm: 0.01
 ```
 
 Loss gradient dùng mét; điểm validation/objective báo bằng mm. L2 tính trên trọng số đã chuẩn hóa, một lần mỗi bước cập nhật action. Đây là giá trị khởi đầu chưa được xác nhận bằng benchmark; phải cố định hoặc chọn trên validation, không chỉnh bằng test. Objective tổng có thể giảm khi một thành phần tăng, nên tiêu chí chấp nhận vẫn phải xét riêng từng chỉ số.
 
-`history.json` giữ tên cũ `train_mpjpe_mm` và `val_mpjpe_mm` cho **PA** để tương thích; MPJPE mới nằm trong `*_sequence_mpjpe_mm`. `*_objective_mm` là điểm kết hợp, không gồm L2. Log validation có thêm baseline độ sâu, 50–50 và mono; 50–50 vẫn qua các cổng/hậu xử lý cấu hình nên không có nghĩa mọi trọng số cuối cùng đều bằng 0.5.
+`history.json` giữ tên cũ `train_mpjpe_mm` và `val_mpjpe_mm` cho **PA** để tương thích; MPJPE mới nằm trong `*_sequence_mpjpe_mm`. `train_objective_mm` gồm PA, MPJPE và phạt naive; `val_objective_mm` chỉ gồm PA + λ·MPJPE; cả hai không gồm L2. Log có thêm baseline naive, độ sâu, 50–50 và mono; 50–50 vẫn qua các cổng/hậu xử lý cấu hình nên không có nghĩa mọi trọng số cuối cùng đều bằng 0.5.
+
+Phạt naive trên từng frame train là `β × [relu(PA − PA_naive + m) + λ·relu(MPJPE − MPJPE_naive + m)]`, sau đó lấy trung bình. `β = naive_regret_weight`; `m = naive_margin_mm / 1000` vì loss dùng mét. Naive được tính một lần trên đúng frame/GT/joint set của cặp, với `master_weight` và bước làm mượt lấy từ cấu hình naive/AOTR mà benchmark dùng. Không cộng loss naive như một hằng số vì cách đó không đổi gradient. Mô hình vẫn học với GT, không học sao chép tư thế naive.
+
+`val_beats_naive` chỉ đúng khi trung bình PA và MPJPE validation đều thấp hơn naive quá margin đã đặt; đây không phải điều kiện thắng trên mọi frame hay mọi cặp. Checkpoint đạt điều kiện được ưu tiên hơn checkpoint chưa đạt, dù objective tổng có thể cao hơn. Nếu chưa có checkpoint đạt, vẫn xuất ứng viên tốt nhất cùng `val_beats_naive: false` để kiểm tra. `best_partwise.yml` vẫn bật mô hình cho thử nghiệm, không tự thay bằng một phương pháp khác.
+
+Giữ trần `epochs` và dừng sớm khi không cải thiện, kể cả khi chưa thắng naive; không train vô hạn. Mô hình tuyến tính 8 đặc trưng không được bảo đảm có nghiệm thắng naive. Không dùng benchmark/test để tính gradient hoặc liên tục chỉnh cho đến khi thắng; việc bổ sung loss này là một thay đổi thiết kế sau khi đã xem Hugging, nên cần dữ liệu kiểm chứng mới cho kết luận độc lập.
 
 Nhánh `_apply_static_global_orientation` đã tồn tại. Giữ `static_camera_orientation: false`; thử riêng khi camera thực sự cố định. Ước lượng `R_cam` bền vững có thể hấp thụ sai hướng cố định của một view, không bảo đảm hướng trung bình của fusion bằng Master. Phép xoay cứng từng frame giữ PA và chiều dài xương về toán học, nhưng MPJPE và Accel vẫn cần đo. Không thêm cơ chế SLERP mới trước khi đánh giá nhánh có sẵn.
 
@@ -125,6 +133,6 @@ Trong cấu hình chính, `weight_model.enabled` đã đặt **false** để ch�
 - [ ] Train lại v4, so sánh baseline và báo kết quả riêng theo nhóm.
 - [ ] Benchmark miền đích theo mục 5; thử hướng toàn thân như một ablation riêng.
 
-Mở lại `colab_train_v4.ipynb` đã tạo từ builder; thư mục mặc định mới là `run_003`. Dùng output mới vì signature và dữ liệu chuẩn bị đã thay đổi; không resume checkpoint của loss/cách căn cũ. Notebook lưu toàn bộ cấu hình partwise dùng để validation vào `pipeline_best.yml`, gồm mặt nạ `active_features`.
+Mở lại `colab_train_v4.ipynb` đã tạo từ builder; thư mục mặc định mới là `run_004`. Dùng output mới vì signature và loss đã thay đổi; không resume checkpoint của loss/cách căn cũ. Notebook lưu toàn bộ cấu hình partwise dùng để validation vào `pipeline_best.yml`, gồm mặt nạ `active_features` và cấu hình naive đối chứng. Sau train, cần nạp pipeline_best mới vào notebook benchmark; bản benchmark nhúng mô hình cũ không tự cập nhật theo kết quả train trên Drive.
 
 Không đổi split hoặc tự sửa dữ liệu trên Drive trong lần cập nhật này. Hiệu quả thực tế của mô hình mới vẫn chờ các thí nghiệm còn lại ở trên.
