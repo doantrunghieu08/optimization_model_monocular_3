@@ -322,12 +322,25 @@ def _seq_median_accel_mm(poses):
     return float(np.median(acc[5:] if len(acc) > 8 else acc) * 1000.0)
 
 
+def _depth_outlier_flags(z_m_arr, z_s_arr, ratio=1.5, min_m=10.0):
+    # ponytail: shared bbox-collapse depth explosion guard (z >= 10m & >1.5x other/median)
+    z_m_med = float(np.median(z_m_arr[np.isfinite(z_m_arr)])) if np.any(np.isfinite(z_m_arr)) else 5.0
+    z_s_med = float(np.median(z_s_arr[np.isfinite(z_s_arr)])) if np.any(np.isfinite(z_s_arr)) else 5.0
+    s_exp = (z_s_arr >= min_m) & ((z_s_arr > ratio * np.maximum(z_m_arr, 1e-3)) | (z_s_arr > ratio * max(z_s_med, 1e-3)))
+    m_exp = (z_m_arr >= min_m) & ((z_m_arr > ratio * np.maximum(z_s_arr, 1e-3)) | (z_m_arr > ratio * max(z_m_med, 1e-3)))
+    return m_exp & ~s_exp, s_exp & ~m_exp
+
+
 def extract_pair_features(M, S, vis_master=None, vis_slave=None, conf_master=None, conf_slave=None):
     """Return (features[T, B, 8], bone_children) with antisymmetric features phi(M, S) = -phi(S, M)."""
     n = len(M)
     bones = _ordered_bones(M[0])
     b_children = [c for c, _ in bones]
-    d_depth = np.clip(np.array([root_depth(m) - root_depth(s) for m, s in zip(M, S)], dtype=float), -3.0, 3.0)
+    z_m_arr = np.array([root_depth(m) for m in M], dtype=float)
+    z_s_arr = np.array([root_depth(s) for s in S], dtype=float)
+    d_depth = np.clip(np.nan_to_num(z_m_arr - z_s_arr), -3.0, 3.0)
+    m_exp, s_exp = _depth_outlier_flags(z_m_arr, z_s_arr)
+    d_depth = np.where(s_exp, 3.0, np.where(m_exp, -3.0, d_depth))
     jm, js = bone_jitter(M, bones, 3), bone_jitter(S, bones, 3)
     j_med = {}
     for c in b_children:
@@ -371,6 +384,7 @@ def eval_weight_model(feats, wm_cfg):
     std = np.maximum(np.asarray(wm_cfg.get("std", [1.0] * feats.shape[-1]), dtype=float), 1e-6)
     # Center-only or symmetric scale: to preserve phi(M,S) = -phi(S,M), mean must be 0!
     x = (feats - mean) / std
+    x = np.where(np.asarray(wm_cfg.get("active_features", [True] * feats.shape[-1])), x, 0.0)
     kind = str(wm_cfg.get("type", "linear")).lower()
     if kind == "sym_mlp":
         W1 = np.asarray(wm_cfg["W1"], dtype=float)
@@ -409,70 +423,33 @@ def fuse_partwise(master_frames, slave_frames, config, vis_master=None, vis_slav
 
     wm_cfg = config.get("weight_model")
     use_wm = isinstance(wm_cfg, dict) and bool(wm_cfg.get("enabled", True))
+    w_mat = None
     if use_wm:
         feats, b_children = extract_pair_features(M, S, vis_master, vis_slave, conf_master, conf_slave)
         w_mat = eval_weight_model(feats, wm_cfg)
-        use_vis_rot = bool(mp_cfg.get("visibility_weighted_rotation", True)) if mp_enabled else False
-        anti_swap = bool(mp_cfg.get("anti_swap_gate", True)) if mp_enabled else False
-        max_ang = float(mp_cfg.get("max_median_bone_angle_deg", 50.0))
-        dirs_init = slave_directions(
-            M, S, hw,
-            vis_master=vis_master if use_vis_rot else None,
-            vis_slave=vis_slave if use_vis_rot else None,
-        )
-        frame_valid = np.ones(len(M), dtype=float)
-        frame_gate_keep = [False] * len(M)
-        for t in range(len(M)):
-            vm = (vis_master[t] if vis_master is not None else None) or {}
-            vs = (vis_slave[t] if vis_slave is not None else None) or {}
-            ang = _median_bone_disagreement_deg(M[t], dirs_init[t], vm, vs)
-            disagreements.append(ang)
-            if anti_swap and ang > max_ang:
-                frame_valid[t] = 0.0
-                jump_m = _frame_bone_jump_deg(M[t - 1] if t > 0 else None, M[t])
-                jump_s = _frame_bone_jump_deg(S[t - 1] if t > 0 else None, S[t])
-                occ_m_ratio = float(sum(not vm.get(j, True) for j in M[t])) / max(len(M[t]), 1)
-                if not (occ_m_ratio >= 0.35 and jump_m > max(15.0, 2.0 * jump_s)):
-                    frame_gate_keep[t] = True
-                    swap_gated += 1
-        dirs = slave_directions(
-            M, S, hw,
-            vis_master=vis_master if use_vis_rot else None,
-            vis_slave=vis_slave if use_vis_rot else None,
-            frame_weights=frame_valid if anti_swap else None,
-        ) if anti_swap and np.any(frame_valid == 0.0) else dirs_init
-        fused = []
-        for t, (m, d) in enumerate(zip(M, dirs)):
-            if frame_gate_keep[t]:
-                fused.append({k: v.copy() for k, v in m.items()})
-            else:
-                bw = {child: float(w_mat[t, bi]) for bi, child in enumerate(b_children)}
-                fused.append(blend_frame(m, d, float(np.mean(w_mat[t])), bone_weights=bw))
-        w = np.mean(w_mat, axis=1)
-    elif mp_enabled:
-        # ponytail: guard against occlusion-induced bbox-collapse depth explosion (z -> 2x normal)
-        # In monocular HMR, partial occlusion shrinks bbox -> z spikes to 12-20m -> raw depth_logit
-        # would falsely assign w=0.0 to a clean Master and 100% to the collapsed Slave.
+    # ponytail: always guard against occlusion-induced bbox-collapse depth explosion (not gated on mp_enabled)
+    depth_outlier_ratio = float(mp_cfg.get("depth_outlier_ratio", 1.5))
+    depth_outlier_min_m = float(mp_cfg.get("depth_outlier_min_m", 10.0))
+    depth_outlier_bias = float(mp_cfg.get("depth_outlier_logit_bias", 3.0))
+    if mp_enabled:
         max_depth_diff = float(mp_cfg.get("max_depth_diff_m", 3.0))
-        depth_outlier_ratio = float(mp_cfg.get("depth_outlier_ratio", 1.5))
-        depth_outlier_min_m = float(mp_cfg.get("depth_outlier_min_m", 10.0))
-        depth_outlier_bias = float(mp_cfg.get("depth_outlier_logit_bias", 3.0))
-        z_m_med = float(np.median(z_m_arr[np.isfinite(z_m_arr)])) if np.any(np.isfinite(z_m_arr)) else 5.0
-        z_s_med = float(np.median(z_s_arr[np.isfinite(z_s_arr)])) if np.any(np.isfinite(z_s_arr)) else 5.0
         d_clamped = np.clip(np.nan_to_num(z_m_arr - z_s_arr), -max_depth_diff, max_depth_diff)
         logit = config["depth_logit"]
         z_depth = float(logit["a"]) + float(logit["b"]) * (d_clamped - float(logit["mu"])) / float(logit["sd"])
-        for t in range(len(M)):
-            zm, zs = float(z_m_arr[t]), float(z_s_arr[t])
-            s_exploded = (zs >= depth_outlier_min_m and (zs > depth_outlier_ratio * max(zm, 1e-3) or zs > depth_outlier_ratio * max(z_s_med, 1e-3)))
-            m_exploded = (zm >= depth_outlier_min_m and (zm > depth_outlier_ratio * max(zs, 1e-3) or zm > depth_outlier_ratio * max(z_m_med, 1e-3)))
-            if s_exploded and not m_exploded:
-                z_depth[t] = max(z_depth[t], 0.0) + depth_outlier_bias
-                depth_outlier_frames += 1
-            elif m_exploded and not s_exploded:
-                z_depth[t] = min(z_depth[t], 0.0) - depth_outlier_bias
-                depth_outlier_frames += 1
-        w = _sigmoid(z_depth)
+    m_exp, s_exp = _depth_outlier_flags(z_m_arr, z_s_arr, depth_outlier_ratio, depth_outlier_min_m)
+    for t in range(len(M)):
+        if s_exp[t]:
+            z_depth[t] = max(z_depth[t], 0.0) + depth_outlier_bias
+            depth_outlier_frames += 1
+            if use_wm:
+                w_mat[t, :] = _sigmoid(z_depth[t])
+        elif m_exp[t]:
+            z_depth[t] = min(z_depth[t], 0.0) - depth_outlier_bias
+            depth_outlier_frames += 1
+            if use_wm:
+                w_mat[t, :] = _sigmoid(z_depth[t])
+    w = np.mean(w_mat, axis=1) if use_wm else _sigmoid(z_depth)
+    if mp_enabled:
         use_vis_rot = bool(mp_cfg.get("visibility_weighted_rotation", True))
         dirs_init = slave_directions(
             M, S, hw,
@@ -516,27 +493,35 @@ def fuse_partwise(master_frames, slave_frames, config, vis_master=None, vis_slav
                 continue
             vm = vis_master[t] if vis_master is not None else None
             vs = vis_slave[t] if vis_slave is not None else None
-            if vm is None and vs is None:
+            if vm is None and vs is None and not use_wm:
                 fused.append(blend_frame(m, d, wt))
                 continue
             vm, vs = vm or {}, vs or {}
             bw = {}
-            for child, _ in bones:
+            for bi, (child, _) in enumerate(bones):
+                base_w = float(w_mat[t, bi]) if use_wm else float(wt)
+                z_bone = float(np.log(np.clip(base_w, 1e-9, 1 - 1e-9) /
+                                      np.clip(1 - base_w, 1e-9, 1))) if use_wm else float(zt)
                 m_vis = bool(vm.get(child, True))
                 s_vis = bool(vs.get(child, True))
                 if not m_vis and s_vis:
                     # Occluded Master + visible Slave: never let depth prior override visibility
-                    bw[child] = float(_sigmoid(min(zt, 0.0) - m_occ_bias))
+                    bw[child] = float(_sigmoid(min(z_bone, 0.0) - m_occ_bias))
                     occ_master_bones += 1
                 elif m_vis and not s_vis:
                     # Visible Master + occluded Slave: protect Master regardless of depth
-                    bw[child] = float(_sigmoid(max(zt, 0.0) + s_occ_bias))
+                    bw[child] = float(_sigmoid(max(z_bone, 0.0) + s_occ_bias))
                     occ_slave_bones += 1
                 elif not m_vis and not s_vis:
-                    bw[child] = float(_sigmoid(zt + both_occ_bias))
+                    bw[child] = float(_sigmoid(z_bone + both_occ_bias))
                 else:
-                    bw[child] = float(wt)
+                    bw[child] = base_w
             fused.append(blend_frame(m, d, wt, bone_weights=bw))
+    elif use_wm:
+        dirs = slave_directions(M, S, hw)
+        w = np.mean(w_mat, axis=1)
+        fused = [blend_frame(m, d, w[t], bone_weights=dict(zip(b_children, w_mat[t])))
+                 for t, (m, d) in enumerate(zip(M, dirs))]
     else:
         dirs = slave_directions(M, S, hw)
         fused = [blend_frame(m, d, wt) for m, d, wt in zip(M, dirs, w)]
@@ -547,6 +532,7 @@ def fuse_partwise(master_frames, slave_frames, config, vis_master=None, vis_slav
         "master_weight_mean": float(np.mean(w)),
         "master_weight_min": float(np.min(w)),
         "master_weight_max": float(np.max(w)),
+        "weight_model_enabled": use_wm,
         "multi_person_enabled": mp_enabled,
         "swap_gated_frames": swap_gated,
         "depth_outlier_frames": depth_outlier_frames,
