@@ -63,9 +63,9 @@ fusion:
       b: 1.6761106970863668
       mu: 4.2041772210435745e-05
       sd: 1.3685969107519123
-    # Bộ trọng số tuyến tính 8 đặc trưng phản đối xứng học trên v4 (epoch 13: val PA-MPJPE 85.82 vs 50-50 86.49 vs mono 92.73 mm)
+    # Trọng số v4 cũ, tạm tắt chờ benchmark lại (PA 12 khớp: learned 85.82, 50-50 86.49, mono 92.73 mm).
     weight_model:
-      enabled: true
+      enabled: false
       type: linear
       feature_names:
       - d_depth
@@ -95,6 +95,12 @@ fusion:
       - -0.4794311821460724
       - -0.17094489932060242
       - 0.36988016963005066
+    # Giá trị khởi đầu cho lần train mới; chọn trên validation, chưa xác nhận bằng benchmark.
+    training:
+      mpjpe_weight: 0.25
+      prior_l2: 0.001
+      patience: 10
+      min_delta_mm: 0.01
     rotation_half_window: 4
     multi_person:
       enabled: true

@@ -4,7 +4,8 @@ from pathlib import Path
 root = Path(__file__).resolve().parent
 snapshots = {
     name: (root / name).read_text(encoding="utf-8")
-    for name in ["compat.py", "train_v4.py", "fusion_pipeline/partwise.py", "tests/test_train_v4.py"]
+    for name in ["compat.py", "train_v4.py", "fusion_pipeline/partwise.py", "tests/test_train_v4.py",
+                 "configs/pipeline.yml"]
 }
 cells = []
 
@@ -32,8 +33,8 @@ def code(s, form=False):
 
 md("""# Train `partwise` — Sheet `v4 22/11/26` (Colab — Google Drive Mount)
 Mở notebook trong Google Colab và bấm **Run all (Chạy tất cả)** hoặc chạy lần lượt từ trên xuống.
-- **Không tải file (`0% download` / `0% gdown`):** mount trực tiếp Google Drive tại `/content/drive` và ánh xạ từng File ID trên sheet `v4 22/11/26` sang đường dẫn mount nội bộ, tránh hoàn toàn việc Google Drive chặn quota tải. *(Nếu thư mục dữ liệu gốc thuộc mục **"Được chia sẻ với tôi"**, hãy bấm **"Thêm lối tắt vào Drive" (Add shortcut to Drive)** vào `MyDrive` trước khi chạy.)*
-- Lưu **mọi epoch** (`epoch_0001.pt`, `epoch_0001_weights.json`, ...) trên **Google Drive**, tự động chọn **Best Epoch** theo validation PA-MPJPE và xuất bộ tham số tốt nhất ra `best_weights.json`, `best_partwise.yml`, `pipeline_best.yml`.
+- **Ưu tiên đọc từ Drive đã mount:** ánh xạ File ID trên sheet sang `/content/drive`; file không tìm thấy trên mount có thể được tải qua API/gdown. Với dữ liệu trong **Được chia sẻ với tôi**, thêm lối tắt thư mục vào `MyDrive` trước khi chạy.
+- Lưu **mọi epoch** (`epoch_0001.pt`, `epoch_0001_weights.json`, ...) trên **Google Drive**, tự động chọn **Best Epoch** theo validation PA-MPJPE + λ·MPJPE (12 khớp thân), có dừng sớm, và xuất `best_weights.json`, `best_partwise.yml`, `pipeline_best.yml`.
 
 **Lưu ý phạm vi:** GT chỉ dùng khi chuẩn bị dữ liệu giám sát (ghép track/thời gian và tính hàm mục tiêu), **0% GT lúc suy luận**. Kiểm tra bảng `alignment.json` ở Bước 4a trước khi dùng bộ tham số.
 """)
@@ -97,7 +98,7 @@ DRIVE_MOUNT = "/content/drive"  #@param {type:"string"}
 DRIVE_DATA_DIR = ""  #@param {type:"string"}
 SPREADSHEET_ID = "11OipPLik-aXw0GmrTfEwg6wsAQYEmvGEV8VRlyry4Rg"  #@param {type:"string"}
 TAB = "v4 22/11/26"  #@param {type:"string"}
-OUTPUT_DIR = "/content/drive/MyDrive/partwise_v4/run_002"  #@param {type:"string"}
+OUTPUT_DIR = "/content/drive/MyDrive/partwise_v4/run_003"  #@param {type:"string"}
 EPOCHS = 50  #@param {type:"integer"}
 LEARNING_RATE = 0.01  #@param {type:"number"}
 RESUME = True  #@param {type:"boolean"}
@@ -161,21 +162,22 @@ flagged = alignment[
     alignment["status"].isin(["rejected", "skipped_action"])
     | (alignment["coverage"].fillna(1.0) < 0.8)
     | (alignment["pa_mm"].fillna(0.0) > 80.0)
+    | (alignment.get("switches", pd.Series(0, index=alignment.index)).fillna(0) > 0)
 ]
 if not flagged.empty:
-    print("Các camera/sequence cần lưu ý (bị loại, phủ <80% GT, hoặc PA >80mm):")
+    print("Các camera/sequence cần xem lại (bị loại, phủ <80% GT, PA >80mm, hoặc chuyển track):")
     display(flagged)
 else:
-    print("Tất cả camera đều khớp tốt với GT (coverage >= 80%, PA <= 80mm).")
+    print("Không có cờ cảnh báo tự động; vẫn cần kiểm tra alignment và danh tính track.")
 """)
 
 code("""#@title 4b. Chạy Train & lưu checkpoint từng epoch trên Google Drive
 import hashlib, shutil, torch, yaml
+from train_v4 import fit_signature
 
 # Tính đúng chữ ký cấu hình của train_v4.py để kiểm tra tương thích trước khi resume
 cfg_pw = yaml.safe_load((REPO_DIR / "configs/pipeline.yml").read_text(encoding="utf-8"))["fusion"]["partwise"]
 cfg_pw.pop("weight_model", None)
-cfg_pw["multi_person"] = {"enabled": False}
 stable_rows = [{k: v for k, v in r.items() if k not in ("GT_path", "PKL_path")}
                for r in json.loads(MANIFEST.read_text(encoding="utf-8"))]
 cur_identity = hashlib.sha256(
@@ -187,9 +189,7 @@ cur_identity = hashlib.sha256(
     + json.dumps(cfg_pw, sort_keys=True).encode()
     + str(bool(SKIP_UNALIGNED_ACTIONS)).encode()
 ).hexdigest()
-cur_sig = hashlib.sha256(
-    (cur_identity + json.dumps(cfg_pw, sort_keys=True) + str(float(LEARNING_RATE))).encode()
-).hexdigest()
+cur_sig = fit_signature(cur_identity, cfg_pw, float(LEARNING_RATE))
 
 
 def _probe_ckpt(folder):
@@ -256,6 +256,8 @@ saved_pts = sorted(RUN_OUT.glob("epoch_*.pt"))
 
 print(f"Đã lưu {len(saved_pts)} epoch checkpoints tại: {RUN_OUT}")
 print(f"★ Best Epoch          : {best['epoch']} / {len(history)}")
+print(f"  Val MPJPE sequence  : {best['val_sequence_mpjpe_mm']:.2f} mm")
+print(f"  Val objective       : {best['val_objective_mm']:.2f} mm")
 print(f"  Val PA-MPJPE (Best) : {best['val_mpjpe_mm']:.2f} mm")
 if "equal_val_mpjpe_mm" in best:
     print(f"  Val PA-MPJPE (50-50): {best['equal_val_mpjpe_mm']:.2f} mm")
@@ -276,10 +278,20 @@ plt.plot(epochs_x, [h["train_mpjpe_mm"] for h in history], label="Train PA-MPJPE
 plt.plot(epochs_x, [h["val_mpjpe_mm"] for h in history], label="Val PA-MPJPE (partwise learned)")
 if "equal_val_mpjpe_mm" in history[0]:
     plt.axhline(history[0]["equal_val_mpjpe_mm"], color="gray", linestyle="--", label="Val 50-50 (w=0.5)")
-plt.scatter([best["epoch"]], [best["val_mpjpe_mm"]], color="red", zorder=5, label=f"Best Epoch ({best['epoch']})")
+plt.axhline(history[0]["depth_val_mpjpe_mm"], color="green", linestyle=":", label="Val depth_logit")
+plt.scatter([best["epoch"]], [best["val_mpjpe_mm"]], color="red", zorder=5, label=f"Best combined objective (epoch {best['epoch']})")
 plt.xlabel("Epoch")
 plt.ylabel("PA-MPJPE (mm)")
 plt.title("Quá trình huấn luyện bộ trọng số partwise")
+plt.legend()
+plt.grid(alpha=0.3)
+plt.show()
+plt.figure(figsize=(7, 4))
+plt.plot(epochs_x, [h["val_sequence_mpjpe_mm"] for h in history], label="Val MPJPE learned")
+plt.axhline(history[0]["depth_val_sequence_mpjpe_mm"], label="Val MPJPE depth_logit", linestyle="--")
+plt.axhline(history[0]["baseline_val_sequence_mpjpe_mm"], label="Val MPJPE mono", linestyle=":")
+plt.xlabel("Epoch")
+plt.ylabel("Sequence MPJPE (mm), 12 body joints")
 plt.legend()
 plt.grid(alpha=0.3)
 plt.show()
@@ -292,9 +304,10 @@ RUN_OUT = globals().get("ACTIVE_OUT", OUTPUT)
 base = yaml.safe_load((REPO_DIR / "configs/pipeline.yml").read_text(encoding="utf-8"))
 patch = yaml.safe_load((RUN_OUT / "best_partwise.yml").read_text(encoding="utf-8"))
 base["fusion"]["method"] = "partwise"
-base["fusion"].setdefault("partwise", {})["weight_model"] = patch["fusion"]["partwise"]["weight_model"]
+base["fusion"]["partwise"] = patch["fusion"]["partwise"]
 out_cfg = RUN_OUT / "pipeline_best.yml"
 out_cfg.write_text(yaml.safe_dump(base, sort_keys=False, allow_unicode=True), encoding="utf-8")
+print("Cấu hình thử nghiệm: cần benchmark coco17 trước khi dùng chính thức.")
 print("Đã xuất cấu hình đầy đủ (nhúng sẵn trọng số, dùng được ngay cả trên Colab lẫn máy local):")
 print(" ->", out_cfg)
 print("\\nĐoạn cấu hình weight_model tốt nhất:")

@@ -9,12 +9,12 @@ import joblib
 import numpy as np
 import torch
 
-from train_v4 import (AlignmentError, associate, centered, export_model, fit,
+from train_v4 import (BODY, AlignmentError, associate, centered, export_model, fit,
                       index_mounted_files, prepare, resolve_mounted, torch_fuse,
-                      validate_rows, synchronize)
+                      validate_rows, synchronize, validation, rotation, training_options)
 from keypoints_map import load_keypoints3d_map
-from fusion_pipeline.partwise import extract_pair_features, fuse_partwise, slave_directions
-from test_partwise import CFG, skeleton
+from fusion_pipeline.partwise import eval_weight_model, extract_pair_features, fuse_partwise, slave_directions
+from test_partwise import CFG, skeleton, rotate
 
 
 def pair(split="train"):
@@ -29,6 +29,28 @@ def pair(split="train"):
 
 
 class TrainingTests(unittest.TestCase):
+    def test_prepare_shares_baseline_rotation_across_disconnected_runs(self):
+        names = [k["name"] for k in load_keypoints3d_map("configs/keypoints3D_map.yml")["keypoints"]]
+        ids = np.r_[np.arange(12), np.arange(20, 32)]
+        gt = np.array([[skeleton()[n] for n in names] for _ in range(32)])
+        joints = np.array([[rotate(skeleton(), 0 if t < 12 else 60)[n] for n in names] for t in ids])
+        body = [names.index(n) for n in BODY]
+        expected = centered(gt[ids], names)
+        expected = expected @ rotation(expected[:, body], centered(joints, names)[:, body])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            np.savez(root / "gt.npz", verts=gt)
+            joblib.dump({"0": dict(frame_ids=ids, verts=joints)}, root / "cam.pkl")
+            rows = [dict(action=s, split=s, cam=c, GT=f"ground_truth_{s}", GT_path=str(root / "gt.npz"),
+                         PKL_path=str(root / "cam.pkl"), **{"file PKL": f"camera_{s}_{c}_012345"})
+                    for s in ("train", "val") for c in ("cam0", "cam1")]
+            with patch("train_v4.joints_from_vertices", side_effect=lambda v, r: v), \
+                 patch("train_v4.associate", return_value=(ids, joints, {})):
+                pairs, _ = prepare(rows, None, root, CFG)
+            self.assertEqual(len(pairs), 8)
+            np.testing.assert_allclose(pairs[0]["target"], expected[:12], atol=1e-6)
+            np.testing.assert_allclose(pairs[2]["target"], expected[12:], atol=1e-6)
+
     def test_prepare_reports_rejected_camera_and_keeps_valid_pairs(self):
         mapping = load_keypoints3d_map("configs/keypoints3D_map.yml")
         names = [k["name"] for k in mapping["keypoints"]]
@@ -212,6 +234,72 @@ class TrainingTests(unittest.TestCase):
         actual.square().sum().backward()
         self.assertTrue(torch.isfinite(w.grad).all())
 
+    def test_sequence_mpjpe_does_not_refit_fused_orientation(self):
+        p = pair("val")
+        yawed = [rotate(f, 25) for f in p["S"]]
+        with patch("train_v4.fuse_partwise", return_value=(yawed, {})):
+            metrics = validation([p], export_model(np.zeros(8), np.ones(8)), CFG)
+        self.assertLess(metrics["pa_mm"], 0.001)
+        self.assertGreater(metrics["mpjpe_mm"], 20)
+
+    def test_disabled_features_are_ignored_even_when_present_at_inference(self):
+        model = export_model(np.ones(8), np.ones(8), [True, False, False, False, True, True, True, True])
+        feats = np.zeros((2, 3, 8), dtype=np.float32)
+        expected = eval_weight_model(feats, model)
+        feats[..., 1:4] = 1000
+        np.testing.assert_array_equal(eval_weight_model(feats, model), expected)
+
+    def test_learned_weights_keep_visibility_and_depth_outlier_guards(self):
+        master = [skeleton(depth=4, elbow_lift=0.2) for _ in range(10)]
+        slave = [skeleton(depth=6) for _ in range(10)]
+        wm = dict(enabled=True, **export_model(np.zeros(8), np.ones(8)))
+        cfg = dict(CFG, weight_model=wm, multi_person={"enabled": True, "anti_swap_gate": False})
+        raw, _ = fuse_partwise(master, slave, dict(cfg, multi_person={"enabled": False}))
+        vis_m = [{"left_elbow": False, "left_wrist": False} for _ in master]
+        out, diag = fuse_partwise(master, slave, cfg, vis_master=vis_m)
+        self.assertGreater(diag["occluded_master_bones"], 0)
+        self.assertLess(np.linalg.norm(np.asarray(out[0]["left_wrist"]) - slave[0]["left_wrist"] + [0, 0, 2]),
+                        np.linalg.norm(np.asarray(raw[0]["left_wrist"]) - slave[0]["left_wrist"] + [0, 0, 2]))
+        _, diag = fuse_partwise(master, [skeleton(depth=18) for _ in master], cfg)
+        self.assertEqual(diag["depth_outlier_frames"], 10)
+        self.assertGreater(diag["master_weight_min"], 0.95)
+
+    def test_training_options_reject_invalid_values(self):
+        for options in ({"patience": 0}, {"patience": 1.5}, {"prior_l2": -1}, {"mpjpe_weight": float("nan")}):
+            with self.assertRaises(ValueError):
+                training_options(dict(CFG, training=options))
+
+    def test_prior_inactive_features_and_early_stop_survive_resume(self):
+        cfg = dict(CFG, training={"patience": 2, "min_delta_mm": 1e6})
+        # A high learning rate exercises the non-negative depth projection.
+        with tempfile.TemporaryDirectory() as tmp:
+            history = fit([pair(), pair("val")], cfg, Path(tmp) / "first", epochs=10, lr=2)
+            self.assertEqual(len(history), 3)
+            saved = json.loads((Path(tmp) / "first/epoch_0003_weights.json").read_text())
+            self.assertGreaterEqual(saved["weights"][0], 0)
+            for i, active in enumerate(saved["active_features"]):
+                if not active:
+                    self.assertEqual(saved["std"][i], 1)
+                    self.assertEqual(saved["weights"][i], 0)
+            resumed = fit([pair(), pair("val")], cfg, Path(tmp) / "resume", epochs=10, lr=2,
+                          resume=Path(tmp) / "first/epoch_0003.pt")
+            self.assertEqual(history, resumed)
+            self.assertTrue((Path(tmp) / "resume/best_partwise.yml").exists())
+
+    def test_depth_prior_initializes_effective_slope(self):
+        p = pair()
+        for t, frame in enumerate(p["M"]):
+            for value in frame.values():
+                value[2] += 0.1 * t
+        p["features"], _ = extract_pair_features(p["M"], p["S"])
+        p["directions"] = slave_directions(p["M"], p["S"], 4)
+        with tempfile.TemporaryDirectory() as tmp:
+            fit([p, pair("val")], CFG, tmp, epochs=1, lr=1e-9)
+            model = json.loads((Path(tmp) / "epoch_0001_weights.json").read_text())
+        self.assertTrue(model["active_features"][0])
+        self.assertAlmostEqual(model["weights"][0] / model["std"][0],
+                               CFG["depth_logit"]["b"] / CFG["depth_logit"]["sd"], places=6)
+
     def test_association_recovers_track_and_offset(self):
         rng = np.random.default_rng(9)
         p = pair()
@@ -256,7 +344,7 @@ class TrainingTests(unittest.TestCase):
             resumed = fit(pairs, CFG, root/"resume", epochs=3, resume=root/"part/epoch_0001.pt")
             self.assertEqual(full, resumed)
             best = json.loads((root/"resume/best_weights.json").read_text())
-            self.assertEqual(best["val_mpjpe_mm"], min(h["val_mpjpe_mm"] for h in resumed))
+            self.assertEqual(best["val_objective_mm"], min(h["val_objective_mm"] for h in resumed))
             self.assertTrue((root/"resume/epoch_0003.pt").exists())
             for key in ["weights","std"]:
                 a = json.loads((root/"full/epoch_0003_weights.json").read_text())[key]
