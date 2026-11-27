@@ -91,6 +91,19 @@ def _align_camera_to_world_rigid(pred: dict[str, np.ndarray], truth: dict[str, n
     t_dict = {k: T[i] for i, k in enumerate(keys)}
     return p_dict, t_dict
 
+MID_NECK = "neck"
+
+
+def _add_mid_neck(errors_dict: dict, err_vecs: dict) -> None:
+    """Report-only 'neck' = midpoint of the two shoulders (Harmony4D COCO-17 GT has no neck).
+
+    Every alignment used here is affine, so the error of the aligned midpoint is the mean of the
+    two shoulder error vectors. Added AFTER the mean: it never enters MPJPE/PA-MPJPE or the fit."""
+    if MID_NECK in errors_dict or "left_shoulder" not in err_vecs or "right_shoulder" not in err_vecs:
+        return
+    errors_dict[MID_NECK] = float(np.linalg.norm(0.5 * (err_vecs["left_shoulder"] + err_vecs["right_shoulder"])) * 1000.0)
+
+
 def _compute_mpjpe(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], keys: list[str], rotate: bool = True) -> tuple[float, dict[str, float]]:
     p_dict, t_dict = _align_camera_to_world_rigid(pred, truth, keys, rotate=rotate)
     errors = []
@@ -99,7 +112,9 @@ def _compute_mpjpe(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], ke
         err = float(np.linalg.norm(p_dict[k] - t_dict[k]) * 1000.0)
         errors.append(err)
         errors_dict[k] = err
-    return float(np.mean(errors)), errors_dict
+    mean = float(np.mean(errors))
+    _add_mid_neck(errors_dict, {k: p_dict[k] - t_dict[k] for k in keys})
+    return mean, errors_dict
 
 def mpjpe_alignment_requested(eval_cfg: dict) -> str:
     value = str(eval_cfg.get("mpjpe_alignment", "frame")).lower()
@@ -251,9 +266,11 @@ def _sequence_rotation(frames: list[tuple[dict, dict, list[str]]]) -> np.ndarray
 def _compute_mpjpe_fixed_rotation(pred, truth, keys, R) -> tuple[float, dict[str, float]]:
     """Root-centred MPJPE with a given (sequence-level) rotation, no per-frame alignment."""
     pr, tr = _resolve_root_joint(pred), _resolve_root_joint(truth)
-    errors = {k: float(np.linalg.norm(R @ (np.asarray(pred[k], dtype=float) - pr)
-                                      - (np.asarray(truth[k], dtype=float) - tr)) * 1000.0) for k in keys}
-    return float(np.mean(list(errors.values()))), errors
+    vecs = {k: R @ (np.asarray(pred[k], dtype=float) - pr) - (np.asarray(truth[k], dtype=float) - tr) for k in keys}
+    errors = {k: float(np.linalg.norm(v) * 1000.0) for k, v in vecs.items()}
+    mean = float(np.mean(list(errors.values())))
+    _add_mid_neck(errors, vecs)
+    return mean, errors
 
 
 def _compute_pa_mpjpe(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], keys: list[str]) -> tuple[float, dict[str, float]]:
@@ -286,8 +303,10 @@ def _compute_pa_mpjpe(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray],
         err = float(np.linalg.norm(P_aligned[i] - T[i]) * 1000.0)
         errors.append(err)
         errors_dict[k] = err
-        
-    return float(np.mean(errors)), errors_dict
+
+    mean = float(np.mean(errors))
+    _add_mid_neck(errors_dict, {k: P_aligned[i] - T[i] for i, k in enumerate(keys)})
+    return mean, errors_dict
 
 def _compute_pck(pred: dict[str, np.ndarray], truth: dict[str, np.ndarray], keys: list[str], threshold_mm: float, rotate: bool = True) -> tuple[float, dict[str, float]]:
     p_dict, t_dict = _align_camera_to_world_rigid(pred, truth, keys, rotate=rotate)
@@ -978,13 +997,17 @@ def run_evaluation(config: dict) -> None:
     for metric in enabled_metrics:
         unit = "pct" if metric == "PCK" else "mm"
         header = ["Frame", "Evaluated_Camera", "Ground_Truth_Camera"]
+        # Per-joint columns: the scored joints + the report-only mid-shoulder neck (MPJPE/PA only).
+        detail_names = list(priority1_names)
+        if metric in ("MPJPE", "PA-MPJPE") and MID_NECK not in detail_names:
+            detail_names.append(MID_NECK)
         for mod in module_names:
             out_name = module_output_names[mod]
             header.append(f"{out_name}_priority1_{unit}")
             header.append(f"{out_name}_priority2_{unit}")
             header.append(f"{out_name}_occ_{unit}")
             header.append(f"{out_name}_vis_{unit}")
-            for joint in priority1_names:
+            for joint in detail_names:
                 header.append(f"{out_name}_{joint}_{unit}")
 
         for cam in CAMERAS:
@@ -1029,7 +1052,7 @@ def run_evaluation(config: dict) -> None:
                             avg_counts[f"{out_name}_vis_{unit}"] += 1
                         
                         p1_details = results[metric][cam][frame][mod]["priority1_details"]
-                        for joint in priority1_names:
+                        for joint in detail_names:
                             value = p1_details.get(joint)
                             if value is None:
                                 row.append("N/A")
