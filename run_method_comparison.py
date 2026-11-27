@@ -48,6 +48,10 @@ import yaml
 
 ROOT = Path(__file__).resolve().parent
 METRICS = ("pa", "mpjpe", "mble", "accel")
+# Per-joint columns <metric>_mono_<joint>, <metric>_<joint> (mm) in results_w*.csv.
+REPORT_JOINTS = ("neck", "left_shoulder", "right_shoulder", "left_elbow", "right_elbow",
+                 "left_wrist", "right_wrist", "left_hip", "right_hip",
+                 "left_knee", "right_knee", "left_ankle", "right_ankle")
 
 
 # ----------------------------------------------------------------------------- units
@@ -138,6 +142,10 @@ def score_eval_dir(eval_dir):
         d = _numeric(pd.read_csv(e / f"{met}_cam1.csv", na_values="N/A"))
         out[key] = (d.posed_priority1_mm.mean(), d.fused_priority1_mm.mean())
         out["frames"] = len(d)
+        # Per-joint means over the same frames (neck = report-only mid-shoulder point).
+        for j in REPORT_JOINTS:
+            if f"posed_{j}_mm" in d and f"fused_{j}_mm" in d:
+                out[f"{key}_{j}"] = (d[f"posed_{j}_mm"].mean(), d[f"fused_{j}_mm"].mean())
     for fname, col, key in (("MBLE_cam1.csv", "Frame_MBLE_mm", "mble"),
                             ("Accel_cam1.csv", "Frame_Accel_Error_mm_frame2", "accel")):
         d = _numeric(pd.read_csv(e / fname))
@@ -279,6 +287,10 @@ def cmd_run(a):
                            "protocol": evaluation_protocol(vc)}
                     for k in METRICS:
                         rec[f"{k}_mono"], rec[k] = s[k]
+                    for k in ("pa", "mpjpe"):
+                        for j in REPORT_JOINTS:
+                            if f"{k}_{j}" in s:
+                                rec[f"{k}_mono_{j}"], rec[f"{k}_{j}"] = s[f"{k}_{j}"]
                     new_rows.append(rec)
                     if a.keep_per_frame:
                         keep = out_dir / "per_frame" / f"{'_'.join(unit_key(u))}_{method_dir.name}_{tag}"
