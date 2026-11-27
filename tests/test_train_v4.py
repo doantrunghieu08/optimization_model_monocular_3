@@ -1,4 +1,5 @@
 import copy
+import itertools
 import json
 import tempfile
 import unittest
@@ -12,7 +13,8 @@ import torch
 from train_v4 import (BODY, AlignmentError, associate, centered, export_model, fit,
                       index_mounted_files, prepare, resolve_mounted, torch_fuse,
                       validate_rows, synchronize, validation, rotation, training_options,
-                      training_config, naive_relative_loss, selection_key, naive_prediction, torch_pa_loss, pa_errors)
+                      training_config, naive_relative_loss, selection_key, naive_prediction, torch_pa_loss, pa_errors,
+                      tracks_from_wham, synchronize_visibility)
 from keypoints_map import load_keypoints3d_map
 from fusion_pipeline.partwise import eval_weight_model, extract_pair_features, fuse_partwise, slave_directions
 from test_partwise import CFG, skeleton, rotate
@@ -30,6 +32,109 @@ def pair(split="train"):
 
 
 class TrainingTests(unittest.TestCase):
+    def test_prepare_learns_mesh_occlusion_without_confidence2d_and_reuses_occ_cache(self):
+        names = [k["name"] for k in load_keypoints3d_map("configs/keypoints3D_map.yml")["keypoints"]]
+        gt = np.array([[skeleton(elbow_lift=0.01*t)[n] for n in names] for t in range(24)])
+        cfg = dict(CFG, occlusion={"enabled": True, "multi_person": True})
+        def visibility(pose, mesh, **kwargs):
+            return {n: not (n == "left_elbow" and pose["pelvis"][2] < 5) for n in names}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            np.savez(root / "gt.npz", verts=gt)
+            # Reversed fragments and nonzero video frame IDs exercise track/time association.
+            joblib.dump({"b": dict(frame_ids=np.arange(112, 124), verts=gt[12:]),
+                         "a": dict(frame_ids=np.arange(100, 112), verts=gt[:12])}, root / "cam0.pkl")
+            joblib.dump({"c": dict(frame_ids=np.arange(200, 224), verts_cam=gt + [0, 0, 2])}, root / "cam1.pkl")
+            rows = [dict(action=s, split=s, cam=c, GT=f"ground_truth_{s}", GT_path=str(root / "gt.npz"),
+                         PKL_path=str(root / f"{c}.pkl"), **{"file PKL": f"camera_{s}_{c}_012345"})
+                    for s in ("train", "val") for c in ("cam0", "cam1")]
+            # Old joint-only caches must not mask the newly available occlusion data.
+            for row in rows:
+                joblib.dump({}, root / f"{row['file PKL']}.joints.joblib")
+            with patch("train_v4.joints_from_vertices", side_effect=lambda v, r: v), \
+                 patch("train_v4.require_ray_casting_backend"), \
+                 patch("train_v4.load_torso_mask", return_value=np.ones(6890, dtype=bool)), \
+                 patch("train_v4.compute_visibility_from_mesh_vertices", side_effect=visibility) as compute:
+                pairs, reports = prepare(rows, None, root, cfg)
+                compute.assert_called()
+                compute.reset_mock()
+                cached, _ = prepare(rows, None, root, cfg)
+                compute.assert_not_called()
+                changed = dict(cfg, occlusion=dict(cfg["occlusion"], tau=0.1))
+                prepare(rows, None, root, changed)
+                compute.assert_called()
+            self.assertEqual(len(pairs), 4)
+            forward, reverse = pairs[:2]
+            elbow = forward["children"].index("left_elbow")
+            np.testing.assert_array_equal(forward["features"][:, elbow, 1], -1)
+            np.testing.assert_allclose(forward["features"][:, :, 2], -1 / len(names))
+            np.testing.assert_allclose(forward["features"], -reverse["features"], atol=1e-6)
+            np.testing.assert_array_equal(forward["features"][:, :, 3], 0)
+            np.testing.assert_array_equal(cached[0]["features"], forward["features"])
+            self.assertTrue(any(r["occluded_joint_fraction"] > 0 for r in reports))
+            with patch("train_v4.fuse_partwise", wraps=fuse_partwise) as fusion:
+                validation([forward], export_model(np.ones(8), np.ones(8)), cfg)
+            self.assertIs(fusion.call_args.kwargs["vis_master"], forward["vis_master"])
+            self.assertIs(fusion.call_args.kwargs["vis_slave"], forward["vis_slave"])
+
+    def test_visibility_interpolation_preserves_exact_ticks_and_requires_both_endpoints(self):
+        ids = np.array([0, 2, 4])
+        vis = np.array([[True, False], [False, True], [True, True]])
+        actual = synchronize_visibility(ids, vis, np.arange(5))
+        np.testing.assert_array_equal(actual, [[True, False], [False, False], [False, True],
+                                              [False, True], [True, True]])
+
+    def test_mesh_occlusion_uses_camera_vertices_and_other_tracks_at_their_own_frame_ids(self):
+        reg = np.zeros((2, 6890))
+        reg[0, 8], reg[1, 9] = 1, 1
+        cube = np.array(list(itertools.product([-0.3, 0.3], [-0.3, 0.3], [2, 3])))
+        mesh = np.zeros((6890, 3))
+        mesh[:8] = cube
+        mesh[8:10] = [[0, 0, 4], [1, 0, 4]]
+        other = np.full((1, 6890, 3), [0.5, 0, 2])
+        raw = {"target": dict(frame_ids=[10, 11], verts_cam=np.stack([mesh, mesh]),
+                               verts=np.full((2, 6890, 3), 99.0)),
+               "other": dict(frame_ids=[11], verts=other)}
+        mask = np.zeros(6890, dtype=bool)
+        mask[:8] = True
+        with patch("fusion_pipeline.detector._TORSO_MASK", mask):
+            tracks, vis = tracks_from_wham(raw, reg, ["left_wrist", "right_wrist"],
+                                          {"enabled": True, "multi_person": True})
+        np.testing.assert_allclose(tracks["target"][1][0], mesh[8:10])
+        # Left wrist is behind its own torso; the other track exists only at frame 11.
+        self.assertFalse(vis["target"][:, 0].any())
+        self.assertTrue(vis["target"][0, 1])
+        self.assertFalse(vis["target"][1, 1])
+        with patch("train_v4.joints_from_vertices", side_effect=lambda v, r: v):
+            with self.assertRaisesRegex(ValueError, "Invalid/duplicate frame ids"):
+                tracks_from_wham({"bad": dict(frame_ids=[1, 1], verts=np.stack([mesh, mesh]))},
+                                 reg, ["left_wrist", "right_wrist"], {"enabled": False})
+
+    def test_occ_features_receive_gradients_and_are_exported_without_confidence2d(self):
+        p = pair()
+        vm = [{"left_elbow": t % 2 == 0, "left_wrist": t % 2 == 0} for t in range(len(p["M"]))]
+        vs = [{"left_elbow": t % 2 != 0, "left_wrist": t % 2 != 0} for t in range(len(p["M"]))]
+        p["vis_master"], p["vis_slave"] = vm, vs
+        p["features"], _ = extract_pair_features(p["M"], p["S"], vm, vs)
+        target = [p["M"][t] if t % 2 == 0 else p["S"][t] for t in range(len(p["M"]))]
+        p["target"] = centered(np.array([[f[n] for n in p["names"]] for f in target]), p["names"]).astype(np.float32)
+        w = torch.zeros(8, requires_grad=True)
+        loss = (torch_fuse(p, w, torch.ones(8)) - torch.as_tensor(p["target"])).square().sum()
+        loss.backward()
+        self.assertTrue(torch.all(w.grad[1:3].abs() > 1e-8))
+        self.assertEqual(float(w.grad[3]), 0)
+        cfg = dict(CFG, occlusion={"enabled": True})
+        with tempfile.TemporaryDirectory() as tmp:
+            fit([p, dict(p, split="val", action="val")], cfg, tmp, epochs=1)
+            model = json.loads((Path(tmp) / "best_weights.json").read_text())
+            self.assertEqual(model["active_features"][1:4], [True, True, False])
+            self.assertTrue(all(w > 0 for w in model["weights"][1:3]))
+            import yaml
+            exported = yaml.safe_load((Path(tmp) / "best_partwise.yml").read_text())
+            self.assertEqual(exported["fusion"]["occlusion"], cfg["occlusion"])
+            self.assertNotIn("occlusion", exported["fusion"]["partwise"])
+
     def test_prepare_shares_baseline_rotation_across_disconnected_runs(self):
         names = [k["name"] for k in load_keypoints3d_map("configs/keypoints3D_map.yml")["keypoints"]]
         ids = np.r_[np.arange(12), np.arange(20, 32)]
@@ -304,10 +409,12 @@ class TrainingTests(unittest.TestCase):
 
     def test_naive_reference_copies_the_benchmark_smoothing_configuration(self):
         pipeline = {"fusion": {"partwise": copy.deepcopy(CFG),
+                               "occlusion": {"enabled": True, "multi_person": True},
                                "naive": {"master_weight": 0.5, "use_aotr_stability": True},
                                "aotr": {"sequence_stability": {"enabled": True}}}}
         before = copy.deepcopy(pipeline)
         cfg = training_config(pipeline)
+        self.assertEqual(cfg["occlusion"], pipeline["fusion"]["occlusion"])
         p = pair()
         output = [{k: v.tolist() for k, v in f.items()} for f in p["M"]]
         with patch("fusion_pipeline.aotr_stability.postprocess_aotr_3d", return_value=(output, {})) as smooth:
@@ -414,13 +521,15 @@ class TrainingTests(unittest.TestCase):
         names = pair()["names"]
         gt = rng.normal(size=(60, len(names), 3))
         joints = gt[::2] + 4
-        ids, actual, report = associate({"first": (np.arange(15), joints[:15]),
-                                        "second": (np.arange(15,30), joints[15:])}, gt, names)
+        ids, actual, report, sources = associate({"first": (np.arange(15), joints[:15]),
+                                        "second": (np.arange(15,30), joints[15:])}, gt, names,
+                                        return_sources=True)
         self.assertEqual(report["ratio"], 2)
         self.assertEqual(report["offset"], 0)
         self.assertEqual(report["switches"], 1)
         np.testing.assert_array_equal(ids, np.arange(0,60,2))
         np.testing.assert_allclose(actual, joints)
+        self.assertEqual(sources, [("first", i) for i in range(15)] + [("second", i) for i in range(15)])
 
     def test_camera_phase_interpolation(self):
         im, is_ = np.arange(0,20,2), np.arange(1,20,2)
