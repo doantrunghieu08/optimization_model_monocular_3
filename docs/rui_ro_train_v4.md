@@ -68,9 +68,9 @@ Tách sequence/GT không đồng nghĩa tách người hoặc nhóm hành độn
 
 **Đã sửa:** không còn ép `multi_person.enabled = false` trong trainer. Validation giữ cấu hình multi-person và `sequence_stability` đã chọn. Nhánh learned dùng chung cổng chống tráo người, căn xoay theo visibility, bias che khuất và bảo vệ độ sâu bất thường với nhánh độ sâu. Khi độ sâu bất thường, trọng số learned của frame đó được thay bằng trọng số độ sâu đã qua bảo vệ.
 
-**Giới hạn còn lại:** dữ liệu chuẩn bị chưa có visibility/confidence; gọi đầy đủ hàm fusion không tái tạo được tín hiệu đầu vào còn thiếu. Bước gradient dùng bản fusion khả vi, chưa bao gồm các cổng rời rạc và hậu xử lý; validation mới là điểm chấm đầy đủ để chọn epoch.
+**Cập nhật 27/11/2026:** bước chuẩn bị đã tính visibility từ mesh bằng cùng bộ phát hiện che khuất như suy luận, không cần confidence 2D. Visibility đi theo đúng track/frame đã được `associate` chọn, sau đó đồng bộ với cặp camera. Frame nội suy chỉ được coi là nhìn thấy nếu cả hai đầu mút đều nhìn thấy. Validation nhận cùng visibility này. Bước gradient vẫn dùng bản fusion khả vi, chưa bao gồm các cổng rời rạc và hậu xử lý; validation là điểm chấm đầy đủ để chọn epoch.
 
-Chưa suy ra visibility từ ray-casting. Cần kiểm tra hệ tọa độ, mesh của mọi người và cách đưa kết quả vào pipeline trước; camera nằm tại gốc không tự giải quyết che khuất do người khác.
+Mesh phải ở hệ tọa độ camera, đơn vị mét; ưu tiên `verts_cam`, dùng `verts` theo hợp đồng dữ liệu WHAM hiện tại khi thiếu `verts_cam`. Che khuất bởi người khác lấy mesh các track khác tại đúng frame video gốc. Cần kiểm tra chất lượng mesh, danh tính và vị trí tương đối giữa người trên dữ liệu thật.
 
 ### R5. Loss chỉ tối ưu PA và cách căn target theo đoạn — trung bình
 
@@ -133,6 +133,16 @@ Trong cấu hình chính, `weight_model.enabled` đã đặt **false** để ch�
 - [ ] Train lại v4, so sánh baseline và báo kết quả riêng theo nhóm.
 - [ ] Benchmark miền đích theo mục 5; thử hướng toàn thân như một ablation riêng.
 
-Mở lại `colab_train_v4.ipynb` đã tạo từ builder; thư mục mặc định mới là `run_004`. Dùng output mới vì signature và loss đã thay đổi; không resume checkpoint của loss/cách căn cũ. Notebook lưu toàn bộ cấu hình partwise dùng để validation vào `pipeline_best.yml`, gồm mặt nạ `active_features` và cấu hình naive đối chứng. Sau train, cần nạp pipeline_best mới vào notebook benchmark; bản benchmark nhúng mô hình cũ không tự cập nhật theo kết quả train trên Drive.
+Mở lại `colab_train_v4.ipynb` đã tạo từ builder; thư mục mặc định mới là `run_005_occ`. Dùng output mới vì signature và dữ liệu đặc trưng đã thay đổi; không resume checkpoint cũ thiếu occ. Notebook lưu cấu hình partwise và occlusion dùng để validation vào `pipeline_best.yml`, gồm mặt nạ `active_features` và cấu hình naive đối chứng. File ở thư mục gốc `OUTPUT_DIR` cũng được cập nhật nếu kết quả nằm trong thư mục con do đổi learning rate. Notebook benchmark đọc trực tiếp file này trên Drive qua `TRAINED_CONFIG_PATH`, mặc định `/content/drive/MyDrive/partwise_v4/run_005_occ/pipeline_best.yml`; không còn nhúng trọng số cũ.
 
 Không đổi split hoặc tự sửa dữ liệu trên Drive trong lần cập nhật này. Hiệu quả thực tế của mô hình mới vẫn chờ các thí nghiệm còn lại ở trên.
+
+## 7. Train trọng số occ khi không có confidence 2D
+
+- Dùng `fusion.occlusion.enabled: true` (đã bật trong cấu hình chính), cài `rtree` và có SMPL torso mask. Notebook đã cài thêm `rtree`.
+- Chạy lại prepare và train trong notebook mới. Cache compact có hậu tố `.occ_<hash>.joblib`, tách khỏi cache joints cũ và phụ thuộc cấu hình/bộ phát hiện occ; prepared data và checkpoint cũng có chữ ký mới.
+- `alignment.json` có `occluded_joint_fraction` cho mỗi camera được chấp nhận. Kiểm tra giá trị và timeline trước khi đánh giá mô hình.
+- `d_occ_joint` và `d_occ_torso` nhận visibility từ mesh; `d_conf2d` vẫn bằng 0 và tự bị loại khỏi `active_features`. Đặc trưng occ chỉ hoạt động khi có biến thiên trên tập train, không ép bật nếu dữ liệu không có tín hiệu.
+- `best_weights.json` và YAML xuất ra lưu các hệ số occ đã học, chuẩn hóa và mặt nạ đặc trưng. Các quy tắc che khuất cố định hiện có vẫn được giữ khi validation/suy luận; cần benchmark đóng góp của hệ số học trên dữ liệu thật.
+
+Đã thêm kiểm thử tổng hợp cho ray-casting, che khuất bởi track khác theo frame gốc, ghép track, đồng bộ visibility, tách cache, truyền visibility vào validation và cập nhật hai hệ số occ qua gradient khi không có confidence 2D. Chưa train lại v4 đầy đủ hoặc xác nhận cải thiện metric thực tế.

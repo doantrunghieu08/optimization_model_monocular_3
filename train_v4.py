@@ -20,6 +20,9 @@ import yaml
 from compat import patch_numpy_and_inspect
 from fusion_pipeline.aotr import _ordered_bones
 from fusion_pipeline.naive import fuse_naive
+from fusion_pipeline.detector import (
+    compute_visibility_from_mesh_vertices, load_torso_mask, require_ray_casting_backend,
+)
 from fusion_pipeline.partwise import (
     FEATURE_NAMES, blend_frame, eval_weight_model, extract_pair_features,
     fuse_partwise, slave_directions,
@@ -338,7 +341,7 @@ class AlignmentError(ValueError):
     """A camera has insufficient overlap or pose agreement with GT."""
 
 
-def associate(tracks, gt, names, ratios=(0.5, 1.0, 2.0)):
+def associate(tracks, gt, names, ratios=(0.5, 1.0, 2.0), return_sources=False):
     """GT-assisted timeline search and track stitching with a switch penalty."""
     body = [names.index(n) for n in BODY]
     keys = sorted(tracks)
@@ -348,6 +351,7 @@ def associate(tracks, gt, names, ratios=(0.5, 1.0, 2.0)):
     # Precompute PA costs against every GT tick once, then search timelines cheaply.
     costs = np.full((len(all_ids), len(keys), len(gt)), np.inf, dtype=np.float32)
     joints_at = {}
+    source_rows = {}
     gt_body = np.asarray(gt[:, body], dtype=np.float32)
     for ki, key in enumerate(keys):
         ids, joints = tracks[key]
@@ -362,8 +366,10 @@ def associate(tracks, gt, names, ratios=(0.5, 1.0, 2.0)):
             costs[positions[s0:s0 + 128], ki] = pa_errors(
                 source.reshape(-1, len(body), 3), target.reshape(-1, len(body), 3)
             ).reshape(len(chunk), len(gt))
-        for pos, joint in zip(positions, joints):
+        for row, (pos, joint) in enumerate(zip(positions, joints)):
             joints_at[(int(pos), ki)] = joint
+            if return_sources:
+                source_rows[(int(pos), ki)] = row
     roots = np.zeros((len(all_ids), len(keys), 3))
     for (pos, ki), joints in joints_at.items():
         roots[pos, ki] = joints[[names.index("left_hip"), names.index("right_hip")]].mean(0)
@@ -431,6 +437,10 @@ def associate(tracks, gt, names, ratios=(0.5, 1.0, 2.0)):
                   coverage=coverage, pa_mm=error * 1000,
                   switches=len(segments)-1,
                   runner_up_score_mm=candidates[1][0] * 1000 if len(candidates) > 1 else None)
+    if return_sources:
+        sources = [(keys[int(ki)], source_rows[(int(pos), int(ki))])
+                   for pos, ki in zip(positions, path)]
+        return gi, joints, report, sources
     return gi, joints, report
 
 
@@ -447,6 +457,51 @@ def synchronize(ids_m, jm, ids_s, js):
         values = np.stack([np.interp(common, ids, column) for column in flat.T], axis=1)
         arrays.append(values.reshape(len(common), *joints.shape[1:]).astype(np.float32))
     return common[valid], arrays[0][valid], arrays[1][valid]
+
+
+def synchronize_visibility(ids, visibility, ticks):
+    """Interpolated poses are visible only if both source endpoints are visible."""
+    hi = np.minimum(np.searchsorted(ids, ticks), len(ids) - 1)
+    lo = np.maximum(hi - 1, 0)
+    exact = ticks == ids[hi]
+    return np.where(exact[:, None], visibility[hi], visibility[lo] & visibility[hi])
+
+
+def tracks_from_wham(raw, reg, names, occlusion):
+    """Keep compact joints/visibility; meshes are needed only during preparation."""
+    tracks, meshes, by_frame = {}, {}, {}
+    for key, track in raw.items():
+        if not isinstance(track, dict) or "frame_ids" not in track:
+            continue
+        vertices = track.get("verts_cam", track.get("verts"))
+        if vertices is None:
+            continue
+        vertices = np.asarray(vertices)
+        ids = np.asarray(track["frame_ids"], dtype=int).reshape(-1)
+        if len(ids) != len(vertices) or len(np.unique(ids)) != len(ids):
+            raise ValueError(f"Invalid/duplicate frame ids for track {key}")
+        key = str(key)
+        tracks[key] = (ids, joints_from_vertices(vertices, reg))
+        if occlusion.get("enabled", False):
+            meshes[key] = vertices
+            for fid, mesh in zip(ids, vertices):
+                by_frame.setdefault(int(fid), []).append((key, mesh))
+    visibility = {}
+    for key, vertices in meshes.items():
+        ids, joints = tracks[key]
+        frames = []
+        for fid, mesh, pose in zip(ids, vertices, joints):
+            others = [v for k, v in by_frame[int(fid)] if k != key] if occlusion.get("multi_person", False) else None
+            vis = compute_visibility_from_mesh_vertices(
+                dict(zip(names, pose)), mesh,
+                occlusion_tau=float(occlusion.get("tau", 0.05)), extra_verts=others,
+                inter_person_radius=float(occlusion.get("inter_person_radius_m", 0.045)),
+                inter_person_min_hits=int(occlusion.get("inter_person_min_hits", 3)),
+                inter_person_tau=float(occlusion.get("inter_person_tau", 0.15)),
+            )
+            frames.append([vis[n] for n in names])
+        visibility[key] = np.asarray(frames, dtype=bool)
+    return tracks, visibility
 
 
 def _download_drive_file(drive, fid, dest):
@@ -495,6 +550,21 @@ def prepare(rows, drive, cache, config, alignment_path=None, skip_unaligned_acti
     names = [k["name"] for k in mapping["keypoints"]]
     reg = np.load(ROOT / "models/J_regressor_body25_extended.npy")
     reg = reg[[k["regressor_index"] for k in mapping["keypoints"]]]
+    occlusion = config.get("occlusion", {})
+    use_occ = bool(occlusion.get("enabled", False))
+    cache_suffix = ".joints.joblib"
+    if use_occ:
+        require_ray_casting_backend()
+        mask = load_torso_mask(str(ROOT / "models/smpl_partSegmentation_mapping.pkl"))
+        if mask is None:
+            raise ValueError("Occlusion training requires a valid SMPL torso mask")
+        occ_hash = hashlib.sha256(json.dumps(occlusion, sort_keys=True).encode()
+                                  + mask.tobytes() + reg.tobytes()
+                                  + Path(__file__).read_bytes()
+                                  + (ROOT / "fusion_pipeline/detector.py").read_bytes()
+                                  + (ROOT / "fusion_pipeline/config.py").read_bytes()
+                                  + (ROOT / "configs/keypoints3D_map.yml").read_bytes()).hexdigest()[:16]
+        cache_suffix = f".occ_{occ_hash}.joblib"
     wanted_ids = {file_id(r["GT"]) for r in rows} | {file_id(r["file PKL"]) for r in rows}
     mount_state = {
         "wanted_ids": wanted_ids,
@@ -527,33 +597,36 @@ def prepare(rows, drive, cache, config, alignment_path=None, skip_unaligned_acti
                 joblib.dump(gt, tmp_g)
                 tmp_g.replace(gt_jcache)
         for row in group:
-            # ponytail: cache compact 21-joint tracks (~100KB) & drop raw temp downloads immediately
-            jcache = Path(cache) / f"{file_id(row['file PKL'])}.joints.joblib" if (drive is not None or row.get("PKL_path")) else None
+            # Cache compact joints and visibility, never full meshes.
+            jcache = Path(cache) / f"{file_id(row['file PKL'])}{cache_suffix}" if (drive is not None or row.get("PKL_path")) else None
             if jcache is not None and jcache.exists():
-                tracks = joblib.load(jcache)
+                cached = joblib.load(jcache)
+                tracks, visibility = cached if use_occ else (cached, {})
             else:
                 pkl_ref = row.get("PKL_path") or row["file PKL"]
                 pkl_path, pkl_is_tmp = _resolve_or_download(drive, pkl_ref, drive_mount, temp_dir, mount_state)
                 try:
                     raw = joblib.load(pkl_path)
-                    tracks = {}
-                    for key, track in raw.items():
-                        if isinstance(track, dict) and "verts" in track and "frame_ids" in track:
-                            tracks[str(key)] = (np.asarray(track["frame_ids"], dtype=int),
-                                                joints_from_vertices(track["verts"], reg))
+                    tracks, visibility = tracks_from_wham(raw, reg, names, occlusion)
+                    del raw
                 finally:
                     if pkl_is_tmp:
                         pkl_path.unlink(missing_ok=True)
                 if jcache is not None and tracks:
                     jcache.parent.mkdir(parents=True, exist_ok=True)
                     tmp_j = jcache.with_suffix(".tmp")
-                    joblib.dump(tracks, tmp_j)
+                    joblib.dump((tracks, visibility) if use_occ else tracks, tmp_j)
                     tmp_j.replace(jcache)
             if not tracks:
                 raise ValueError(f"Expected WHAM tracks with camera-frame verts: {action}/{row['cam']}")
             print(f"Aligning {action}/{row['cam']}", flush=True)
             try:
-                gi, joints, report = associate(tracks, gt, names)
+                if use_occ:
+                    gi, joints, report, sources = associate(tracks, gt, names, return_sources=True)
+                    aligned_vis = np.asarray([visibility[key][i] for key, i in sources], dtype=bool)
+                    report["occluded_joint_fraction"] = float(np.mean(~aligned_vis))
+                else:
+                    gi, joints, report = associate(tracks, gt, names)
             except AlignmentError as exc:
                 frame_ids = np.unique(np.concatenate([track[0] for track in tracks.values()]))
                 report = dict(status="rejected", reason=str(exc), coverage=None, pa_mm=None,
@@ -562,7 +635,7 @@ def prepare(rows, drive, cache, config, alignment_path=None, skip_unaligned_acti
                               frame_end=int(frame_ids.max()) if len(frame_ids) else None)
             else:
                 report = dict(status="accepted", **report)
-                cameras.append((row["cam"], gi, joints))
+                cameras.append((row["cam"], gi, joints, aligned_vis if use_occ else None))
             reports.append(dict(action=action, split=row["split"], cam=row["cam"], **report))
             print(json.dumps(reports[-1]), flush=True)
             if alignment_path is not None:
@@ -571,26 +644,37 @@ def prepare(rows, drive, cache, config, alignment_path=None, skip_unaligned_acti
         body = [names.index(n) for n in BODY]
         target_rotations = {
             cam: rotation(centered(gt[ids], names)[:, body], centered(joints, names)[:, body])
-            for cam, ids, joints in cameras
+            for cam, ids, joints, _ in cameras
         }
-        for (cam_m, ids_m, jm), (cam_s, ids_s, js) in itertools.combinations(cameras, 2):
+        for (cam_m, ids_m, jm, vm), (cam_s, ids_s, js, vs) in itertools.combinations(cameras, 2):
             common, synced_m, synced_s = synchronize(ids_m, jm, ids_s, js)
+            synced_vm = synchronize_visibility(ids_m, vm, common) if use_occ else None
+            synced_vs = synchronize_visibility(ids_s, vs, common) if use_occ else None
             # Temporal features/stability must never bridge missing GT ticks.
             stride = float(np.median(np.diff(common))) if len(common) > 1 else 1
             runs = np.split(np.arange(len(common)), np.where(np.diff(common) != stride)[0] + 1)
             for run in runs:
                 if len(run) < 8:
                     continue
-                for cm, cs, master, slave in ((cam_m, cam_s, synced_m[run], synced_s[run]),
-                                              (cam_s, cam_m, synced_s[run], synced_m[run])):
+                for cm, cs, master, slave, vis_m, vis_s in (
+                        (cam_m, cam_s, synced_m[run], synced_s[run], synced_vm, synced_vs),
+                        (cam_s, cam_m, synced_s[run], synced_m[run], synced_vs, synced_vm)):
                     target = centered(gt[common[run]], names)
                     target = target @ target_rotations[cm]
                     M = [dict(zip(names, f)) for f in master]
                     S = [dict(zip(names, f)) for f in slave]
-                    feats, children = extract_pair_features(M, S)
-                    directions = slave_directions(M, S, config.get("rotation_half_window", 4))
+                    vis_master = [dict(zip(names, v)) for v in vis_m[run]] if use_occ else None
+                    vis_slave = [dict(zip(names, v)) for v in vis_s[run]] if use_occ else None
+                    feats, children = extract_pair_features(M, S, vis_master, vis_slave)
+                    mp = config.get("multi_person", {})
+                    use_vis_rot = mp.get("enabled", False) and mp.get("visibility_weighted_rotation", True)
+                    directions = slave_directions(
+                        M, S, config.get("rotation_half_window", 4),
+                        vis_master=vis_master if use_vis_rot else None,
+                        vis_slave=vis_slave if use_vis_rot else None)
                     pairs.append(dict(action=action, split=group[0]["split"], cameras=[cm, cs],
                                       names=names, M=M, S=S, features=feats, children=children,
+                                      vis_master=vis_master, vis_slave=vis_slave,
                                       directions=directions, target=target.astype(np.float32)))
         if not any(p["action"] == action for p in pairs):
             reason = (f"{action}: need at least two aligned cameras; got {len(cameras)}."
@@ -633,6 +717,7 @@ def training_config(pipeline):
     fusion = pipeline["fusion"]
     config = copy.deepcopy(fusion["partwise"])
     config.pop("weight_model", None)
+    config["occlusion"] = copy.deepcopy(fusion.get("occlusion", {"enabled": False}))
     naive = copy.deepcopy(fusion.get("naive", {}))
     if naive.get("use_aotr_stability", False):
         naive["sequence_stability"] = copy.deepcopy(fusion["aotr"].get("sequence_stability", {}))
@@ -643,6 +728,22 @@ def training_config(pipeline):
 def fit_signature(identity, config, lr):
     return hashlib.sha256((identity + json.dumps(config, sort_keys=True) + str(lr) +
                            "pa+sequence-mpjpe-naive-regret-nonneg-v3").encode()).hexdigest()
+
+
+def preparation_identity(rows, config, skip_unaligned_actions=False):
+    stable_rows = [{k: v for k, v in row.items() if k not in ("GT_path", "PKL_path")} for row in rows]
+    digest = hashlib.sha256(json.dumps(stable_rows, sort_keys=True, ensure_ascii=False).encode())
+    for name in ("models/J_regressor_body25_extended.npy", "train_v4.py",
+                 "fusion_pipeline/partwise.py", "fusion_pipeline/naive.py",
+                 "fusion_pipeline/aotr_stability.py", "fusion_pipeline/detector.py",
+                 "fusion_pipeline/config.py", "configs/keypoints3D_map.yml"):
+        digest.update((ROOT / name).read_bytes())
+    mask = ROOT / "models/torso_indices.npy"
+    if config.get("occlusion", {}).get("enabled", False) and mask.exists():
+        digest.update(mask.read_bytes())
+    digest.update(json.dumps(config, sort_keys=True).encode())
+    digest.update(str(skip_unaligned_actions).encode())
+    return digest.hexdigest()
 
 
 def torch_fuse(pair, weights, std):
@@ -716,7 +817,8 @@ def validation(pairs, model, config, method="partwise"):
         if method == "naive":
             output = naive_prediction(p, config)
         elif method == "partwise":
-            fused, _ = fuse_partwise(p["M"], p["S"], cfg)
+            fused, _ = fuse_partwise(p["M"], p["S"], cfg,
+                                     vis_master=p.get("vis_master"), vis_slave=p.get("vis_slave"))
             output = np.array([[f[n] for n in names] for f in fused], dtype=np.float32)
         else:
             raise ValueError(f"Unknown validation method: {method}")
@@ -742,10 +844,14 @@ def atomic_json(path, value):
 def save_best(out, config, model):
     atomic_json(out / "best_weights.json", model)
     patch = copy.deepcopy(config)
+    occlusion = patch.pop("occlusion", None)
     patch["weight_model"] = {"enabled": True, **{
         k: model[k] for k in ("type", "feature_names", "mean", "std", "weights", "active_features")}}
+    fusion = {"method": "partwise", "partwise": patch}
+    if occlusion is not None:
+        fusion["occlusion"] = occlusion
     (out / "best_partwise.yml").write_text(yaml.safe_dump(
-        {"fusion": {"method": "partwise", "partwise": patch}}, sort_keys=False), encoding="utf-8")
+        {"fusion": fusion}, sort_keys=False), encoding="utf-8")
 
 
 def fit(pairs, config, out, epochs=50, lr=0.01, resume=None, identity=""):
@@ -930,13 +1036,7 @@ def main():
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
     cache = Path(args.cache)
-    stable_rows = [{k: v for k, v in r.items() if k not in ("GT_path", "PKL_path")} for r in rows]
-    identity = hashlib.sha256(json.dumps(stable_rows, sort_keys=True, ensure_ascii=False).encode() +
-        (ROOT / "models/J_regressor_body25_extended.npy").read_bytes() +
-        Path(__file__).read_bytes() + (ROOT / "fusion_pipeline/partwise.py").read_bytes() +
-        (ROOT / "fusion_pipeline/naive.py").read_bytes() + (ROOT / "fusion_pipeline/aotr_stability.py").read_bytes() +
-        (ROOT / "configs/keypoints3D_map.yml").read_bytes() + json.dumps(config, sort_keys=True).encode() +
-        str(args.skip_unaligned_actions).encode()).hexdigest()
+    identity = preparation_identity(rows, config, args.skip_unaligned_actions)
     prepared_out = out / f"prepared_{identity}.joblib"
     prepared_cache = cache / f"prepared_{identity}.joblib"
     if prepared_out.exists():
@@ -963,6 +1063,8 @@ def main():
         "association": "GT-assisted proper-rotation PA timeline search and penalized track stitching; ratio 0.5/1/2, integer offset",
         "limitations": "GT-assisted time/track association; review alignment.json. No independent test score.",
         "feature_names": list(FEATURE_NAMES), "config": config,
+        "visibility": {"enabled": bool(config["occlusion"].get("enabled", False)),
+                       "source": "3D mesh occlusion at original camera frames, aligned with selected tracks; interpolated visibility requires both endpoints visible. No confidence2d input."},
         "train_actions": sorted({p["action"] for p in pairs if p["split"] == "train"}),
         "val_actions": sorted({p["action"] for p in pairs if p["split"] == "val"}),
         "skip_unaligned_actions": args.skip_unaligned_actions,

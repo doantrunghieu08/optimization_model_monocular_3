@@ -5,7 +5,8 @@ root = Path(__file__).resolve().parent
 snapshots = {
     name: (root / name).read_text(encoding="utf-8")
     for name in ["compat.py", "train_v4.py", "fusion_pipeline/partwise.py", "fusion_pipeline/naive.py",
-                 "fusion_pipeline/aotr_stability.py", "tests/test_train_v4.py",
+                 "fusion_pipeline/aotr_stability.py", "fusion_pipeline/detector.py",
+                 "fusion_pipeline/config.py", "tests/test_train_v4.py",
                  "configs/pipeline.yml"]
 }
 cells = []
@@ -37,6 +38,7 @@ Mở notebook trong Google Colab và bấm **Run all (Chạy tất cả)** hoặ
 - **Ưu tiên đọc từ Drive đã mount:** ánh xạ File ID trên sheet sang `/content/drive`; file không tìm thấy trên mount có thể được tải qua API/gdown. Với dữ liệu trong **Được chia sẻ với tôi**, thêm lối tắt thư mục vào `MyDrive` trước khi chạy.
 - Loss có phạt theo frame khi PA hoặc MPJPE thua naive. **Best Epoch** ưu tiên checkpoint thắng naive ở cả PA và MPJPE validation (12 khớp thân), rồi mới xét PA + λ·MPJPE. Nếu chưa có checkpoint đạt, vẫn lưu ứng viên tốt nhất và ghi `val_beats_naive: false`.
 - Lưu **mọi epoch** trên **Google Drive**, có giới hạn epoch và dừng sớm khi không cải thiện; xuất `best_weights.json`, `best_partwise.yml`, `pipeline_best.yml`. Thắng validation chưa thay thế benchmark độc lập; không dùng test để ép train đến khi thắng.
+- Học trọng số che khuất (`d_occ_joint`, `d_occ_torso`) từ mesh SMPL, **không cần confidence 2D**. Bật `fusion.occlusion.enabled`; kiểm tra `occluded_joint_fraction` trong alignment và `active_features` sau train.
 
 **Lưu ý phạm vi:** GT chỉ dùng khi chuẩn bị dữ liệu giám sát (ghép track/thời gian và tính hàm mục tiêu), **0% GT lúc suy luận**. Kiểm tra bảng `alignment.json` ở Bước 4a trước khi dùng bộ tham số.
 """)
@@ -57,7 +59,7 @@ else:
 
 subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--no-build-isolation", "chumpy"], check=False)
 subprocess.run([sys.executable, "-m", "pip", "install", "-q",
-                "numpy<2.3", "scipy", "torch", "joblib", "pyyaml", "trimesh",
+                "numpy<2.3", "scipy", "torch", "joblib", "pyyaml", "trimesh", "rtree",
                 "gspread", "google-api-python-client", "gdown", "matplotlib", "pandas"], check=True)
 os.chdir(REPO_DIR)
 if str(REPO_DIR) not in sys.path:
@@ -103,7 +105,7 @@ DRIVE_MOUNT = "/content/drive"  #@param {type:"string"}
 DRIVE_DATA_DIR = ""  #@param {type:"string"}
 SPREADSHEET_ID = "11OipPLik-aXw0GmrTfEwg6wsAQYEmvGEV8VRlyry4Rg"  #@param {type:"string"}
 TAB = "v4 22/11/26"  #@param {type:"string"}
-OUTPUT_DIR = "/content/drive/MyDrive/partwise_v4/run_004"  #@param {type:"string"}
+OUTPUT_DIR = "/content/drive/MyDrive/partwise_v4/run_005_occ"  #@param {type:"string"}
 EPOCHS = 50  #@param {type:"integer"}
 LEARNING_RATE = 0.01  #@param {type:"number"}
 RESUME = True  #@param {type:"boolean"}
@@ -177,24 +179,13 @@ else:
 """)
 
 code("""#@title 4b. Chạy Train & lưu checkpoint từng epoch trên Google Drive
-import hashlib, shutil, torch, yaml
-from train_v4 import fit_signature, training_config
+import shutil, torch, yaml
+from train_v4 import fit_signature, training_config, preparation_identity
 
 # Tính đúng chữ ký cấu hình của train_v4.py để kiểm tra tương thích trước khi resume
 cfg_pw = training_config(yaml.safe_load((REPO_DIR / "configs/pipeline.yml").read_text(encoding="utf-8")))
-stable_rows = [{k: v for k, v in r.items() if k not in ("GT_path", "PKL_path")}
-               for r in json.loads(MANIFEST.read_text(encoding="utf-8"))]
-cur_identity = hashlib.sha256(
-    json.dumps(stable_rows, sort_keys=True, ensure_ascii=False).encode()
-    + (REPO_DIR / "models/J_regressor_body25_extended.npy").read_bytes()
-    + (REPO_DIR / "train_v4.py").read_bytes()
-    + (REPO_DIR / "fusion_pipeline/partwise.py").read_bytes()
-    + (REPO_DIR / "fusion_pipeline/naive.py").read_bytes()
-    + (REPO_DIR / "fusion_pipeline/aotr_stability.py").read_bytes()
-    + (REPO_DIR / "configs/keypoints3D_map.yml").read_bytes()
-    + json.dumps(cfg_pw, sort_keys=True).encode()
-    + str(bool(SKIP_UNALIGNED_ACTIONS)).encode()
-).hexdigest()
+cur_identity = preparation_identity(
+    json.loads(MANIFEST.read_text(encoding="utf-8")), cfg_pw, bool(SKIP_UNALIGNED_ACTIONS))
 cur_sig = fit_signature(cur_identity, cfg_pw, float(LEARNING_RATE))
 
 
@@ -240,7 +231,7 @@ else:
     print(f"Khác lr/cấu hình so với checkpoint gốc -> lưu tại: {ACTIVE_OUT} (tái sử dụng dữ liệu đã căn chỉnh)")
 
 train_cmd = [sys.executable, "-u", "train_v4.py", "--manifest", str(MANIFEST),
-             "--drive-mount", DRIVE_MOUNT, "--cache", str(CACHE),
+             "--drive-mount", DRIVE_MOUNT, "--data-dir", DRIVE_DATA_DIR.strip(), "--cache", str(CACHE),
              "--output", str(ACTIVE_OUT), "--epochs", str(EPOCHS), "--lr", str(LEARNING_RATE)]
 if SKIP_UNALIGNED_ACTIONS:
     train_cmd.append("--skip-unaligned-actions")
@@ -311,18 +302,23 @@ plt.show()
 """)
 
 code("""#@title 6. Ghép bộ tham số tốt nhất vào pipeline_best.yml để suy luận / benchmark
-import yaml
+import shutil, yaml
 
 RUN_OUT = globals().get("ACTIVE_OUT", OUTPUT)
 base = yaml.safe_load((REPO_DIR / "configs/pipeline.yml").read_text(encoding="utf-8"))
 patch = yaml.safe_load((RUN_OUT / "best_partwise.yml").read_text(encoding="utf-8"))
 base["fusion"]["method"] = "partwise"
 base["fusion"]["partwise"] = patch["fusion"]["partwise"]
+base["fusion"]["occlusion"] = patch["fusion"]["occlusion"]
 out_cfg = RUN_OUT / "pipeline_best.yml"
 out_cfg.write_text(yaml.safe_dump(base, sort_keys=False, allow_unicode=True), encoding="utf-8")
+benchmark_config = OUTPUT / "pipeline_best.yml"
+if out_cfg != benchmark_config:
+    shutil.copy2(out_cfg, benchmark_config)
 print("Cấu hình thử nghiệm: cần benchmark coco17 trước khi dùng chính thức.")
 print("Đã xuất cấu hình đầy đủ (nhúng sẵn trọng số, dùng được ngay cả trên Colab lẫn máy local):")
 print(" ->", out_cfg)
+print("Đường dẫn dùng cho TRAINED_CONFIG_PATH trong notebook benchmark:", benchmark_config)
 print("\\nĐoạn cấu hình weight_model tốt nhất:")
 print(yaml.safe_dump({"weight_model": patch["fusion"]["partwise"]["weight_model"]}, sort_keys=False))
 """)

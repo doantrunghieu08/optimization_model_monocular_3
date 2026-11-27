@@ -285,12 +285,13 @@ tests/                             unit and regression tests
 Open `colab_train_v4.ipynb` in Google Colab and run the cells in order. It mounts
 Google Drive at `/content/drive` (resolving Sheet file IDs directly on the mounted
 filesystem with zero file downloads), reads tab `v4 22/11/26`, and saves
-every epoch under `MyDrive/partwise_v4/run_002`. Change `OUTPUT_DIR` for a new run;
+every epoch under `MyDrive/partwise_v4/run_005_occ`. Change `OUTPUT_DIR` for a new run;
 leave `RESUME = True` to resume the last checkpoint in that folder.
 
 The sheet's sequence-level train/val split is checked before training. Only train
-updates the linear weight model and its feature scale. The best epoch minimizes
-validation PA-MPJPE averaged within each action, then across validation actions.
+updates the linear weight model and its feature scale. Selection prioritizes
+checkpoints beating naive on both validation PA-MPJPE and MPJPE, then minimizes
+PA-MPJPE + `mpjpe_weight` × MPJPE, with equal action weighting and early stopping.
 `best_weights.json` contains the selected parameters; `best_partwise.yml` and
 `pipeline_best.yml` embed the inline `weight_model` directly into the existing pipeline.
 
@@ -306,6 +307,21 @@ notebook enables this via `SKIP_UNALIGNED_ACTIONS`). Exclusions appear as
 and val must still contain usable pairs. Validation then covers the retained
 sequences only.
 The score uses 12 body joints, hip-centered coordinates, and one GT rotation
-per camera-pair segment. It is a supervised calibration/selection score, not an
-independent test or an extrinsics-based camera MPJPE. Visibility/2D confidence
-are absent from this sheet. This trains the partwise weights, not SMPL/WHAM.
+per action/camera, shared by its pairs and segments. It is a supervised calibration/selection score, not an
+independent test or an extrinsics-based camera MPJPE. Visibility is computed from
+camera-frame SMPL meshes, including other tracks at the same video frame, and
+follows the selected track/time alignment into training and validation. No 2D
+confidence is required: `d_occ_joint` and `d_occ_torso` can be learned while
+`d_conf2d` remains inactive. Check `occluded_joint_fraction` in `alignment.json` and
+the exported `active_features`; constant training features remain disabled.
+This trains the partwise weights, not SMPL/WHAM.
+
+After training, open `colab_drive_benchmark.ipynb`. Set `TRAINED_CONFIG_PATH` to
+the exported `pipeline_best.yml`; the default shared path is
+`/content/drive/MyDrive/partwise_v4/run_005_occ/pipeline_best.yml`. The training
+notebook also updates this shared file when the selected run lives in a learning-rate
+subfolder. The benchmark mounts Drive, loads this exact configuration, and reports
+the learned weights and active features. Missing files/weights raise an error;
+there is no embedded older model fallback. Set `DRIVE_DATASET_ROOT` and optionally
+`CONFIGS`, then run the benchmark cells to compare against mono and naive in
+Google Sheets. The default result prefix is `v4_occ_`.

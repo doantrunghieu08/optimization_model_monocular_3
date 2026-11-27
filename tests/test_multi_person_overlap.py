@@ -203,7 +203,9 @@ class MultiPersonOverlapTests(unittest.TestCase):
         base_cfg = {"depth_logit": {"a": 0.0, "b": 1.7, "mu": 0.0, "sd": 1.4},
                     "rotation_half_window": 2, "sequence_stability": {"enabled": False}}
         mp_cfg = {**base_cfg, "multi_person": {"enabled": True, "anti_swap_gate": False}}
-        out_old, _ = fuse_partwise(master, slave, base_cfg)
+        # The depth guard also runs without multi_person; disable its threshold for this reference.
+        unguarded_cfg = {**base_cfg, "multi_person": {"enabled": False, "depth_outlier_min_m": 1e6}}
+        out_old, _ = fuse_partwise(master, slave, unguarded_cfg)
         out_new, diag = fuse_partwise(master, slave, mp_cfg)
         err_old = np.mean([np.linalg.norm(np.asarray(o["left_wrist"]) - m["left_wrist"]) for o, m in zip(out_old, master)])
         err_new = np.mean([np.linalg.norm(np.asarray(o["left_wrist"]) - m["left_wrist"]) for o, m in zip(out_new, master)])
