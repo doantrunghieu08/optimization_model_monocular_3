@@ -164,8 +164,8 @@ def discover(root, only=None, skip=()):
             m = json.load(open(meta))
         except ValueError:
             continue
-        if sorted(m.get("methods") or []) != sorted(METHODS):
-            continue  # ablation / other method sets
+        if not set(METHODS) <= set(m.get("methods") or []):
+            continue  # needs the 3 main methods; extra labels (ablation variants) are fine
         seq = os.path.splitext(os.path.basename(str(m.get("brute") or d)))[0]
         if only and seq not in only:
             continue
