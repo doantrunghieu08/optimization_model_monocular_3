@@ -95,6 +95,31 @@ class AOTRBenchmarkTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "enabled but did not run"):
                 verify_aotr_execution(cfg)
 
+    def test_adaptive_naive_stability_follows_use_aotr_stability(self):
+        """The ablation adaptive_naive@use_aotr_stability=false must pass (stability off is intended),
+        while the default run still has to apply AOTR's stability pass, and an ablation that asked
+        for it to be off must not silently run it."""
+        def check(temp, adaptive_cfg, status):
+            cfg = {"fusion": {"method": "adaptive_naive", "adaptive_naive": adaptive_cfg,
+                              "aotr": {"enabled": True, "sequence_stability": {"enabled": True}}},
+                   "paths": {"fused_output_dir": temp}}
+            (Path(temp) / "aotr_diagnostics.json").write_text(json.dumps({
+                "mode": "adaptive_naive", "frames": 20, "fallback_frames": 0,
+            }), encoding="utf-8")
+            (Path(temp) / "adaptive_naive_diagnostics.json").write_text(json.dumps({
+                "mode": "adaptive_naive", "frames": 20, "fallback_frames": 0,
+                "sequence_stability": {"status": status},
+            }), encoding="utf-8")
+            return verify_aotr_execution(cfg)
+
+        with tempfile.TemporaryDirectory() as temp:
+            self.assertEqual(check(temp, {}, "applied")["frames"], 20)
+            with self.assertRaisesRegex(RuntimeError, "sequence stability did not run"):
+                check(temp, {}, "disabled")
+            self.assertEqual(check(temp, {"use_aotr_stability": False}, "disabled")["frames"], 20)
+            with self.assertRaisesRegex(RuntimeError, "use_aotr_stability=false but the stability pass ran"):
+                check(temp, {"use_aotr_stability": False}, "applied")
+
 
 class IdentityMaskProtocolTests(unittest.TestCase):
     """The identity mask's content is part of the protocol: results cached with another
