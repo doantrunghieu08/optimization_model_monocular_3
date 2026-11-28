@@ -224,7 +224,8 @@ def _verify_naive(config, summary):
 
 
 def _verify_adaptive_naive(config, summary):
-    """adaptive_naive replaces camera1; it must cover the pair, align some frames and run AOTR's stability."""
+    """adaptive_naive replaces camera1; it must cover the pair, align some frames and run AOTR's stability
+    unless fusion.adaptive_naive.use_aotr_stability=false (ablation), in which case it must NOT run."""
     report = Path(config["paths"]["fused_output_dir"]) / "adaptive_naive_diagnostics.json"
     if summary.get("mode") != "adaptive_naive" or not report.is_file():
         raise RuntimeError("fusion.method=adaptive_naive but its diagnostics are missing: " + str(summary))
@@ -234,8 +235,13 @@ def _verify_adaptive_naive(config, summary):
         raise RuntimeError("adaptive_naive diagnostics do not cover the current pair: " + str(diag))
     if int(diag.get("fallback_frames", frames)) >= frames:
         raise RuntimeError("All adaptive_naive frames fell back to Master: " + str(diag.get("reason_counts")))
-    stab_enabled = bool(config["fusion"]["aotr"].get("sequence_stability", {}).get("enabled", False))
+    # Same rule as the executor (executor.py, adaptive_naive branch): AOTR's stability pass runs only when
+    # fusion.adaptive_naive.use_aotr_stability (default true) AND fusion.aotr.sequence_stability.enabled.
+    use_stab = bool(config["fusion"].get("adaptive_naive", {}).get("use_aotr_stability", True))
+    stab_enabled = use_stab and bool(config["fusion"]["aotr"].get("sequence_stability", {}).get("enabled", False))
     status = diag.get("sequence_stability", {}).get("status")
     if stab_enabled and status not in {"applied", "unchanged"}:
         raise RuntimeError("adaptive_naive sequence stability did not run: " + str(diag))
+    if not use_stab and status != "disabled":
+        raise RuntimeError("adaptive_naive use_aotr_stability=false but the stability pass ran: " + str(diag))
     return summary
