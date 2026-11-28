@@ -392,6 +392,9 @@ def optimize_aotr(
     current_cost = initial_cost
     max_iter = int(cfg.get("trust_max_iter", 12))
     radius = float(cfg.get("trust_initial_radius", 0.25))
+    # Ablation of step 5: a fixed blend for every supported bone (None = optimized, default).
+    fixed_alpha = cfg.get("fixed_alpha")
+    fixed_alpha = None if fixed_alpha is None else float(np.clip(float(fixed_alpha), 0.0, 1.0))
     accepted = []
     evaluations = 1
     for child, parent in bones:
@@ -406,10 +409,13 @@ def optimize_aotr(
             proposal = dict(alphas)
             proposal[child] = alpha
             return energy(proposal)
-        alpha, best, n_eval = _trust_region_1d(probe, max_iter, radius)
+        if fixed_alpha is None:
+            alpha, best, n_eval = _trust_region_1d(probe, max_iter, radius)
+        else:  # ablation: no trust-region search and no "accept only if the cost decreases"
+            alpha, best, n_eval = fixed_alpha, float(probe(fixed_alpha)), 1
         evaluations += n_eval
         gain = current_cost - best
-        if alpha > 1e-5 and gain > min_gain:
+        if alpha > 1e-5 and (fixed_alpha is not None or gain > min_gain):
             alphas[child] = alpha
             current_cost = float(energy(alphas))
             evaluations += 1

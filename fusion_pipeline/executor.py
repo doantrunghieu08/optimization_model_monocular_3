@@ -1423,11 +1423,15 @@ def run_fusion(config: dict) -> None:
             fused_sequence, partwise_diag = fuse_naive(master_sequence, slave_sequence, method_cfg)
         else:
             from fusion_pipeline.adaptive_naive import fuse_adaptive_naive
-            # Same alignment gates and the same stability pass as AOTR, by construction.
+            # Same alignment gates and the same stability pass as AOTR, by construction, unless an
+            # ablation sets the key explicitly in fusion.adaptive_naive (e.g. min_bone_direction_cos=-1).
             for key in ADAPTIVE_NAIVE_SHARED_AOTR_KEYS:
                 if key in aotr_cfg:
-                    method_cfg[key] = aotr_cfg[key]
-            method_cfg["sequence_stability"] = aotr_cfg.get("sequence_stability", {})
+                    method_cfg.setdefault(key, aotr_cfg[key])
+            if method_cfg.get("use_aotr_stability", True):
+                method_cfg["sequence_stability"] = aotr_cfg.get("sequence_stability", {})
+            else:
+                method_cfg["sequence_stability"] = {"enabled": False}
             fused_sequence, partwise_diag = fuse_adaptive_naive(
                 master_sequence, slave_sequence, method_cfg, conf_master=conf_master, conf_slave=conf_slave,
                 vis_master=vis_master, vis_slave=vis_slave)

@@ -24,6 +24,9 @@ Tổng hợp mọi sequence (tự dò output/method_comparison/*: run_meta.json 
 C1-J: MPJPE / PA-MPJPE theo 13 khớp (neck = trung điểm 2 vai, 2 vai, 2 khuỷu, 2 cổ tay, 2 hông,
 2 gối, 2 cổ chân) cho từng sequence, GỘP và MACRO; cần results_w*.csv do runner bản mới ghi.
 
+ABLATION: mọi nhãn phương pháp khác 3 pp chính trong results (vd. aotr@fixed_alpha=0.5,
+naive@use_aotr_stability=false) được so với AOTR đầy đủ trên cùng cặp, theo sequence, GỘP và MACRO.
+
 Phần GỘP: C1, C2, C3a, C3b trên mọi cặp (cụm bootstrap = (sequence, person, master)), bảng sai số
 tuyệt đối, và trung bình MACRO (mỗi sequence trọng số bằng nhau) để sequence nhiều cặp không chi phối.
 
@@ -62,7 +65,8 @@ def load_dir(d):
     for f in sorted(glob.glob(f"{d}/results_w*.csv")):
         for r in csv.DictReader(open(f)):
             status[str(r.get("status", ""))[:150]] += 1
-            if r.get("status") != "ok" or r.get("mask") != "masked" or r.get("method") not in METHODS:
+            # Mọi nhãn phương pháp được đọc: 3 pp chính + biến thể ablation (vd. aotr@fixed_alpha=0.5).
+            if r.get("status") != "ok" or r.get("mask") != "masked" or not r.get("method"):
                 continue
             k = (r["person"], r["master"], r["slave"])
             if r["method"] in data[k]:
@@ -330,6 +334,80 @@ def joint_macro(datasets, out):
                 f"{avg['adaptive_naive']:+8.2f}   {wins[0]}/{len(per)} , {wins[1]}/{len(per)}")
 
 
+# ----------------------------------------------------------------------------- ablation
+ABLATION_NOTES = {
+    "naive@use_aotr_stability=false": "naive thô (không làm mượt, không FK)",
+    "adaptive_naive@use_aotr_stability=false": "adaptive không làm mượt",
+    "adaptive_naive@torso_gate=false": "adaptive không RANSAC thân/ngưỡng",
+    "adaptive_naive@torso_gate=false,use_aotr_stability=false,min_bone_direction_cos=-1.0":
+        "adaptive thô (không ngưỡng, không lọc xương, không làm mượt; chỉ còn trộn hướng + FK)",
+    "aotr@temporal_alignment_fallback=false": "− bước 1b (fallback căn chỉnh)",
+    "aotr@max_cross_view_bone_angle_deg=null": "− bước 2 (ngưỡng góc 2 view)",
+    "aotr@min_bone_direction_cos=-1.0": "− bước 3 (lọc xương ngược hướng)",
+    "aotr@min_correspondences=999": "− bước 4 (bằng chứng 2D; luôn 3d_surrogate)",
+    "aotr@unobserved_prior_weight=0.0001": "− prior observability (prior đẳng hướng)",
+    "aotr@huber_delta_normalized=1000000": "− Huber (bình phương tối thiểu)",
+    "aotr@fixed_alpha=0.5": "− bước 5 (không tối ưu, α=0.5, không kiểm tra cost)",
+    "aotr@sequence_stability={enabled: false}": "− bước 7 (làm mượt chuỗi)",
+}
+
+
+def variants(data):
+    return sorted({m for v in data.values() for m in v} - set(METHODS))
+
+
+def ablation_table(name, data, excl, out):
+    """Mỗi biến thể so với AOTR đầy đủ trên cùng các cặp: Δ = biến thể − AOTR (gain, mm).
+    Δ MG < 0 nghĩa là bỏ thành phần đó làm kết quả kém đi, tức thành phần có ích."""
+    labels = variants(data)
+    if not labels:
+        return
+    out(f"\n### ABLATION — {name}: biến thể so với AOTR đầy đủ (Δ = biến thể − AOTR; Δ MG < 0 = thành phần bị bỏ có ích)")
+    for met in ("pa", "mpjpe"):
+        out(f"  {met.upper()}")
+        out(f"    {'biến thể':44s}{'n':>5s}{'MG':>8s}{'WG10':>8s}{'HR@1':>7s}   {'ΔMG [CI95]':>24s}  {'ΔWG10':>7s} {'ΔHR@1':>7s}")
+        for lab in labels:
+            keys = [k for k in data if lab in data[k] and not (met == "mpjpe" and k[:2] in excl)]
+            if not keys:
+                continue
+            g_v = np.array([data[k][lab][met] for k in keys]); g_a = np.array([data[k]["aotr"][met] for k in keys])
+            dv, da = metrics(g_v), metrics(g_a)
+            by = collections.defaultdict(list)
+            for k, a, v in zip(keys, g_a, g_v):
+                by[k[:2]].append([a, v])
+            o, lo, hi = cluster_bootstrap([np.array(x) for x in by.values()],
+                                          lambda rows: [rows[:, 1].mean() - rows[:, 0].mean()], B=1000)
+            out(f"    {lab[:44]:44s}{len(keys):5d}{dv['MG']:+8.2f}{dv['WG10']:+8.2f}{dv['HR1']:6.1f}%"
+                f"   {o[0]:+7.2f} [{lo[0]:+6.2f},{hi[0]:+6.2f}]{_abl_sig(lo[0], hi[0]):3s}"
+                f"  {dv['WG10'] - da['WG10']:+7.2f} {dv['HR1'] - da['HR1']:+6.1f}%")
+    out("    (* = CI95 bootstrap cụm (person, master) < 0: bỏ thành phần làm kém đi có ý nghĩa; (+) = > 0: bỏ đi lại tốt hơn)")
+    for l in labels:
+        if l in ABLATION_NOTES:
+            out(f"      {l}: {ABLATION_NOTES[l]}")
+
+
+def _abl_sig(lo, hi):
+    return "*" if hi < 0 else ("(+)" if lo > 0 else "")
+
+
+def ablation_macro(datasets, out):
+    """Mỗi sequence một phiếu: ΔMG (biến thể − AOTR) trung bình + số sequence biến thể kém hơn AOTR."""
+    labels = sorted({l for _, d, _ in datasets for l in variants(d)})
+    if not labels:
+        return
+    out("\n### ABLATION MACRO: mỗi sequence trọng số bằng nhau (ΔMG = biến thể − AOTR, mm)")
+    for met in ("pa", "mpjpe"):
+        out(f"  {met.upper()}")
+        for lab in labels:
+            per = []
+            for name, d, excl in datasets:
+                keys = [k for k in d if lab in d[k] and not (met == "mpjpe" and k[:2] in excl)]
+                if keys:
+                    per.append(np.mean([d[k][lab][met] - d[k]["aotr"][met] for k in keys]))
+            if per:
+                out(f"    {lab[:44]:44s} seq={len(per):2d}  ΔMG {np.mean(per):+7.2f}   kém hơn AOTR ở {sum(x < 0 for x in per)}/{len(per)} seq")
+
+
 # ----------------------------------------------------------------------------- C2
 def load_feats(path):
     F = {}
@@ -470,6 +548,7 @@ def main():
             F = load_feats(feats[name]); c2(name, data, F, out)
         c3_ranking(name, data, excl, out)
         joint_table(name, data, excl, out)
+        ablation_table(name, data, excl, out)
         N = load_dir(noext[name])[0] if name in noext else None
         if N is not None:
             c3_hoe(name, data, N, excl, out)
@@ -502,10 +581,12 @@ def main():
             c2(f"gộp ({len({k[0].split('/')[0] for k in PF})} sequence có đặc trưng)", P, PF, out)
         c3_ranking("gộp", P, PX, out)
         joint_table("gộp", P, PX, out)
+        ablation_table("gộp", P, PX, out)
         if PN:
             c3_hoe(f"gộp ({len({k[0].split('/')[0] for k in PN})} sequence có EXT=0)", P, PN, PX, out)
         macro_c1(done, out)
         joint_macro(done, out)
+        ablation_macro(done, out)
     if a.txt:
         open(a.txt, "w", encoding="utf-8").write("\n".join(lines) + "\n")
         print(f"\n-> {a.txt}")

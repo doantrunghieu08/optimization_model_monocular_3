@@ -51,6 +51,11 @@ DEFAULTS = {
     "alignment_median_max_m": 0.12,
     "alignment_q75_max_m": 0.18,
     "min_bone_direction_cos": -0.80,
+    # Ablation switches (defaults = the controlled baseline used so far):
+    #   torso_gate=false   -> no torso RANSAC / no gate: one Kabsch rotation over all shared joints
+    #                         (pelvis-centred, as in naive), every frame is fused;
+    #   use_aotr_stability -> read by the executor (false = no AOTR sequence-stability pass).
+    "torso_gate": True,
 }
 
 
@@ -132,6 +137,17 @@ def align(master, slave, cfg, vis_master=None, vis_slave=None):
     return np.asarray(t21[1], dtype=float), "aligned"
 
 
+def align_all_joints(master, slave):
+    """No gate: Kabsch over every shared joint after centring at the pelvis (naive's alignment)."""
+    from fusion_pipeline.naive import kabsch_rotation
+    shared = [k for k in master if k in slave]
+    if "pelvis" not in master or "pelvis" not in slave or len(shared) < 3:
+        return None, "insufficient_shared_joints"
+    src = np.stack([slave[k] - slave["pelvis"] for k in shared])
+    dst = np.stack([master[k] - master["pelvis"] for k in shared])
+    return kabsch_rotation(src, dst), "aligned_all_joints"
+
+
 def blend_frame(master, slave, R21, weights, min_cos):
     """FK rebuild with Master lengths; weights = {child: Slave weight}. Returns (pose, rejected)."""
     pose = {k: v.copy() for k, v in master.items()}
@@ -169,6 +185,7 @@ def fuse_adaptive_naive(master_frames, slave_frames, config=None, conf_master=No
         raise ValueError(f"adaptive_naive needs confidence_power >= 0 and jitter_scale > 0, got {power}, {tau}")
     half = int(cfg["jitter_half_window"])
     missing = float(cfg["missing_confidence"])
+    torso_gate = bool(cfg.get("torso_gate", True))
     conf_master = conf_master or [None] * n
     conf_slave = conf_slave or [None] * n
     vis_master = vis_master or [None] * n
@@ -192,7 +209,10 @@ def fuse_adaptive_naive(master_frames, slave_frames, config=None, conf_master=No
     fused, editable, reasons = [], [], Counter()
     weights_used, rejected = [], 0
     for t in range(n):
-        R21, reason = align(M[t], S[t], cfg, vis_master[t], vis_slave[t])
+        if torso_gate:
+            R21, reason = align(M[t], S[t], cfg, vis_master[t], vis_slave[t])
+        else:
+            R21, reason = align_all_joints(M[t], S[t])
         reasons[reason] += 1
         if R21 is None:
             fused.append({k: v.copy() for k, v in M[t].items()})
@@ -216,7 +236,7 @@ def fuse_adaptive_naive(master_frames, slave_frames, config=None, conf_master=No
         "aligned_frames": int(sum(editable)), "fallback_frames": int(n - sum(editable)),
         "reason_counts": dict(reasons),
         "confidence_power": power, "jitter_scale": tau, "jitter_half_window": half,
-        "missing_confidence": missing,
+        "missing_confidence": missing, "torso_gate": torso_gate,
         "slave_weight_mean": float(np.nanmean(w)), "slave_weight_p10": float(np.nanpercentile(w, 10)),
         "slave_weight_p90": float(np.nanpercentile(w, 90)),
         "rejected_bone_frames": int(rejected),

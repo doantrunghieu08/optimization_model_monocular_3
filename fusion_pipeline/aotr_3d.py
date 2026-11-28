@@ -170,6 +170,8 @@ def optimize_aotr_3d(
     temporal_weight = float(cfg.get("three_d_temporal_weight", 0.15))
     jitter_smoothing = max(1e-5, float(cfg.get("three_d_jitter_epsilon", 0.06)))
     min_gain = max(0.0, float(cfg.get("minimum_cost_reduction", 1e-7)))
+    fixed_alpha = cfg.get("fixed_alpha")  # ablation of the optimizer (None = default)
+    fixed_alpha = None if fixed_alpha is None else float(np.clip(float(fixed_alpha), 0.0, 1.0))
     # Master-protection options (ablation). Defaults reproduce the original behaviour.
     # They only restrict bones whose Master joint is visible; occluded Master bones keep
     # the original rescue path.
@@ -234,10 +236,13 @@ def optimize_aotr_3d(
                 loss += temporal_weight*float(np.sum((u-predicted)**2))
             return loss
 
-        alpha, best, n_eval = _trust_region_1d(
-            cost, int(cfg.get("trust_max_iter", 12)),
-            float(cfg.get("trust_initial_radius", 0.25)),
-        )
+        if fixed_alpha is None:
+            alpha, best, n_eval = _trust_region_1d(
+                cost, int(cfg.get("trust_max_iter", 12)),
+                float(cfg.get("trust_initial_radius", 0.25)),
+            )
+        else:  # ablation: no trust-region search and no acceptance test
+            alpha, best, n_eval = fixed_alpha, float(cost(fixed_alpha)), 1
         if max_correct is not None and master_visible and alpha > 0.0:
             alpha = _cap_alpha(uM, uS, alpha, float(max_correct))
             best = float(cost(alpha))
@@ -245,7 +250,7 @@ def optimize_aotr_3d(
         total_before += before
         evaluations += n_eval
         gain = before-best
-        if alpha > 1e-5 and gain > min_gain:
+        if alpha > 1e-5 and (fixed_alpha is not None or gain > min_gain):
             alpha_by_bone[child] = alpha
             total_after += float(best)
             accepted.append({
